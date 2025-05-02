@@ -4,6 +4,7 @@ from rest_framework import viewsets, permissions, filters, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
+import logging
 
 from core.permissions import IsSuperAdmin, IsOrganizer
 from apps.organizers.models import (
@@ -24,6 +25,7 @@ from .serializers import (
     BankingDetailsSerializer,
 )
 
+logger = logging.getLogger(__name__)
 
 class OrganizerViewSet(viewsets.ModelViewSet):
     """
@@ -109,15 +111,29 @@ class OrganizerViewSet(viewsets.ModelViewSet):
         
         return Response(data)
     
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated, IsOrganizer])
-    def toggle_module(self, request, pk=None):
+    @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def toggle_module(self, request):
         """
-        Toggle a module for an organizer.
+        Toggle a module for the current organizer.
         """
-        organizer = self.get_object()
+        from django_tenants.utils import schema_context
         
-        # Check if user belongs to this organizer
-        if not request.user.organizer_roles.filter(organizer=organizer, is_admin=True).exists():
+        logger.info(f"Toggle module request received with data: {request.data}")
+        
+        # Verificar si el usuario tiene un organizador asociado
+        if not hasattr(request.user, 'organizer_roles') or not request.user.organizer_roles.exists():
+            return Response(
+                {"detail": "User does not have any associated organizer."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Obtener el organizador actual
+        organizer_role = request.user.organizer_roles.first()
+        organizer = organizer_role.organizer
+        logger.info(f"Processing toggle module for organizer: {organizer.id}")
+        
+        # Verificar permisos de administrador
+        if not organizer_role.is_admin:
             return Response(
                 {"detail": "You do not have permission to perform this action."},
                 status=status.HTTP_403_FORBIDDEN
@@ -126,20 +142,49 @@ class OrganizerViewSet(viewsets.ModelViewSet):
         module = request.data.get('module')
         activate = request.data.get('activate', True)
         
-        if module == 'events':
-            organizer.has_events_module = activate
-        elif module == 'accommodations':
-            organizer.has_accommodation_module = activate
-        elif module == 'experiences':
-            organizer.has_experience_module = activate
-        else:
+        logger.info(f"Attempting to toggle module: {module} to state: {activate}")
+        
+        # Mapear los nombres de módulos a los campos del modelo
+        module_mapping = {
+            'events': 'has_events_module',
+            'experience': 'has_experience_module',
+            'accommodation': 'has_accommodation_module'
+        }
+        
+        if module not in module_mapping:
+            logger.error(f"Invalid module name received: {module}")
             return Response(
-                {"detail": "Invalid module name."},
+                {"detail": f"Invalid module name. Must be one of: {', '.join(module_mapping.keys())}"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        organizer.save()
-        return Response(OrganizerSerializer(organizer).data)
+        try:
+            field_name = module_mapping[module]
+            logger.info(f"Setting field {field_name} to {activate}")
+            
+            # Verificar que el campo existe en el modelo
+            if not hasattr(organizer, field_name):
+                logger.error(f"Field {field_name} not found in Organizer model")
+                return Response(
+                    {"detail": f"Field {field_name} not found in model"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            # Actualizar el estado del módulo usando el nombre del campo correcto
+            # Usar el schema_context para asegurar que estamos en el schema correcto
+            with schema_context('public'):
+                setattr(organizer, field_name, activate)
+                organizer.save()
+            
+            logger.info(f"Successfully toggled module {module} to {activate}")
+            return Response(OrganizerSerializer(organizer).data)
+            
+        except Exception as e:
+            logger.error(f"Error toggling module: {str(e)}")
+            return Response(
+                {"detail": f"Error updating module status: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
     
     @action(detail=True, methods=['get'], permission_classes=[permissions.IsAuthenticated, IsOrganizer])
     def users(self, request, pk=None):
@@ -178,57 +223,26 @@ class OrganizerViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
     
     @action(detail=True, methods=['get', 'put', 'patch'], permission_classes=[permissions.IsAuthenticated, IsOrganizer])
-    def billing_details(self, request, pk=None):
-        """
-        Get or update billing details for an organizer.
-        """
-        organizer = self.get_object()
-        
-        # Check if user belongs to this organizer
-        if not request.user.organizer_roles.filter(organizer=organizer, can_manage_settings=True).exists():
-            return Response(
-                {"detail": "You do not have permission to perform this action."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        if request.method == 'GET':
-            try:
-                billing = organizer.billing_details
-                serializer = BillingDetailsSerializer(billing)
-                return Response(serializer.data)
-            except BillingDetails.DoesNotExist:
-                return Response(
-                    {"detail": "Billing details not found."},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-        
-        # For PUT and PATCH
-        try:
-            billing = organizer.billing_details
-            serializer = BillingDetailsSerializer(billing, data=request.data, partial=request.method == 'PATCH')
-        except BillingDetails.DoesNotExist:
-            # Create new billing details
-            serializer = BillingDetailsSerializer(data=request.data)
-            if serializer.is_valid():
-                serializer.save(organizer=organizer)
-                return Response(serializer.data, status=status.HTTP_201_CREATED)
-        
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-    @action(detail=True, methods=['get', 'put', 'patch'], permission_classes=[permissions.IsAuthenticated, IsOrganizer])
     def banking_details(self, request, pk=None):
         """
         Get or update banking details for an organizer.
         """
         organizer = self.get_object()
+        logger.debug(f"Accessing banking details for organizer: {organizer.id}")
         
-        # Check if user belongs to this organizer
-        if not request.user.organizer_roles.filter(organizer=organizer, can_manage_settings=True).exists():
+        # Check if user belongs to this organizer and has permission to manage settings
+        user_role = request.user.organizer_roles.filter(organizer=organizer).first()
+        if not user_role:
+            logger.warning(f"User {request.user} does not have any role for organizer {organizer.id}")
             return Response(
                 {"detail": "You do not have permission to perform this action."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
+        if not user_role.can_manage_settings:
+            logger.warning(f"User {request.user} does not have settings permission for organizer {organizer.id}")
+            return Response(
+                {"detail": "You do not have permission to manage settings."},
                 status=status.HTTP_403_FORBIDDEN
             )
         
@@ -238,8 +252,9 @@ class OrganizerViewSet(viewsets.ModelViewSet):
                 serializer = BankingDetailsSerializer(banking)
                 return Response(serializer.data)
             except BankingDetails.DoesNotExist:
+                # Return empty response with 404 but don't log as error
                 return Response(
-                    {"detail": "Banking details not found."},
+                    {"detail": "No banking details found."},
                     status=status.HTTP_404_NOT_FOUND
                 )
         
@@ -248,16 +263,76 @@ class OrganizerViewSet(viewsets.ModelViewSet):
             banking = organizer.banking_details
             serializer = BankingDetailsSerializer(banking, data=request.data, partial=request.method == 'PATCH')
         except BankingDetails.DoesNotExist:
-            # Create new banking details
+            # Create new banking details with PUT
             serializer = BankingDetailsSerializer(data=request.data)
-            if serializer.is_valid():
-                serializer.save(organizer=organizer)
-                return Response(serializer.data, status=status.HTTP_201_CREATED)
         
         if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            serializer.save(organizer=organizer)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        
+        return Response(
+            {
+                "detail": "Invalid banking details data.",
+                "errors": serializer.errors
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    @action(detail=True, methods=['get', 'put', 'patch'], permission_classes=[permissions.IsAuthenticated, IsOrganizer])
+    def billing_details(self, request, pk=None):
+        """
+        Get or update billing details for an organizer.
+        """
+        organizer = self.get_object()
+        logger.debug(f"Accessing billing details for organizer: {organizer.id}")
+        
+        # Check if user belongs to this organizer and has permission to manage settings
+        user_role = request.user.organizer_roles.filter(organizer=organizer).first()
+        if not user_role:
+            logger.warning(f"User {request.user} does not have any role for organizer {organizer.id}")
+            return Response(
+                {"detail": "You do not have permission to perform this action."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
+        if not user_role.can_manage_settings:
+            logger.warning(f"User {request.user} does not have settings permission for organizer {organizer.id}")
+            return Response(
+                {"detail": "You do not have permission to manage settings."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if request.method == 'GET':
+            try:
+                billing = organizer.billing_details
+                serializer = BillingDetailsSerializer(billing)
+                return Response(serializer.data)
+            except BillingDetails.DoesNotExist:
+                # Return empty response with 404 but don't log as error
+                return Response(
+                    {"detail": "No billing details found."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        
+        # For PUT and PATCH
+        try:
+            billing = organizer.billing_details
+            serializer = BillingDetailsSerializer(billing, data=request.data, partial=request.method == 'PATCH')
+        except BillingDetails.DoesNotExist:
+            # Create new billing details with PUT
+            serializer = BillingDetailsSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            serializer.save(organizer=organizer)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        
+        return Response(
+            {
+                "detail": "Invalid billing details data.",
+                "errors": serializer.errors
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
 
 class OrganizerOnboardingViewSet(viewsets.ModelViewSet):

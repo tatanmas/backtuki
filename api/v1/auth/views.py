@@ -6,18 +6,27 @@ from rest_framework import status, generics
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
 from django_tenants.utils import schema_context
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .serializers import (
     UserRegistrationSerializer,
     PasswordResetSerializer,
     PasswordResetConfirmSerializer,
     UserProfileSerializer,
+    EmailTokenObtainPairSerializer,
 )
 
 User = get_user_model()
+
+
+class EmailTokenObtainPairView(TokenObtainPairView):
+    """
+    Custom JWT token view that accepts email instead of username.
+    """
+    serializer_class = EmailTokenObtainPairSerializer
 
 
 class RegistrationView(generics.CreateAPIView):
@@ -32,12 +41,15 @@ class RegistrationView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         
-        # Create token for the user
-        token, created = Token.objects.get_or_create(user=user)
+        # Generate JWT tokens for the user
+        refresh = RefreshToken.for_user(user)
         
         return Response({
             'user': serializer.data,
-            'token': token.key
+            'tokens': {
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+            }
         }, status=status.HTTP_201_CREATED)
 
 
@@ -48,9 +60,18 @@ class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
     
     def post(self, request):
-        # Delete the user's token to logout
-        request.user.auth_token.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        try:
+            # Get the refresh token from request
+            refresh_token = request.data.get('refresh')
+            
+            if refresh_token:
+                # Blacklist the refresh token
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+                
+            return Response({"detail": "Successfully logged out."}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class PasswordResetView(generics.GenericAPIView):
@@ -112,12 +133,15 @@ def set_password_view(request):
             user.set_password(password)
             user.save()
             
-            # Create or get token
-            token, created = Token.objects.get_or_create(user=user)
+            # Generate JWT tokens
+            refresh = RefreshToken.for_user(user)
             
             return Response({
                 'detail': 'Password set successfully for existing user.',
-                'token': token.key
+                'tokens': {
+                    'refresh': str(refresh),
+                    'access': str(refresh.access_token),
+                }
             }, status=status.HTTP_200_OK)
         
         except User.DoesNotExist:
@@ -128,8 +152,8 @@ def set_password_view(request):
                 password=password
             )
             
-            # Create token
-            token = Token.objects.create(user=user)
+            # Generate JWT tokens
+            refresh = RefreshToken.for_user(user)
             
             # Try to link user to organizer if an onboarding exists
             from apps.organizers.models import OrganizerOnboarding, OrganizerUser
@@ -154,7 +178,10 @@ def set_password_view(request):
             
             return Response({
                 'detail': 'New user created with password.',
-                'token': token.key
+                'tokens': {
+                    'refresh': str(refresh),
+                    'access': str(refresh.access_token),
+                }
             }, status=status.HTTP_201_CREATED)
 
 

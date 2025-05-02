@@ -1,6 +1,10 @@
 """Custom DRF permissions for the Tuki platform."""
 
 from rest_framework import permissions
+import logging
+from apps.organizers.models import Organizer
+
+logger = logging.getLogger(__name__)
 
 
 class IsSuperAdmin(permissions.BasePermission):
@@ -16,16 +20,46 @@ class IsOrganizer(permissions.BasePermission):
     
     def has_permission(self, request, view):
         """Check if user is an organizer."""
-        return request.user.is_authenticated and hasattr(request.user, 'organizer')
+        logger.debug(f"Checking organizer permission for user: {request.user}")
+        logger.debug(f"User authenticated: {request.user.is_authenticated}")
+        logger.debug(f"Has organizer_roles: {hasattr(request.user, 'organizer_roles')}")
+        
+        return request.user.is_authenticated and hasattr(request.user, 'organizer_roles')
     
     def has_object_permission(self, request, view, obj):
         """Check if object belongs to the user's organizer tenant."""
-        if not request.user.is_authenticated or not hasattr(request.user, 'organizer'):
+        logger.debug(f"Checking object permission for user: {request.user}")
+        logger.debug(f"Object: {obj}")
+        
+        if not request.user.is_authenticated or not hasattr(request.user, 'organizer_roles'):
+            logger.debug("User not authenticated or no organizer roles")
             return False
         
         # Check if the object has tenant_id attribute (uses TenantAwareModel)
         if hasattr(obj, 'tenant_id'):
-            return obj.tenant_id == request.user.organizer.schema_name
+            # Get the organizer from the tenant_id
+            try:
+                organizer = Organizer.objects.get(schema_name=obj.tenant_id)
+                has_permission = request.user.organizer_roles.filter(organizer=organizer).exists()
+                logger.debug(f"Tenant permission check result: {has_permission}")
+                return has_permission
+            except Organizer.DoesNotExist:
+                logger.debug("Organizer not found for tenant")
+                return False
+        
+        # For organizer-specific objects, check if user has a role in that organizer
+        if hasattr(obj, 'organizer'):
+            has_permission = request.user.organizer_roles.filter(organizer=obj.organizer).exists()
+            logger.debug(f"Organizer permission check result: {has_permission}")
+            return has_permission
+        
+        # If the object is an Organizer instance itself
+        if isinstance(obj, Organizer):
+            has_permission = request.user.organizer_roles.filter(organizer=obj).exists()
+            logger.debug(f"Direct organizer permission check result: {has_permission}")
+            return has_permission
+        
+        logger.debug("No permission checks passed")
         return False
 
 

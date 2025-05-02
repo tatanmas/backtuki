@@ -1,7 +1,10 @@
 """URL Configuration for authentication API."""
 
 from django.urls import path
-from rest_framework.authtoken.views import obtain_auth_token
+from rest_framework_simplejwt.views import (
+    TokenRefreshView,
+    TokenVerifyView,
+)
 from .views import (
     RegistrationView,
     LogoutView,
@@ -9,10 +12,16 @@ from .views import (
     PasswordResetConfirmView,
     UserProfileView,
     set_password_view,
+    EmailTokenObtainPairView,
 )
 
 urlpatterns = [
-    path('token/', obtain_auth_token, name='token_obtain'),
+    # JWT endpoints
+    path('token/', EmailTokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('token/verify/', TokenVerifyView.as_view(), name='token_verify'),
+    
+    # Registration and user management
     path('register/', RegistrationView.as_view(), name='register'),
     path('logout/', LogoutView.as_view(), name='logout'),
     path('password-reset/', PasswordResetView.as_view(), name='password_reset'),

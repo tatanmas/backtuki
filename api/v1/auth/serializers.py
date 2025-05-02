@@ -8,10 +8,26 @@ from django.utils.translation import gettext_lazy as _
 from django.core.mail import send_mail
 from django.conf import settings
 from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from apps.users.models import Profile
 
 User = get_user_model()
+
+
+class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """
+    Custom JWT token serializer that accepts email instead of username.
+    """
+    username_field = User.EMAIL_FIELD
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields[self.username_field] = serializers.CharField()
+        self.fields['password'] = serializers.CharField(
+            style={'input_type': 'password'},
+            trim_whitespace=False
+        )
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -36,6 +52,9 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             'first_name', 'last_name', 'phone_number'
         ]
         read_only_fields = ['id']
+        extra_kwargs = {
+            'username': {'required': False},
+        }
     
     def validate(self, data):
         """
@@ -51,18 +70,15 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         """
         Create and return a new user instance.
         """
+        # If username is not provided, use email
+        if 'username' not in validated_data or not validated_data['username']:
+            validated_data['username'] = validated_data['email']
+        
         # Remove password_confirm field
         validated_data.pop('password_confirm')
         
         # Create the user
-        user = User.objects.create_user(
-            email=validated_data['email'],
-            username=validated_data['username'],
-            password=validated_data['password'],
-            first_name=validated_data.get('first_name', ''),
-            last_name=validated_data.get('last_name', ''),
-            phone_number=validated_data.get('phone_number', None)
-        )
+        user = User.objects.create_user(**validated_data)
         
         return user
 
