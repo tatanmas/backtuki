@@ -7,6 +7,8 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.authtoken.models import Token
+from rest_framework.decorators import api_view, permission_classes
+from django_tenants.utils import schema_context
 
 from .serializers import (
     UserRegistrationSerializer,
@@ -83,6 +85,77 @@ class PasswordResetConfirmView(generics.GenericAPIView):
         return Response({
             'detail': _('Password has been reset successfully.')
         }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def set_password_view(request):
+    """
+    API view for setting password during onboarding.
+    This endpoint can be used to create a new user or set password for an existing user.
+    """
+    email = request.data.get('email')
+    password = request.data.get('password')
+    
+    if not email or not password:
+        return Response(
+            {"detail": "Email and password are required."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Use the public schema for user operations
+    with schema_context('public'):
+        # Try to find an existing user with this email
+        try:
+            user = User.objects.get(email=email)
+            # Update password for existing user
+            user.set_password(password)
+            user.save()
+            
+            # Create or get token
+            token, created = Token.objects.get_or_create(user=user)
+            
+            return Response({
+                'detail': 'Password set successfully for existing user.',
+                'token': token.key
+            }, status=status.HTTP_200_OK)
+        
+        except User.DoesNotExist:
+            # Create new user
+            user = User.objects.create_user(
+                email=email,
+                username=email,  # Use email as username
+                password=password
+            )
+            
+            # Create token
+            token = Token.objects.create(user=user)
+            
+            # Try to link user to organizer if an onboarding exists
+            from apps.organizers.models import OrganizerOnboarding, OrganizerUser
+            try:
+                # Find onboarding with matching email
+                onboarding = OrganizerOnboarding.objects.filter(contact_email=email, is_completed=True).first()
+                if onboarding and onboarding.organizer:
+                    # Create organizer user relation
+                    OrganizerUser.objects.create(
+                        user=user,
+                        organizer=onboarding.organizer,
+                        is_admin=True,
+                        can_manage_events=True,
+                        can_manage_accommodations=True,
+                        can_manage_experiences=True,
+                        can_view_reports=True,
+                        can_manage_settings=True
+                    )
+            except Exception as e:
+                print(f"Error linking user to organizer: {e}")
+                # Continue execution even if linking fails
+            
+            return Response({
+                'detail': 'New user created with password.',
+                'token': token.key
+            }, status=status.HTTP_201_CREATED)
 
 
 class UserProfileView(generics.RetrieveUpdateAPIView):

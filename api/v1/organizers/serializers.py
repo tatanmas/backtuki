@@ -6,6 +6,9 @@ from apps.organizers.models import (
     Organizer,
     OrganizerUser,
     OrganizerSubscription,
+    OrganizerOnboarding,
+    BillingDetails,
+    BankingDetails,
 )
 
 
@@ -18,9 +21,10 @@ class OrganizerSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'slug', 'description', 'logo',
             'website', 'contact_email', 'contact_phone',
-            'address', 'city', 'country',
+            'address', 'city', 'country', 'organization_size',
+            'representative_name', 'representative_email', 'representative_phone',
             'has_events_module', 'has_accommodation_module', 'has_experience_module',
-            'created_at'
+            'onboarding_completed', 'status', 'created_at'
         ]
         read_only_fields = ['id', 'slug', 'created_at']
 
@@ -62,6 +66,79 @@ class OrganizerSubscriptionSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at']
 
 
+class BillingDetailsSerializer(serializers.ModelSerializer):
+    """
+    Serializer for billing details.
+    """
+    person_type_display = serializers.CharField(source='get_person_type_display', read_only=True)
+    document_type_display = serializers.CharField(source='get_document_type_display', read_only=True)
+    
+    class Meta:
+        model = BillingDetails
+        fields = [
+            'id', 'organizer', 'person_type', 'person_type_display',
+            'tax_name', 'tax_id', 'billing_address',
+            'document_type', 'document_type_display',
+            'created_at'
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class BankingDetailsSerializer(serializers.ModelSerializer):
+    """
+    Serializer for banking details.
+    """
+    class Meta:
+        model = BankingDetails
+        fields = [
+            'id', 'organizer', 'bank_name', 'account_type',
+            'account_number', 'account_holder',
+            'created_at'
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class OrganizerOnboardingSerializer(serializers.ModelSerializer):
+    """
+    Serializer for organizer onboarding.
+    """
+    has_experience_display = serializers.CharField(source='get_has_experience_display', read_only=True)
+    experience_years_display = serializers.CharField(source='get_experience_years_display', read_only=True)
+    event_size_display = serializers.CharField(source='get_event_size_display', read_only=True)
+    experience_type_display = serializers.CharField(source='get_experience_type_display', read_only=True)
+    experience_frequency_display = serializers.CharField(source='get_experience_frequency_display', read_only=True)
+    accommodation_type_display = serializers.CharField(source='get_accommodation_type_display', read_only=True)
+    accommodation_capacity_display = serializers.CharField(source='get_accommodation_capacity_display', read_only=True)
+    
+    class Meta:
+        model = OrganizerOnboarding
+        fields = [
+            'id', 'organizer', 'selected_types',
+            'organization_name', 'organization_slug', 'organization_size',
+            'contact_name', 'contact_email', 'contact_phone',
+            'has_experience', 'has_experience_display',
+            'experience_years', 'experience_years_display',
+            'event_size', 'event_size_display',
+            'experience_type', 'experience_type_display',
+            'experience_frequency', 'experience_frequency_display',
+            'accommodation_type', 'accommodation_type_display',
+            'accommodation_capacity', 'accommodation_capacity_display',
+            'completed_step', 'is_completed',
+            'created_at'
+        ]
+        read_only_fields = ['id', 'created_at']
+    
+    def validate_selected_types(self, value):
+        """Validate the selected_types field."""
+        valid_types = ['events', 'experiences', 'accommodations']
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Selected types must be a list")
+        for type_value in value:
+            if type_value not in valid_types:
+                raise serializers.ValidationError(f"Invalid type: {type_value}")
+        return value
+
+
 class OrganizerDetailSerializer(serializers.ModelSerializer):
     """
     Serializer for detailed organizer information.
@@ -69,15 +146,24 @@ class OrganizerDetailSerializer(serializers.ModelSerializer):
     users = OrganizerUserSerializer(source='organizer_users', many=True, read_only=True)
     subscriptions = OrganizerSubscriptionSerializer(many=True, read_only=True)
     active_subscription = serializers.SerializerMethodField()
+    onboarding_data = serializers.SerializerMethodField()
+    billing_details = BillingDetailsSerializer(read_only=True)
+    banking_details = BankingDetailsSerializer(read_only=True)
+    has_billing_details = serializers.SerializerMethodField()
+    has_banking_details = serializers.SerializerMethodField()
     
     class Meta:
         model = Organizer
         fields = [
             'id', 'name', 'slug', 'description', 'logo',
             'website', 'contact_email', 'contact_phone',
-            'address', 'city', 'country',
+            'address', 'city', 'country', 'organization_size',
+            'representative_name', 'representative_email', 'representative_phone',
             'has_events_module', 'has_accommodation_module', 'has_experience_module',
-            'created_at', 'users', 'subscriptions', 'active_subscription'
+            'onboarding_completed', 'status',
+            'created_at', 'users', 'subscriptions', 'active_subscription',
+            'onboarding_data', 'billing_details', 'banking_details',
+            'has_billing_details', 'has_banking_details'
         ]
         read_only_fields = ['id', 'slug', 'created_at']
     
@@ -86,4 +172,20 @@ class OrganizerDetailSerializer(serializers.ModelSerializer):
         active_sub = obj.subscriptions.filter(status__in=['active', 'trial']).first()
         if active_sub:
             return OrganizerSubscriptionSerializer(active_sub).data
-        return None 
+        return None
+    
+    def get_onboarding_data(self, obj):
+        """Get the onboarding data for the organizer."""
+        try:
+            onboarding = obj.onboarding
+            return OrganizerOnboardingSerializer(onboarding).data
+        except OrganizerOnboarding.DoesNotExist:
+            return None
+    
+    def get_has_billing_details(self, obj):
+        """Check if the organizer has billing details."""
+        return hasattr(obj, 'billing_details')
+    
+    def get_has_banking_details(self, obj):
+        """Check if the organizer has banking details."""
+        return hasattr(obj, 'banking_details') 
