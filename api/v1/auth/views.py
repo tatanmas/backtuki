@@ -10,6 +10,7 @@ from rest_framework.decorators import api_view, permission_classes
 from django_tenants.utils import schema_context
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
+from django.utils import timezone
 
 from .serializers import (
     UserRegistrationSerializer,
@@ -193,4 +194,39 @@ class UserProfileView(generics.RetrieveUpdateAPIView):
     serializer_class = UserProfileSerializer
     
     def get_object(self):
-        return self.request.user 
+        return self.request.user
+
+
+class PasswordChangeView(APIView):
+    """
+    API view for changing user password.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        user = request.user
+        current_password = request.data.get('current_password')
+        new_password = request.data.get('new_password')
+        
+        if not current_password or not new_password:
+            return Response(
+                {"detail": "Current password and new password are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Verify current password
+        if not user.check_password(current_password):
+            return Response(
+                {"detail": "Current password is incorrect."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Set new password and update last_password_change
+        user.set_password(new_password)
+        user.last_password_change = timezone.now()
+        user.save()
+        
+        return Response(
+            {"detail": "Password changed successfully."},
+            status=status.HTTP_200_OK
+        ) 

@@ -13,6 +13,7 @@ from .views import (
     UserProfileView,
     set_password_view,
     EmailTokenObtainPairView,
+    PasswordChangeView,
 )
 
 urlpatterns = [
@@ -28,4 +29,5 @@ urlpatterns = [
     path('password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
     path('profile/', UserProfileView.as_view(), name='user_profile'),
     path('set-password/', set_password_view, name='set_password'),
+    path('change-password/', PasswordChangeView.as_view(), name='change_password'),
 ] 

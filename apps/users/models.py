@@ -3,6 +3,7 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils.translation import gettext_lazy as _
+from django.utils import timezone
 from core.models import TimeStampedModel
 
 
@@ -48,6 +49,13 @@ class User(AbstractUser, TimeStampedModel):
         blank=True,
         null=True,
         db_index=True
+    )
+
+    # Track password changes
+    last_password_change = models.DateTimeField(
+        _("last password change"),
+        default=timezone.now,
+        help_text=_("When the password was last changed.")
     )
     
     USERNAME_FIELD = 'email'

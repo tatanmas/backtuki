@@ -197,9 +197,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'email', 'username', 'first_name', 'last_name',
-            'phone_number', 'profile_picture', 'profile'
+            'phone_number', 'profile_picture', 'profile', 'last_password_change'
         ]
-        read_only_fields = ['id', 'email']
+        read_only_fields = ['id', 'email', 'last_password_change']
     
     def update(self, instance, validated_data):
         """
