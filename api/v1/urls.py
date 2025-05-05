@@ -11,7 +11,14 @@ from api.v1.events.views import (
     EventCategoryViewSet,
     LocationViewSet,
     TicketTierViewSet,
+    TicketCategoryViewSet,
+    EventFormViewSet,
+    OrderViewSet,
+    TicketViewSet,
+    CouponViewSet,
+    EventCommunicationViewSet,
 )
+from api.v1.forms.views import FormViewSet
 
 from .auth.views import (
     EmailTokenObtainPairView,
@@ -31,6 +38,13 @@ router.register(r'events', EventViewSet, basename='event')
 router.register(r'event-categories', EventCategoryViewSet, basename='event-category')
 router.register(r'locations', LocationViewSet, basename='location')
 router.register(r'ticket-tiers', TicketTierViewSet, basename='ticket-tier')
+router.register(r'ticket-categories', TicketCategoryViewSet, basename='ticket-category')
+router.register(r'event-forms', EventFormViewSet, basename='event-form')
+router.register(r'orders', OrderViewSet, basename='order')
+router.register(r'tickets', TicketViewSet, basename='ticket')
+router.register(r'coupons', CouponViewSet, basename='coupon')
+router.register(r'event-communications', EventCommunicationViewSet, basename='event-communication')
+router.register(r'forms', FormViewSet, basename='form')
 
 # Wire up our API using automatic URL routing
 urlpatterns = [

@@ -59,6 +59,7 @@ TENANT_APPS = [
     'apps.experiences',
     'apps.reservations',
     'apps.payments',
+    'apps.forms',
     'apps.ticket_validation',
 ]
 
@@ -195,9 +196,15 @@ SPECTACULAR_SETTINGS = {
     'TITLE': 'Tuki API',
     'DESCRIPTION': 'API for Tuki platform - events, accommodations, experiences',
     'VERSION': '1.0.0',
-    'SERVE_INCLUDE_SCHEMA': False,
+    'SERVE_INCLUDE_SCHEMA': True,
     'SCHEMA_PATH_PREFIX': r'/api/v[0-9]',
     'COMPONENT_SPLIT_REQUEST': True,
+    'PREPROCESSING_HOOKS': [],
+    'POSTPROCESSING_HOOKS': [],
+    'SCHEMA_PATH_PREFIX_TRIM': True,
+    'DISABLE_ERRORS_AND_WARNINGS': False,
+    'COMPONENT_SPLIT_PATCH': False,
+    'COMPONENT_SPLIT_RESPONSE': False,
 }
 
 # CORS settings
