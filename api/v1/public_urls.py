@@ -11,6 +11,7 @@ from api.v1.auth.views import (
     PasswordResetConfirmView,
     UserProfileView,
 )
+from api.v1.organizers.views import CheckSubdomainAvailabilityView, CheckEmailAvailabilityView
 
 # Create a router and register our public viewsets
 public_router = DefaultRouter()
@@ -26,4 +27,8 @@ urlpatterns = [
     path('auth/password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
     path('auth/profile/', UserProfileView.as_view(), name='user_profile'),
     path('auth/', include('rest_framework.urls')),
+    
+    # Public organizer endpoints  
+    path('organizers/check-subdomain/', CheckSubdomainAvailabilityView.as_view(), name='public_check_subdomain'),
+    path('organizers/check-email/', CheckEmailAvailabilityView.as_view(), name='public_check_email'),
 ] 

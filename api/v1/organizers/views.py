@@ -1,606 +1,434 @@
 """Views for organizers API."""
 
-from rest_framework import viewsets, permissions, filters, status
+from django.shortcuts import get_object_or_404
+from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from django_filters.rest_framework import DjangoFilterBackend
-import logging
+from django.contrib.auth import get_user_model
+from django.db import transaction
+from rest_framework.exceptions import NotFound
+from rest_framework.generics import RetrieveUpdateAPIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.views import APIView
+import re
 
-from core.permissions import IsSuperAdmin, IsOrganizer
 from apps.organizers.models import (
     Organizer,
-    OrganizerUser,
-    OrganizerSubscription,
     OrganizerOnboarding,
     BillingDetails,
     BankingDetails,
+    OrganizerUser,
+    OrganizerSubscription
 )
 from .serializers import (
     OrganizerSerializer,
-    OrganizerDetailSerializer,
-    OrganizerUserSerializer,
-    OrganizerSubscriptionSerializer,
     OrganizerOnboardingSerializer,
     BillingDetailsSerializer,
     BankingDetailsSerializer,
+    OrganizerUserSerializer,
+    OrganizerSubscriptionSerializer
 )
+from core.permissions import IsOrganizer
 
-logger = logging.getLogger(__name__)
+User = get_user_model()
+
 
 class OrganizerViewSet(viewsets.ModelViewSet):
     """
     API endpoint for organizers.
     """
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['has_events_module', 'has_accommodation_module', 'has_experience_module']
-    search_fields = ['name', 'slug', 'description', 'city', 'country']
-    ordering_fields = ['name', 'created_at']
-    ordering = ['name']
+    serializer_class = OrganizerSerializer
+    permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        """
-        Get queryset based on permission.
-        """
-        # Superadmin can see all organizers
-        if self.request.user.is_superuser:
+        """Get queryset based on user permissions."""
+        if self.request.user.is_staff:
             return Organizer.objects.all()
-        
-        # Organizer users can only see their own organizer
-        if self.request.user.is_authenticated and hasattr(self.request.user, 'organizer_roles'):
-            organizer_ids = self.request.user.organizer_roles.values_list('organizer_id', flat=True)
-            return Organizer.objects.filter(id__in=organizer_ids)
-        
-        # Others can only see organizers with published events
-        return Organizer.objects.filter(events__status='published').distinct()
+        elif hasattr(self.request.user, 'organizer_roles'):
+            return Organizer.objects.filter(organizer_users__user=self.request.user)
+        return Organizer.objects.none()
     
-    def get_serializer_class(self):
-        """
-        Return appropriate serializer class.
-        """
-        if self.action == 'retrieve':
-            return OrganizerDetailSerializer
-        return OrganizerSerializer
-    
-    def get_permissions(self):
-        """
-        Get permissions based on action.
-        """
-        if self.action in ['list', 'retrieve', 'current']:
-            return [permissions.AllowAny()]
-        elif self.action in ['create', 'update', 'partial_update', 'destroy']:
-            return [permissions.IsAuthenticated(), IsSuperAdmin()]
-        return [permissions.IsAuthenticated(), IsOrganizer()]
-    
-    @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
+    @action(detail=False, methods=['get'])
     def current(self, request):
-        """
-        Return the authenticated user's organizer information.
-        This endpoint can be accessed without authentication for frontend validations.
-        """
-        # Para usuarios no autenticados o sin token válido
+        """Get current user's organizer."""
         if not request.user.is_authenticated:
             return Response(
-                {"detail": "User is not authenticated."},
-                status=status.HTTP_200_OK
+                {"detail": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED
             )
         
-        # Para usuarios autenticados pero sin organizador asociado
-        if not hasattr(request.user, 'organizer_roles') or not request.user.organizer_roles.exists():
-            return Response(
-                {"detail": "User does not have any associated organizer."},
-                status=status.HTTP_200_OK  # Cambiado de 404 a 200 para mejor manejo frontend
-            )
-        
-        # Obtener el primer organizador asociado con el usuario
-        # En el futuro, podríamos manejar múltiples organizadores por usuario de manera diferente
-        organizer_role = request.user.organizer_roles.first()
-        organizer = organizer_role.organizer
-        
-        serializer = OrganizerDetailSerializer(organizer, context={'request': request})
-        
-        # Añadir la información del rol del usuario a la respuesta
-        data = serializer.data
-        data['user_role'] = {
-            'is_admin': organizer_role.is_admin,
-            'can_manage_events': organizer_role.can_manage_events,
-            'can_manage_accommodations': organizer_role.can_manage_accommodations,
-            'can_manage_experiences': organizer_role.can_manage_experiences,
-            'can_view_reports': organizer_role.can_view_reports,
-            'can_manage_settings': organizer_role.can_manage_settings,
-        }
-        
-        return Response(data)
-    
-    @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
-    def toggle_module(self, request):
-        """
-        Toggle a module for the current organizer.
-        """
-        from django_tenants.utils import schema_context
-        
-        logger.info(f"Toggle module request received with data: {request.data}")
-        
-        # Verificar si el usuario tiene un organizador asociado
-        if not hasattr(request.user, 'organizer_roles') or not request.user.organizer_roles.exists():
-            return Response(
-                {"detail": "User does not have any associated organizer."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        # Obtener el organizador actual
-        organizer_role = request.user.organizer_roles.first()
-        organizer = organizer_role.organizer
-        logger.info(f"Processing toggle module for organizer: {organizer.id}")
-        
-        # Verificar permisos de administrador
-        if not organizer_role.is_admin:
-            return Response(
-                {"detail": "You do not have permission to perform this action."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        module = request.data.get('module')
-        activate = request.data.get('activate', True)
-        
-        logger.info(f"Attempting to toggle module: {module} to state: {activate}")
-        
-        # Mapear los nombres de módulos a los campos del modelo
-        module_mapping = {
-            'events': 'has_events_module',
-            'experience': 'has_experience_module',
-            'accommodation': 'has_accommodation_module'
-        }
-        
-        if module not in module_mapping:
-            logger.error(f"Invalid module name received: {module}")
-            return Response(
-                {"detail": f"Invalid module name. Must be one of: {', '.join(module_mapping.keys())}"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+        # Try to get organizer from user's organizer_roles
         try:
-            field_name = module_mapping[module]
-            logger.info(f"Setting field {field_name} to {activate}")
-            
-            # Verificar que el campo existe en el modelo
-            if not hasattr(organizer, field_name):
-                logger.error(f"Field {field_name} not found in Organizer model")
+            organizer_user = request.user.organizer_roles.first()
+            if organizer_user:
+                serializer = self.get_serializer(organizer_user.organizer)
+                return Response(serializer.data)
+            else:
                 return Response(
-                    {"detail": f"Field {field_name} not found in model"},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    {"detail": "No organizer found for this user."},
+                    status=status.HTTP_404_NOT_FOUND
                 )
-            
-            # Actualizar el estado del módulo usando el nombre del campo correcto
-            # Usar el schema_context para asegurar que estamos en el schema correcto
-            with schema_context('public'):
-                setattr(organizer, field_name, activate)
-                organizer.save()
-            
-            logger.info(f"Successfully toggled module {module} to {activate}")
-            return Response(OrganizerSerializer(organizer).data)
-            
         except Exception as e:
-            logger.error(f"Error toggling module: {str(e)}")
             return Response(
-                {"detail": f"Error updating module status: {str(e)}"},
+                {"detail": f"Error retrieving organizer: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-    
-    @action(detail=True, methods=['get'], permission_classes=[permissions.IsAuthenticated, IsOrganizer])
-    def users(self, request, pk=None):
-        """
-        Get users for an organizer.
-        """
-        organizer = self.get_object()
-        
-        # Check if user belongs to this organizer
-        if not request.user.organizer_roles.filter(organizer=organizer).exists():
-            return Response(
-                {"detail": "You do not have permission to perform this action."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        organizer_users = organizer.organizer_users.all()
-        serializer = OrganizerUserSerializer(organizer_users, many=True)
-        return Response(serializer.data)
-    
-    @action(detail=True, methods=['get'], permission_classes=[permissions.IsAuthenticated, IsOrganizer])
-    def subscriptions(self, request, pk=None):
-        """
-        Get subscriptions for an organizer.
-        """
-        organizer = self.get_object()
-        
-        # Check if user belongs to this organizer
-        if not request.user.organizer_roles.filter(organizer=organizer).exists():
-            return Response(
-                {"detail": "You do not have permission to perform this action."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        subscriptions = organizer.subscriptions.all()
-        serializer = OrganizerSubscriptionSerializer(subscriptions, many=True)
-        return Response(serializer.data)
-    
-    @action(detail=True, methods=['get', 'put', 'patch'], permission_classes=[permissions.IsAuthenticated, IsOrganizer])
-    def banking_details(self, request, pk=None):
-        """
-        Get or update banking details for an organizer.
-        """
-        organizer = self.get_object()
-        logger.debug(f"Accessing banking details for organizer: {organizer.id}")
-        
-        # Check if user belongs to this organizer and has permission to manage settings
-        user_role = request.user.organizer_roles.filter(organizer=organizer).first()
-        if not user_role:
-            logger.warning(f"User {request.user} does not have any role for organizer {organizer.id}")
-            return Response(
-                {"detail": "You do not have permission to perform this action."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-            
-        if not user_role.can_manage_settings:
-            logger.warning(f"User {request.user} does not have settings permission for organizer {organizer.id}")
-            return Response(
-                {"detail": "You do not have permission to manage settings."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        if request.method == 'GET':
-            try:
-                banking = organizer.banking_details
-                serializer = BankingDetailsSerializer(banking)
-                return Response(serializer.data)
-            except BankingDetails.DoesNotExist:
-                # Return empty response with 404 but don't log as error
-                return Response(
-                    {"detail": "No banking details found."},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-        
-        # For PUT and PATCH
-        try:
-            banking = organizer.banking_details
-            serializer = BankingDetailsSerializer(banking, data=request.data, partial=request.method == 'PATCH')
-        except BankingDetails.DoesNotExist:
-            # Create new banking details with PUT
-            serializer = BankingDetailsSerializer(data=request.data)
-        
-        if serializer.is_valid():
-            serializer.save(organizer=organizer)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        
-        return Response(
-            {
-                "detail": "Invalid banking details data.",
-                "errors": serializer.errors
-            },
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    @action(detail=True, methods=['get', 'put', 'patch'], permission_classes=[permissions.IsAuthenticated, IsOrganizer])
-    def billing_details(self, request, pk=None):
-        """
-        Get or update billing details for an organizer.
-        """
-        organizer = self.get_object()
-        logger.debug(f"Accessing billing details for organizer: {organizer.id}")
-        
-        # Check if user belongs to this organizer and has permission to manage settings
-        user_role = request.user.organizer_roles.filter(organizer=organizer).first()
-        if not user_role:
-            logger.warning(f"User {request.user} does not have any role for organizer {organizer.id}")
-            return Response(
-                {"detail": "You do not have permission to perform this action."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-            
-        if not user_role.can_manage_settings:
-            logger.warning(f"User {request.user} does not have settings permission for organizer {organizer.id}")
-            return Response(
-                {"detail": "You do not have permission to manage settings."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        if request.method == 'GET':
-            try:
-                billing = organizer.billing_details
-                serializer = BillingDetailsSerializer(billing)
-                return Response(serializer.data)
-            except BillingDetails.DoesNotExist:
-                # Return empty response with 404 but don't log as error
-                return Response(
-                    {"detail": "No billing details found."},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-        
-        # For PUT and PATCH
-        try:
-            billing = organizer.billing_details
-            serializer = BillingDetailsSerializer(billing, data=request.data, partial=request.method == 'PATCH')
-        except BillingDetails.DoesNotExist:
-            # Create new billing details with PUT
-            serializer = BillingDetailsSerializer(data=request.data)
-        
-        if serializer.is_valid():
-            serializer.save(organizer=organizer)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        
-        return Response(
-            {
-                "detail": "Invalid billing details data.",
-                "errors": serializer.errors
-            },
-            status=status.HTTP_400_BAD_REQUEST
         )
 
 
-class OrganizerOnboardingViewSet(viewsets.ModelViewSet):
+class CurrentOnboardingView(APIView):
     """
-    API endpoint for organizer onboarding.
+    Get or create the current onboarding process.
+    If an onboarding_id is provided, it retrieves that instance.
+    Otherwise, it creates a new one.
     """
-    serializer_class = OrganizerOnboardingSerializer
-    
-    # Temporarily allow all access for development
-    # TODO: Revert this to proper authentication for production
     permission_classes = [permissions.AllowAny]
-    
-    def get_queryset(self):
-        """
-        Get queryset based on permission.
-        """
-        # For development, allow access to all onboarding data
-        # TODO: Restrict this properly in production
-        return OrganizerOnboarding.objects.all()
-    
-    def perform_create(self, serializer):
-        """Create a new onboarding entry."""
-        # For development, create a default organizer if it doesn't exist
-        from apps.organizers.models import Organizer
-        from django_tenants.utils import schema_context
+
+    def get(self, request, *args, **kwargs):
+        onboarding_id = request.query_params.get('id')
+        if onboarding_id:
+            onboarding = get_object_or_404(OrganizerOnboarding, id=onboarding_id)
+        else:
+            onboarding = OrganizerOnboarding.objects.create()
         
-        # Try to get an existing organizer, or create a default one
-        try:
-            # Switch to public schema to create tenant
-            with schema_context('public'):
-                organizer = Organizer.objects.first()
-                if not organizer:
-                    # Create a default organizer for development
-                    organizer = Organizer.objects.create(
-                        name="Development Organizer",
-                        slug="development",
-                        contact_email="dev@example.com",
-                        schema_name="development",
-                    )
-                    print(f"Created default organizer: {organizer.name}")
-                
-                serializer.save(organizer=organizer)
-        except Exception as e:
-            print(f"Error creating onboarding: {e}")
-            raise
-    
-    def perform_update(self, serializer):
-        """
-        Override perform_update to ensure tenant operations are performed in the correct schema.
-        """
-        from django_tenants.utils import schema_context
-        
-        with schema_context('public'):
-            serializer.save()
-    
-    def update(self, request, *args, **kwargs):
-        """
-        Override the update method to ensure it's performed in the correct schema.
-        """
-        from django_tenants.utils import schema_context
-        
-        partial = kwargs.pop('partial', False)
-        instance = self.get_object()
-        
-        with schema_context('public'):
-            serializer = self.get_serializer(instance, data=request.data, partial=partial)
-            serializer.is_valid(raise_exception=True)
-            serializer.save()
-        
-        if getattr(instance, '_prefetched_objects_cache', None):
-            # If 'prefetch_related' has been applied to a queryset, we need to
-            # forcibly invalidate the prefetch cache on the instance.
-            instance._prefetched_objects_cache = {}
-        
+        serializer = OrganizerOnboardingSerializer(onboarding)
         return Response(serializer.data)
-    
-    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
-    def save_step(self, request):
-        """
-        Save a specific step of the onboarding process.
-        """
-        from django_tenants.utils import schema_context
-        
+
+
+class OnboardingStepView(APIView):
+    """
+    Save a specific step of the onboarding process.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        onboarding_id = request.data.get('onboarding_id')
         step = request.data.get('step')
         data = request.data.get('data', {})
-        
-        if not step or not isinstance(data, dict):
+
+        if not all([onboarding_id, step, isinstance(data, dict)]):
             return Response(
-                {"detail": "Invalid request. 'step' and 'data' are required."},
+                {"detail": "Invalid request. 'onboarding_id', 'step', and 'data' are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        onboarding = get_object_or_404(OrganizerOnboarding, id=onboarding_id)
+
+        # Use snake_case keys to match frontend payload
+        if step == 1:
+            onboarding.selected_types = data.get('selected_types', onboarding.selected_types)
+        elif step == 2:
+            onboarding.organization_name = data.get('organization_name', onboarding.organization_name)
+            onboarding.organization_slug = data.get('organization_slug', onboarding.organization_slug)
+            onboarding.organization_size = data.get('organization_size', onboarding.organization_size)
+        elif step == 3:
+            onboarding.contact_name = data.get('contact_name', onboarding.contact_name)
+            onboarding.contact_email = data.get('contact_email', onboarding.contact_email)
+            onboarding.contact_phone = data.get('contact_phone', onboarding.contact_phone)
+        
+        onboarding.completed_step = max(onboarding.completed_step or 0, int(step))
+        onboarding.save()
+                
+        serializer = OrganizerOnboardingSerializer(onboarding)
+        return Response(serializer.data)
+
+
+class OnboardingCompleteView(APIView):
+    """
+    Complete the onboarding process and create the organizer and user.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        onboarding_id = request.data.get('onboarding_id')
+        
+        if not onboarding_id:
+            return Response(
+                {"detail": "Invalid request. 'onboarding_id' is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        onboarding = get_object_or_404(OrganizerOnboarding, id=onboarding_id)
+        
+        # Validate that all required fields are present
+        required_fields = [
+            'selected_types', 'organization_name', 'organization_slug', 
+            'contact_name', 'contact_email'
+        ]
+        
+        missing_fields = []
+        for field in required_fields:
+            if not getattr(onboarding, field):
+                missing_fields.append(field)
+        
+        if missing_fields:
+            return Response(
+                {"detail": f"Missing required fields: {', '.join(missing_fields)}"},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
         try:
-            from apps.organizers.models import Organizer
-            
-            # Get or create onboarding for the organization based on data
-            onboarding = None
-            organizer = None
-            
-            # Ensure we're in the public schema for tenant operations
-            with schema_context('public'):
-                # For step 1, we'll create a temporary organizer
-                if step == 1:
-                    # Create a temporary organizer or find existing
-                    temp_organizer = Organizer.objects.filter(schema_name='temp_onboarding').first()
-                    if not temp_organizer:
-                        temp_organizer = Organizer.objects.create(
-                            name="Temporary Onboarding",
-                            slug="temp_onboarding",
-                            contact_email="temp@example.com",
-                            schema_name="temp_onboarding",
-                        )
-                    onboarding, created = OrganizerOnboarding.objects.get_or_create(organizer=temp_organizer)
+            with transaction.atomic():
+                # Create the organizer
+                organizer = Organizer.objects.create(
+                    name=onboarding.organization_name,
+                    slug=onboarding.organization_slug,
+                    contact_email=onboarding.contact_email,
+                    contact_phone=onboarding.contact_phone or '',
+                    organization_size=onboarding.organization_size or 'small',
+                    representative_name=onboarding.contact_name,
+                    representative_email=onboarding.contact_email,
+                    representative_phone=onboarding.contact_phone or '',
+                    has_events_module='eventos' in (onboarding.selected_types or []),
+                    has_experience_module='experiencias' in (onboarding.selected_types or []),
+                    has_accommodation_module='alojamientos' in (onboarding.selected_types or []),
+                    status='active'
+                )
                 
-                # For step 2, we'll update or create the actual organizer
-                elif step == 2 and 'organizationName' in data and 'organizationSlug' in data:
-                    # Check if we can find existing onboarding
-                    existing_onboarding = OrganizerOnboarding.objects.filter(completed_step__gte=1).order_by('-updated_at').first()
-                    
-                    # Generate a valid schema name from slug
-                    import re
-                    schema_name = re.sub(r'[^a-z0-9]', '', data['organizationSlug'].lower())
-                    if not schema_name:
-                        schema_name = 'org' + str(hash(data['organizationName']))[:8]
-                    
-                    # Check if organizer with this schema name already exists
-                    if Organizer.objects.filter(schema_name=schema_name).exists():
-                        # Append a number to make it unique
-                        base_schema = schema_name
-                        counter = 1
-                        while Organizer.objects.filter(schema_name=schema_name).exists():
-                            schema_name = f"{base_schema}{counter}"
-                            counter += 1
-                    
-                    # Create the actual organizer for this onboarding
-                    organizer = Organizer.objects.create(
-                        name=data['organizationName'],
-                        slug=data['organizationSlug'],
-                        contact_email="onboarding@example.com",  # Will be updated in step 3
-                        schema_name=schema_name,
-                    )
-                    
-                    # If we had a previous onboarding, transfer the data to the new organizer
-                    if existing_onboarding:
-                        onboarding = OrganizerOnboarding.objects.create(
-                            organizer=organizer,
-                            selected_types=existing_onboarding.selected_types,
-                            completed_step=1  # We're now on step 2
-                        )
-                    else:
-                        onboarding = OrganizerOnboarding.objects.create(organizer=organizer)
+                # Create the user (provide username as email)
+                user = User.objects.create_user(
+                    username=onboarding.contact_email,  # Use email as username
+                    email=onboarding.contact_email,
+                    password=request.data.get('password'),  # Password should be provided in request
+                    first_name=onboarding.contact_name.split()[0] if onboarding.contact_name else '',
+                    last_name=' '.join(onboarding.contact_name.split()[1:]) if onboarding.contact_name and len(onboarding.contact_name.split()) > 1 else '',
+                    is_active=True
+                )
                 
-                # For step 3, find the organizer from step 2
-                elif step == 3:
-                    # Find the most recently updated onboarding from step 2
-                    onboarding = OrganizerOnboarding.objects.filter(completed_step__gte=2).order_by('-updated_at').first()
-                    if not onboarding:
-                        return Response(
-                            {"detail": "No previous onboarding found. Please complete step 2 first."},
-                            status=status.HTTP_400_BAD_REQUEST
-                        )
-                    organizer = onboarding.organizer
-                    
-                    # Update the organizer email if provided
-                    if 'contactEmail' in data:
-                        organizer.contact_email = data['contactEmail']
-                        organizer.save()
+                # Link user to organizer
+                OrganizerUser.objects.create(
+                    organizer=organizer,
+                    user=user,
+                    is_admin=True,
+                    can_manage_events=True,
+                    can_manage_accommodations=True,
+                    can_manage_experiences=True,
+                    can_view_reports=True,
+                    can_manage_settings=True
+                )
                 
-                # If we don't have an onboarding by now, something went wrong
-                if not onboarding:
-                    return Response(
-                        {"detail": "Could not find or create onboarding entry."},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                # Now process the step data
-                if step == 1:  # Module selection
-                    if 'selectedTypes' in data:
-                        onboarding.selected_types = data['selectedTypes']
-                    onboarding.completed_step = max(onboarding.completed_step, 1)
-                    
-                elif step == 2:  # Organization information
-                    if 'organizationName' in data:
-                        onboarding.organization_name = data['organizationName']
-                    if 'organizationSlug' in data:
-                        onboarding.organization_slug = data['organizationSlug']
-                    if 'organizationSize' in data:
-                        onboarding.organization_size = data['organizationSize']
-                    
-                    onboarding.completed_step = max(onboarding.completed_step, 2)
-                    
-                elif step == 3:  # Representative information
-                    if 'contactName' in data:
-                        onboarding.contact_name = data['contactName']
-                    if 'contactEmail' in data:
-                        onboarding.contact_email = data['contactEmail']
-                    if 'contactPhone' in data:
-                        onboarding.contact_phone = data['contactPhone']
-                        
-                    # Module-specific fields
-                    if 'hasExperience' in data:
-                        onboarding.has_experience = data['hasExperience']
-                    if 'experienceYears' in data:
-                        onboarding.experience_years = data['experienceYears']
-                    if 'eventSize' in data:
-                        onboarding.event_size = data['eventSize']
-                    if 'experienceType' in data:
-                        onboarding.experience_type = data['experienceType']
-                    if 'experienceFrequency' in data:
-                        onboarding.experience_frequency = data['experienceFrequency']
-                    if 'accommodationType' in data:
-                        onboarding.accommodation_type = data['accommodationType']
-                    if 'accommodationCapacity' in data:
-                        onboarding.accommodation_capacity = data['accommodationCapacity']
-                    
-                    onboarding.completed_step = max(onboarding.completed_step, 3)
-                    onboarding.is_completed = True
-                    
-                    # Enable modules based on selected types
-                    if organizer:
-                        selected_types = onboarding.selected_types or []
-                        organizer.has_events_module = 'eventos' in selected_types
-                        organizer.has_accommodation_module = 'alojamiento' in selected_types
-                        organizer.has_experience_module = 'experiencias' in selected_types
-                        organizer.save()
-                    
+                # Mark onboarding as completed
+                onboarding.organizer = organizer
+                onboarding.is_completed = True
                 onboarding.save()
                 
-                return Response(OrganizerOnboardingSerializer(onboarding).data)
+                # Return organizer data
+                serializer = OrganizerSerializer(organizer)
+                return Response(serializer.data)
+                
         except Exception as e:
-            print(f"Error in save_step: {e}")
-            return Response({
-                "error": str(e),
-                "detail": "Unable to save onboarding data"
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-    @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
-    def current(self, request):
-        """
-        Get the current onboarding for the user.
-        """
-        # Try to find the most recent active onboarding
-        from django_tenants.utils import schema_context
+            return Response(
+                {"detail": f"Error completing onboarding: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-        try:
-            # Ensure we're in the public schema for tenant operations
-            with schema_context('public'):
-                onboarding = OrganizerOnboarding.objects.filter(is_completed=False).order_by('-updated_at').first()
-                if onboarding:
-                    return Response(OrganizerOnboardingSerializer(onboarding).data)
-                
-                # If no active onboarding found, create a new one
-                from apps.organizers.models import Organizer
-                temp_organizer = Organizer.objects.filter(schema_name='temp_onboarding').first()
-                if not temp_organizer:
-                    temp_organizer = Organizer.objects.create(
-                        name="Temporary Onboarding",
-                        slug="temp_onboarding",
-                        contact_email="temp@example.com",
-                        schema_name="temp_onboarding",
-                    )
-                
-                onboarding, created = OrganizerOnboarding.objects.get_or_create(organizer=temp_organizer)
-                return Response(OrganizerOnboardingSerializer(onboarding).data)
-                
-        except Exception as e:
-            print(f"Error in current onboarding: {e}")
+
+class CurrentOrganizerView(RetrieveUpdateAPIView):
+    """
+    API view for retrieving and updating the organizer profile for the current user.
+    """
+    serializer_class = OrganizerSerializer
+    permission_classes = [IsAuthenticated, IsOrganizer]
+
+    def get_object(self):
+        # The user is already authenticated, and IsOrganizer permission ensures they are an organizer.
+        # We can now safely retrieve the organizer linked to the user.
+        user = self.request.user
+        if not hasattr(user, 'organizer') or not user.organizer:
+            raise NotFound("No organizer is associated with the current user.")
+        return user.organizer
+
+
+class CheckSubdomainAvailabilityView(APIView):
+    """
+    Enterprise-grade subdomain availability checker.
+    Public endpoint for pre-registration validation.
+    """
+    permission_classes = []  # Public endpoint - no authentication required
+    
+    def get(self, request):
+        """
+        Check if a subdomain is available.
+        
+        Query parameters:
+        - slug: The subdomain to check
+        
+        Returns:
+        - available: Boolean indicating if subdomain is available
+        - message: Human-readable message
+        - suggestions: List of alternative suggestions if not available
+        """
+        slug = request.query_params.get('slug', '').strip().lower()
+        
+        # Validation: Basic format check
+        if not slug:
             return Response({
-                "error": str(e),
-                "detail": "Unable to get or create onboarding data"
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 
+                'available': False,
+                'message': 'El subdominio no puede estar vacío.',
+                'suggestions': []
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validation: Length check
+        if len(slug) < 3:
+            return Response({
+                'available': False,
+                'message': 'El subdominio debe tener al menos 3 caracteres.',
+                'suggestions': []
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if len(slug) > 50:
+            return Response({
+                'available': False,
+                'message': 'El subdominio no puede tener más de 50 caracteres.',
+                'suggestions': []
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validation: Format check (alphanumeric and hyphens only)
+        if not re.match(r'^[a-z0-9-]+$', slug):
+            return Response({
+                'available': False,
+                'message': 'El subdominio solo puede contener letras minúsculas, números y guiones.',
+                'suggestions': []
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validation: Cannot start or end with hyphen
+        if slug.startswith('-') or slug.endswith('-'):
+            return Response({
+                'available': False,
+                'message': 'El subdominio no puede empezar o terminar con guión.',
+                'suggestions': []
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validation: Cannot have consecutive hyphens
+        if '--' in slug:
+            return Response({
+                'available': False,
+                'message': 'El subdominio no puede tener guiones consecutivos.',
+                'suggestions': []
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Reserved subdomain check
+        reserved_slugs = [
+            'admin', 'api', 'www', 'mail', 'ftp', 'localhost', 'test', 
+            'dev', 'staging', 'prod', 'production', 'app', 'support',
+            'help', 'docs', 'blog', 'news', 'status', 'dashboard',
+            'panel', 'control', 'manage', 'system', 'root', 'user',
+            'tuki', 'eventos', 'experiencias', 'alojamientos', 'tickets',
+            'reservas', 'pagos', 'facturacion'
+        ]
+        
+        if slug in reserved_slugs:
+            return Response({
+                'available': False,
+                'message': f'"{slug}" es un subdominio reservado del sistema.',
+                'suggestions': self._generate_suggestions(slug)
+            })
+        
+        # Check if subdomain already exists
+        existing_organizer = Organizer.objects.filter(slug=slug).first()
+        existing_onboarding = OrganizerOnboarding.objects.filter(organization_slug=slug).first()
+        
+        if existing_organizer or existing_onboarding:
+            return Response({
+                'available': False,
+                'message': f'El subdominio "{slug}" ya está en uso.',
+                'suggestions': self._generate_suggestions(slug)
+            })
+        
+        # Subdomain is available
+        return Response({
+            'available': True,
+            'message': f'¡Perfecto! "{slug}" está disponible.',
+            'suggestions': []
+        })
+    
+    def _generate_suggestions(self, base_slug):
+        """
+        Generate alternative subdomain suggestions.
+        """
+        suggestions = []
+        
+        # Try with numbers
+        for i in range(1, 6):
+            suggestion = f"{base_slug}{i}"
+            if not Organizer.objects.filter(slug=suggestion).exists() and \
+               not OrganizerOnboarding.objects.filter(organization_slug=suggestion).exists():
+                suggestions.append(suggestion)
+        
+        # Try with year
+        from datetime import datetime
+        year = datetime.now().year
+        suggestion = f"{base_slug}{year}"
+        if not Organizer.objects.filter(slug=suggestion).exists() and \
+           not OrganizerOnboarding.objects.filter(organization_slug=suggestion).exists():
+            suggestions.append(suggestion)
+        
+        # Try with 'official'
+        suggestion = f"{base_slug}-oficial"
+        if not Organizer.objects.filter(slug=suggestion).exists() and \
+           not OrganizerOnboarding.objects.filter(organization_slug=suggestion).exists():
+            suggestions.append(suggestion)
+        
+        return suggestions[:3]  # Return max 3 suggestions
+
+
+class CheckEmailAvailabilityView(APIView):
+    """
+    Enterprise-grade email availability checker for onboarding.
+    Public endpoint for pre-registration validation.
+    """
+    permission_classes = []  # Public endpoint - no authentication required
+    
+    def get(self, request):
+        """
+        Check if an email is available for registration.
+        
+        Query parameters:
+        - email: The email to check
+        
+        Returns:
+        - available: Boolean indicating if email is available
+        - message: Human-readable message
+        """
+        email = request.query_params.get('email', '').strip().lower()
+        
+        # Validation: Basic format check
+        if not email:
+            return Response({
+                'available': False,
+                'message': 'El email no puede estar vacío.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validation: Email format check
+        import re
+        email_pattern = r'^[^\s@]+@[^\s@]+\.[^\s@]+$'
+        if not re.match(email_pattern, email):
+            return Response({
+                'available': False,
+                'message': 'El formato del email no es válido.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check if email already exists in the system
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        
+        # Check in existing users
+        existing_user = User.objects.filter(email=email).first()
+        if existing_user:
+            return Response({
+                'available': False,
+                'message': f'El email "{email}" ya está registrado en el sistema.'
+            })
+        
+        # Check in onboarding data (pending registrations)
+        existing_onboarding = OrganizerOnboarding.objects.filter(contact_email=email).first()
+        if existing_onboarding:
+            return Response({
+                'available': False,
+                'message': f'El email "{email}" ya está siendo usado en otro proceso de registro.'
+            })
+        
+        # Email is available
+        return Response({
+            'available': True,
+            'message': f'¡Perfecto! "{email}" está disponible.'
+        }) 

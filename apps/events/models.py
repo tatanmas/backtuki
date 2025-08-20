@@ -16,39 +16,28 @@ User = get_user_model()
 
 
 class Location(BaseModel):
-    """Location model for events."""
+    """Location model for events - supports both physical and virtual locations."""
     
-    name = models.CharField(_("name"), max_length=255)
-    address = models.CharField(_("address"), max_length=255)
-    city = models.CharField(_("city"), max_length=100)
-    country = models.CharField(_("country"), max_length=100)
-    latitude = models.DecimalField(
-        _("latitude"),
-        max_digits=9,
-        decimal_places=6,
-        null=True,
-        blank=True
-    )
-    longitude = models.DecimalField(
-        _("longitude"),
-        max_digits=9,
-        decimal_places=6,
-        null=True,
-        blank=True
-    )
-    venue_details = models.TextField(_("venue details"), blank=True)
-    capacity = models.PositiveIntegerField(
-        _("capacity"),
-        null=True,
-        blank=True
-    )
+    name = models.CharField(_("name"), max_length=255, help_text=_("Name of the venue or platform"))
+    address = models.TextField(_("address"), help_text=_("Physical address or virtual meeting URL"))
     
     class Meta:
         verbose_name = _("location")
         verbose_name_plural = _("locations")
     
     def __str__(self):
-        return f"{self.name}, {self.city}"
+        return self.name
+    
+    @property
+    def is_virtual(self):
+        """Return True if this is a virtual location (URL)."""
+        return self.address and (
+            self.address.startswith('http://') or 
+            self.address.startswith('https://') or
+            'zoom.us' in self.address.lower() or
+            'meet.google.com' in self.address.lower() or
+            'teams.microsoft.com' in self.address.lower()
+        )
 
 
 class EventCategory(BaseModel):
@@ -107,6 +96,11 @@ class Event(BaseModel):
         ('seated', _('Seated')),
     )
     
+    PRICING_MODE_CHOICES = (
+        ('simple', _('Simple - Free with basic settings')),
+        ('complex', _('Complex - Paid with tickets/categories')),
+    )
+    
     title = models.CharField(_("title"), max_length=255)
     slug = models.SlugField(_("slug"), unique=True)
     description = models.TextField(_("description"), blank=True)
@@ -141,6 +135,40 @@ class Event(BaseModel):
         max_length=20,
         choices=EVENT_TEMPLATE_CHOICES,
         default='standard'
+    )
+    
+    # Pricing mode - determines if event uses simple or complex ticket system
+    pricing_mode = models.CharField(
+        _("pricing mode"),
+        max_length=20,
+        choices=PRICING_MODE_CHOICES,
+        default='simple',
+        help_text=_("Simple: free events with basic settings. Complex: paid events with tickets/categories.")
+    )
+    
+    # Simple event settings (only used when pricing_mode='simple')
+    is_free = models.BooleanField(
+        _("is free"),
+        default=True,
+        help_text=_("Whether this event is free (only for simple pricing mode)")
+    )
+    requires_approval = models.BooleanField(
+        _("requires approval"),
+        default=False,
+        help_text=_("Whether attendees need approval to join (only for simple pricing mode)")
+    )
+    simple_capacity = models.PositiveIntegerField(
+        _("simple capacity"),
+        null=True,
+        blank=True,
+        help_text=_("Total capacity for simple events (null = unlimited)")
+    )
+    simple_price = models.DecimalField(
+        _("simple price"),
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text=_("Price for simple paid events")
     )
     start_date = models.DateTimeField(_("start date"), null=True, blank=True)
     end_date = models.DateTimeField(_("end date"), null=True, blank=True)
@@ -218,16 +246,22 @@ class Event(BaseModel):
     @property
     def is_past(self):
         """Return True if the event is in the past."""
+        if not self.end_date:
+            return False
         return self.end_date < timezone.now()
     
     @property
     def is_upcoming(self):
         """Return True if the event is upcoming."""
+        if not self.start_date:
+            return False
         return self.start_date > timezone.now() and self.status == 'active'
     
     @property
     def is_ongoing(self):
         """Return True if the event is ongoing."""
+        if not self.start_date or not self.end_date:
+            return False
         now = timezone.now()
         return (
             self.start_date <= now and 
@@ -241,6 +275,47 @@ class Event(BaseModel):
         if not self.tags:
             return []
         return [tag.strip() for tag in self.tags.split(',')]
+    
+    @property
+    def is_simple_event(self):
+        """Return True if this is a simple event (free with basic settings)."""
+        return self.pricing_mode == 'simple'
+    
+    @property
+    def is_complex_event(self):
+        """Return True if this is a complex event (with tickets/categories)."""
+        return self.pricing_mode == 'complex'
+    
+    @property
+    def simple_available_capacity(self):
+        """Return available capacity for simple events."""
+        if not self.is_simple_event or self.simple_capacity is None:
+            return None  # Unlimited
+        
+        # Count confirmed attendees for simple events
+        from apps.bookings.models import SimpleBooking
+        confirmed_count = SimpleBooking.objects.filter(
+            event=self,
+            status='confirmed'
+        ).count()
+        
+        return max(0, self.simple_capacity - confirmed_count)
+    
+    def clean(self):
+        """Validate event data based on pricing mode."""
+        from django.core.exceptions import ValidationError
+        
+        if self.pricing_mode == 'simple':
+            # Simple events must be free or have a simple price
+            if not self.is_free and not self.simple_price:
+                raise ValidationError("Simple paid events must have a simple_price set.")
+        
+        elif self.pricing_mode == 'complex':
+            # Complex events should not use simple event fields
+            if self.is_free:
+                raise ValidationError("Complex events cannot use is_free flag. Use ticket pricing instead.")
+        
+        super().clean()
 
 
 class EventImage(BaseModel):
@@ -304,7 +379,8 @@ class TicketCategory(BaseModel):
     )
     name = models.CharField(_("name"), max_length=100)
     description = models.TextField(_("description"), blank=True)
-    capacity = models.PositiveIntegerField(_("capacity"), default=0)
+    capacity = models.PositiveIntegerField(_("capacity"), default=0, null=True, blank=True, 
+                                          help_text=_("Leave empty for unlimited capacity"))
     sold = models.PositiveIntegerField(_("sold"), default=0)
     status = models.CharField(
         _("status"),
@@ -379,6 +455,13 @@ class TicketCategory(BaseModel):
         blank=True
     )
     
+    # Approval workflow
+    requires_approval = models.BooleanField(
+        _("requires approval"),
+        default=False,
+        help_text=_("Whether tickets in this category require organizer approval before purchase/access")
+    )
+    
     class Meta:
         verbose_name = _("ticket category")
         verbose_name_plural = _("ticket categories")
@@ -390,11 +473,17 @@ class TicketCategory(BaseModel):
     @property
     def available(self):
         """Return number of available tickets."""
+        # If capacity is null/None, return a large number to indicate unlimited capacity
+        if self.capacity is None:
+            return 9999999
         return max(0, self.capacity - self.sold)
     
     @property
     def is_sold_out(self):
         """Return True if category is sold out."""
+        # If capacity is unlimited (None), category is never sold out
+        if self.capacity is None:
+            return False
         return self.available == 0 or self.status == 'sold_out'
 
 
@@ -482,12 +571,19 @@ class TicketTier(BaseModel):
     
     # Link to form for collecting attendee information
     form = models.ForeignKey(
-        'EventForm',
+        'forms.Form',
         on_delete=models.SET_NULL,
         related_name='ticket_tiers',
         verbose_name=_("form"),
         null=True,
         blank=True
+    )
+    
+    # Approval workflow
+    requires_approval = models.BooleanField(
+        _("requires approval"),
+        default=False,
+        help_text=_("Whether this ticket type requires organizer approval before purchase/access")
     )
     
     class Meta:
@@ -530,119 +626,7 @@ class TicketTier(BaseModel):
         return self.available <= 0
 
 
-class EventForm(BaseModel):
-    """Form model for collecting attendee information."""
-    
-    name = models.CharField(_("name"), max_length=100)
-    description = models.TextField(_("description"), blank=True)
-    organizer = models.ForeignKey(
-        'organizers.Organizer',
-        on_delete=models.CASCADE,
-        related_name='forms',
-        verbose_name=_("organizer")
-    )
-    is_default = models.BooleanField(_("is default"), default=False)
-    
-    class Meta:
-        verbose_name = _("event form")
-        verbose_name_plural = _("event forms")
-    
-    def __str__(self):
-        return self.name
 
-
-class FormField(BaseModel):
-    """Field model for event forms."""
-    
-    TYPE_CHOICES = (
-        ('text', _('Text')),
-        ('email', _('Email')),
-        ('number', _('Number')),
-        ('select', _('Select')),
-        ('checkbox', _('Checkbox')),
-        ('radio', _('Radio')),
-        ('date', _('Date')),
-        ('time', _('Time')),
-        ('phone', _('Phone')),
-        ('textarea', _('Textarea')),
-        ('heading', _('Heading')),
-        ('paragraph', _('Paragraph')),
-    )
-    
-    WIDTH_CHOICES = (
-        ('full', _('Full width')),
-        ('half', _('Half width')),
-        ('third', _('Third width')),
-    )
-    
-    form = models.ForeignKey(
-        EventForm,
-        on_delete=models.CASCADE,
-        related_name='fields',
-        verbose_name=_("form")
-    )
-    label = models.CharField(_("label"), max_length=100)
-    type = models.CharField(
-        _("type"),
-        max_length=20,
-        choices=TYPE_CHOICES,
-        default='text'
-    )
-    required = models.BooleanField(_("required"), default=False)
-    placeholder = models.CharField(
-        _("placeholder"),
-        max_length=100,
-        blank=True
-    )
-    help_text = models.CharField(
-        _("help text"),
-        max_length=255,
-        blank=True
-    )
-    default_value = models.CharField(
-        _("default value"),
-        max_length=255,
-        blank=True
-    )
-    order = models.PositiveIntegerField(_("order"), default=0)
-    options = models.TextField(
-        _("options"),
-        blank=True,
-        help_text=_("Comma-separated options for select, checkbox, radio")
-    )
-    width = models.CharField(
-        _("width"),
-        max_length=20,
-        choices=WIDTH_CHOICES,
-        default='full'
-    )
-    validations = models.JSONField(
-        _("validations"),
-        default=dict,
-        blank=True,
-        help_text=_("Validations like min, max, minLength, maxLength, pattern")
-    )
-    conditional_display = models.JSONField(
-        _("conditional display"),
-        default=list,
-        blank=True,
-        help_text=_("Rules for conditional display based on other fields")
-    )
-    
-    class Meta:
-        verbose_name = _("form field")
-        verbose_name_plural = _("form fields")
-        ordering = ['order']
-    
-    def __str__(self):
-        return f"{self.label} - {self.form.name}"
-    
-    @property
-    def options_list(self):
-        """Return a list of options."""
-        if not self.options:
-            return []
-        return [option.strip() for option in self.options.split(',')]
 
 
 def generate_order_number():
@@ -850,6 +834,20 @@ class Ticket(BaseModel):
         ('refunded', _('Refunded')),
     )
     
+    # 🚀 ENTERPRISE: Enhanced check-in status to match frontend requirements
+    CHECK_IN_STATUS_CHOICES = (
+        ('pending', _('Pending')),           # Not checked in yet
+        ('checked_in', _('Checked In')),     # Successfully checked in
+        ('no_show', _('No Show')),           # Marked as no-show
+    )
+    
+    # 🚀 ENTERPRISE: Approval status for tickets requiring approval
+    APPROVAL_STATUS_CHOICES = (
+        ('pending_approval', _('Pending Approval')),
+        ('approved', _('Approved')),
+        ('rejected', _('Rejected')),
+    )
+    
     ticket_number = models.CharField(
         _("ticket number"),
         max_length=50,
@@ -871,12 +869,66 @@ class Ticket(BaseModel):
         choices=STATUS_CHOICES,
         default='active'
     )
-    checked_in = models.BooleanField(_("checked in"), default=False)
+    
+    # 🚀 ENTERPRISE: Enhanced check-in system
+    check_in_status = models.CharField(
+        _("check-in status"),
+        max_length=20,
+        choices=CHECK_IN_STATUS_CHOICES,
+        default='pending',
+        help_text=_("Current check-in status of the ticket")
+    )
     check_in_time = models.DateTimeField(
         _("check in time"),
         null=True,
         blank=True
     )
+    check_in_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name='checked_in_tickets',
+        verbose_name=_("checked in by"),
+        null=True,
+        blank=True,
+        help_text=_("User (guard/staff) who performed the check-in")
+    )
+    
+    # 🚀 ENTERPRISE: Approval workflow for tickets requiring approval
+    approval_status = models.CharField(
+        _("approval status"),
+        max_length=20,
+        choices=APPROVAL_STATUS_CHOICES,
+        null=True,
+        blank=True,
+        help_text=_("Approval status for tickets that require approval")
+    )
+    approved_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name='approved_tickets',
+        verbose_name=_("approved by"),
+        null=True,
+        blank=True,
+        help_text=_("User who approved/rejected this ticket")
+    )
+    approved_at = models.DateTimeField(
+        _("approved at"),
+        null=True,
+        blank=True
+    )
+    rejection_reason = models.TextField(
+        _("rejection reason"),
+        blank=True,
+        help_text=_("Reason for rejection if ticket was rejected")
+    )
+    
+    # Legacy field for backward compatibility
+    checked_in = models.BooleanField(
+        _("checked in (legacy)"), 
+        default=False,
+        help_text=_("Legacy field. Use check_in_status instead.")
+    )
+    
     form_data = models.JSONField(
         _("form data"),
         default=dict,
@@ -914,8 +966,95 @@ class Ticket(BaseModel):
     @property
     def is_used(self):
         """Return True if ticket is used."""
-        return self.status == 'used' or self.checked_in
+        return self.status == 'used' or self.check_in_status == 'checked_in'
+    
+    @property
+    def requires_approval(self):
+        """Return True if this ticket requires approval."""
+        return self.order_item.ticket_tier.requires_approval
+    
+    @property
+    def ticket_type(self):
+        """Return the ticket tier name."""
+        return self.order_item.ticket_tier.name
+    
+    @property
+    def ticket_category(self):
+        """Return the ticket category name."""
+        category = self.order_item.ticket_tier.category
+        return category.name if category else "Sin categoría"
+    
+    @property
+    def order_number(self):
+        """Return the order number."""
+        return self.order_item.order.order_number
+    
+    @property
+    def purchase_date(self):
+        """Return the purchase date."""
+        return self.order_item.order.created_at
+    
+    @property
+    def ticket_price(self):
+        """Return the ticket price."""
+        return self.order_item.unit_price
+    
+    @property
+    def phone(self):
+        """Return the customer phone."""
+        return self.order_item.order.phone
 
+
+class TicketHold(BaseModel):
+    """Temporary hold to reserve tickets and prevent overselling during checkout."""
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='ticket_holds',
+        verbose_name=_("event")
+    )
+    ticket_tier = models.ForeignKey(
+        TicketTier,
+        on_delete=models.CASCADE,
+        related_name='holds',
+        verbose_name=_("ticket tier")
+    )
+    order = models.ForeignKey(
+        'Order',
+        on_delete=models.CASCADE,
+        related_name='holds',
+        verbose_name=_("order"),
+        null=True,
+        blank=True
+    )
+    quantity = models.PositiveIntegerField(_("quantity"))
+    expires_at = models.DateTimeField(_("expires at"))
+    released = models.BooleanField(_("released"), default=False)
+
+    class Meta:
+        verbose_name = _("ticket hold")
+        verbose_name_plural = _("ticket holds")
+        indexes = [
+            models.Index(fields=["ticket_tier", "expires_at", "released"]),
+            models.Index(fields=["event", "expires_at", "released"]),
+        ]
+
+    def __str__(self):
+        return f"HOLD-{self.ticket_tier_id}-{self.quantity}@{self.expires_at.isoformat()}"
+
+    @property
+    def is_expired(self):
+        return self.expires_at <= timezone.now()
+
+    def release(self):
+        """Release the hold and return tickets to availability (idempotent)."""
+        if self.released:
+            return
+        # Return stock
+        self.ticket_tier.available = max(0, self.ticket_tier.available + self.quantity)
+        self.ticket_tier.save()
+        self.released = True
+        self.save()
 
 class Coupon(BaseModel):
     """Coupon model for discounts."""
@@ -933,7 +1072,7 @@ class Coupon(BaseModel):
     )
     
     code = models.CharField(_("code"), max_length=50, unique=True)
-    description = models.TextField(_("description"), blank=True)
+    description = models.TextField(_("description"), blank=True, null=True)
     organizer = models.ForeignKey(
         'organizers.Organizer',
         on_delete=models.CASCADE,
@@ -974,6 +1113,8 @@ class Coupon(BaseModel):
         max_digits=10,
         decimal_places=2,
         validators=[MinValueValidator(0)],
+        null=True,
+        blank=True,
         default=0
     )
     max_discount = models.DecimalField(
@@ -1134,4 +1275,242 @@ class EventCommunication(BaseModel):
         verbose_name_plural = _("event communications")
     
     def __str__(self):
-        return f"{self.name} - {self.event.title}" 
+        return f"{self.name} - {self.event.title}"
+
+
+class EmailLog(BaseModel):
+    """Audit log for all outgoing emails related to orders and tickets."""
+
+    STATUS_CHOICES = (
+        ('pending', _('Pending')),
+        ('sent', _('Sent')),
+        ('failed', _('Failed')),
+        ('skipped', _('Skipped')),
+    )
+
+    order = models.ForeignKey(
+        'Order',
+        on_delete=models.CASCADE,
+        related_name='email_logs',
+        verbose_name=_('order'),
+        null=True,
+        blank=True,
+    )
+    ticket = models.ForeignKey(
+        'Ticket',
+        on_delete=models.SET_NULL,
+        related_name='email_logs',
+        verbose_name=_('ticket'),
+        null=True,
+        blank=True,
+    )
+    to_email = models.EmailField(_('to email'))
+    subject = models.CharField(_('subject'), max_length=255)
+    template = models.CharField(_('template'), max_length=100, blank=True)
+    status = models.CharField(_('status'), max_length=20, choices=STATUS_CHOICES, default='pending')
+    attempts = models.PositiveIntegerField(_('attempts'), default=0)
+    error = models.TextField(_('error'), blank=True)
+    provider_message_id = models.CharField(_('provider message id'), max_length=255, blank=True)
+    sent_at = models.DateTimeField(_('sent at'), null=True, blank=True)
+    metadata = models.JSONField(_('metadata'), default=dict, blank=True)
+
+    class Meta:
+        verbose_name = _('email log')
+        verbose_name_plural = _('email logs')
+        indexes = [
+            models.Index(fields=['to_email', 'status']),
+            models.Index(fields=['order']),
+            models.Index(fields=['ticket']),
+        ]
+
+    def __str__(self):
+        ref = self.ticket.ticket_number if self.ticket_id else (self.order.order_number if self.order_id else '-')
+        return f"Email to {self.to_email} [{self.status}] ({ref})"
+
+
+class SimpleBooking(BaseModel):
+    """Simple booking model for free/simple events without complex ticketing."""
+    
+    STATUS_CHOICES = (
+        ('pending', _('Pending Approval')),
+        ('confirmed', _('Confirmed')),
+        ('cancelled', _('Cancelled')),
+        ('attended', _('Attended')),
+    )
+    
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='simple_bookings',
+        verbose_name=_("event")
+    )
+    first_name = models.CharField(_("first name"), max_length=100)
+    last_name = models.CharField(_("last name"), max_length=100)
+    email = models.EmailField(_("email"))
+    phone = models.CharField(_("phone"), max_length=20, blank=True)
+    status = models.CharField(
+        _("status"),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending'
+    )
+    notes = models.TextField(_("notes"), blank=True)
+    
+    # Approval workflow
+    approved_by = models.ForeignKey(
+        'organizers.OrganizerUser',
+        on_delete=models.SET_NULL,
+        related_name='approved_bookings',
+        verbose_name=_("approved by"),
+        null=True,
+        blank=True
+    )
+    approved_at = models.DateTimeField(_("approved at"), null=True, blank=True)
+    
+    # Check-in
+    checked_in = models.BooleanField(_("checked in"), default=False)
+    check_in_time = models.DateTimeField(_("check in time"), null=True, blank=True)
+    
+    class Meta:
+        verbose_name = _("simple booking")
+        verbose_name_plural = _("simple bookings")
+        unique_together = ['event', 'email']  # One booking per email per event
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.first_name} {self.last_name} - {self.event.title}"
+    
+    @property
+    def attendee_name(self):
+        """Return the attendee's full name."""
+        return f"{self.first_name} {self.last_name}"
+    
+    @property
+    def is_pending(self):
+        """Return True if booking is pending approval."""
+        return self.status == 'pending'
+    
+    @property
+    def is_confirmed(self):
+        """Return True if booking is confirmed."""
+        return self.status == 'confirmed'
+
+
+class TicketRequest(BaseModel):
+    """Model for ticket requests that require approval before purchase/access."""
+    
+    STATUS_CHOICES = (
+        ('pending', _('Pending Approval')),
+        ('approved', _('Approved - Can Purchase')),
+        ('rejected', _('Rejected')),
+        ('purchased', _('Purchased')),
+        ('cancelled', _('Cancelled')),
+    )
+    
+    # What they're requesting
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='ticket_requests',
+        verbose_name=_("event")
+    )
+    ticket_tier = models.ForeignKey(
+        TicketTier,
+        on_delete=models.CASCADE,
+        related_name='ticket_requests',
+        verbose_name=_("ticket tier"),
+        null=True,
+        blank=True
+    )
+    ticket_category = models.ForeignKey(
+        TicketCategory,
+        on_delete=models.CASCADE,
+        related_name='ticket_requests',
+        verbose_name=_("ticket category"),
+        null=True,
+        blank=True
+    )
+    quantity = models.PositiveIntegerField(_("quantity"), default=1)
+    
+    # Requester information
+    first_name = models.CharField(_("first name"), max_length=100)
+    last_name = models.CharField(_("last name"), max_length=100)
+    email = models.EmailField(_("email"))
+    phone = models.CharField(_("phone"), max_length=20, blank=True)
+    message = models.TextField(_("message"), blank=True, help_text=_("Optional message from requester"))
+    
+    # Status and workflow
+    status = models.CharField(
+        _("status"),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending'
+    )
+    
+    # Approval workflow
+    reviewed_by = models.ForeignKey(
+        'organizers.OrganizerUser',
+        on_delete=models.SET_NULL,
+        related_name='reviewed_ticket_requests',
+        verbose_name=_("reviewed by"),
+        null=True,
+        blank=True
+    )
+    reviewed_at = models.DateTimeField(_("reviewed at"), null=True, blank=True)
+    review_notes = models.TextField(_("review notes"), blank=True)
+    
+    # Purchase tracking (for approved paid tickets)
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.SET_NULL,
+        related_name='ticket_requests',
+        verbose_name=_("order"),
+        null=True,
+        blank=True
+    )
+    simple_booking = models.ForeignKey(
+        SimpleBooking,
+        on_delete=models.SET_NULL,
+        related_name='ticket_requests',
+        verbose_name=_("simple booking"),
+        null=True,
+        blank=True
+    )
+    
+    class Meta:
+        verbose_name = _("ticket request")
+        verbose_name_plural = _("ticket requests")
+        unique_together = ['event', 'email', 'ticket_tier']  # One request per email per ticket type
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.first_name} {self.last_name} - {self.event.title} ({self.get_status_display()})"
+    
+    @property
+    def requester_name(self):
+        """Return the requester's full name."""
+        return f"{self.first_name} {self.last_name}"
+    
+    @property
+    def is_pending(self):
+        """Return True if request is pending approval."""
+        return self.status == 'pending'
+    
+    @property
+    def is_approved(self):
+        """Return True if request is approved."""
+        return self.status == 'approved'
+    
+    @property
+    def is_rejected(self):
+        """Return True if request is rejected."""
+        return self.status == 'rejected'
+    
+    @property
+    def target_name(self):
+        """Return the name of what's being requested."""
+        if self.ticket_tier:
+            return self.ticket_tier.name
+        elif self.ticket_category:
+            return self.ticket_category.name
+        return "Entrada al evento" 

@@ -6,6 +6,7 @@ import qrcode
 from io import BytesIO
 from django.core.files.base import ContentFile
 from django.utils import timezone
+from django.core.files.storage import default_storage
 
 
 def generate_unique_code(prefix='', length=8):
@@ -32,31 +33,83 @@ def generate_qr_code(data, size=10):
     return ContentFile(buffer.getvalue())
 
 
+def generate_unique_filename(original_filename):
+    """Generate a unique filename to avoid conflicts."""
+    name, ext = os.path.splitext(original_filename)
+    timestamp = timezone.now().strftime('%Y%m%d_%H%M%S')
+    unique_id = str(uuid.uuid4())[:8]
+    return f"{name}_{timestamp}_{unique_id}{ext}"
+
+
 def get_upload_path(instance, filename):
-    """Get the upload path for a file."""
+    """
+    Generate upload path for files.
+    
+    Args:
+        instance: The model instance
+        filename: The original filename
+    
+    Returns:
+        str: The upload path
+    """
     # Get the model name
-    model_name = instance.__class__.__name__.lower()
+    model_name = instance._meta.model_name.lower()
     
-    # Get the current datetime for organizing files
-    now = timezone.now()
-    date_path = now.strftime('%Y/%m/%d')
+    # Get current date for organization
+    date_path = timezone.now().strftime('%Y/%m/%d')
     
-    # Get file extension
-    ext = filename.split('.')[-1]
+    # Generate unique filename
+    new_filename = generate_unique_filename(filename)
     
-    # Generate a unique filename
-    new_filename = f"{uuid.uuid4().hex}.{ext}"
+    # If instance has organizer, include it in the path
+    if hasattr(instance, 'organizer'):
+        return os.path.join(instance.organizer.slug, model_name, date_path, new_filename)
     
-    # Return the upload path
-    if hasattr(instance, 'tenant_id'):
-        return os.path.join(instance.tenant_id, model_name, date_path, new_filename)
-    return os.path.join('public', model_name, date_path, new_filename)
+    # Fallback path
+    return os.path.join(model_name, date_path, new_filename)
 
 
-def get_current_tenant():
-    """Get the current tenant from the thread local storage."""
-    from django_tenants.utils import get_current_schema_name
-    return get_current_schema_name()
+def get_current_organizer(request):
+    """Get the current organizer from the request."""
+    if request.user.is_authenticated and hasattr(request.user, 'organizer_roles'):
+        organizer_user = request.user.organizer_roles.first()
+        if organizer_user:
+            return organizer_user.organizer
+    return None
+
+
+def save_file_to_storage(file_content, file_path):
+    """
+    Save file content to storage.
+    
+    Args:
+        file_content: The file content (bytes or string)
+        file_path: The path where to save the file
+    
+    Returns:
+        str: The saved file path
+    """
+    if isinstance(file_content, str):
+        file_content = file_content.encode('utf-8')
+    
+    saved_path = default_storage.save(file_path, ContentFile(file_content))
+    return saved_path
+
+
+def delete_file_from_storage(file_path):
+    """
+    Delete file from storage.
+    
+    Args:
+        file_path: The path of the file to delete
+    
+    Returns:
+        bool: True if file was deleted, False otherwise
+    """
+    if default_storage.exists(file_path):
+        default_storage.delete(file_path)
+        return True
+    return False
 
 
 def currency_exchange(amount, from_currency, to_currency):

@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="es" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="x-apple-disable-message-reformatting">
+    <title>{% block title %}Tuki - Tu plataforma de experiencias{% endblock %}</title>
+    
+    <!--[if mso]>
+    <noscript>
+        <xml>
+            <o:OfficeDocumentSettings>
+                <o:AllowPNG/>
+                <o:PixelsPerInch>96</o:PixelsPerInch>
+            </o:OfficeDocumentSettings>
+        </xml>
+    </noscript>
+    <![endif]-->
+    
+    <style>
+        /* 🚀 ENTERPRISE EMAIL STYLES - Compatible with all email clients */
+        
+        /* Reset styles */
+        * { box-sizing: border-box; }
+        body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+        img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }
+        table { border-collapse: collapse !important; mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+        
+        /* Base styles */
+        body {
+            height: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f8fafc;
+        }
+        
+        /* Tuki brand colors */
+        .tuki-primary { color: #268078 !important; }
+        .tuki-secondary { color: #572150 !important; }
+        .tuki-accent { color: #4CBED7 !important; }
+        .tuki-bg-primary { background-color: #268078 !important; }
+        .tuki-bg-gradient { 
+            background: linear-gradient(135deg, #268078 0%, #572150 50%, #4CBED7 100%) !important;
+        }
+        
+        /* Container styles */
+        .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #ffffff;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        /* Header styles */
+        .email-header {
+            background: linear-gradient(135deg, #268078 0%, #572150 50%, #4CBED7 100%);
+            padding: 40px 30px;
+            text-align: center;
+        }
+        
+        .logo {
+            font-size: 32px;
+            font-weight: bold;
+            color: #ffffff !important;
+            text-decoration: none;
+            letter-spacing: 2px;
+        }
+        
+        /* Content styles */
+        .email-content {
+            padding: 40px 30px;
+        }
+        
+        .greeting {
+            font-size: 24px;
+            font-weight: 600;
+            color: #1f2937;
+            margin: 0 0 16px 0;
+        }
+        
+        .subtitle {
+            font-size: 16px;
+            color: #6b7280;
+            margin: 0 0 32px 0;
+            line-height: 1.5;
+        }
+        
+        /* Event card styles */
+        .event-card {
+            background-color: #f9fafb;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 24px;
+            margin: 24px 0;
+        }
+        
+        .event-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #268078;
+            margin: 0 0 8px 0;
+        }
+        
+        .event-date {
+            font-size: 14px;
+            color: #6b7280;
+            margin: 0 0 4px 0;
+        }
+        
+        .event-location {
+            font-size: 14px;
+            color: #6b7280;
+            margin: 0;
+        }
+        
+        /* Ticket styles */
+        .ticket-info {
+            background: linear-gradient(135deg, #268078 0%, #572150 50%, #4CBED7 100%);
+            border-radius: 8px;
+            padding: 20px;
+            margin: 24px 0;
+            color: #ffffff;
+        }
+        
+        .ticket-number {
+            font-size: 18px;
+            font-weight: 600;
+            margin: 0 0 8px 0;
+        }
+        
+        .attendee-name {
+            font-size: 16px;
+            margin: 0;
+        }
+        
+        /* Button styles */
+        .cta-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #268078 0%, #572150 50%, #4CBED7 100%);
+            color: #ffffff !important;
+            text-decoration: none;
+            padding: 16px 32px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 16px;
+            text-align: center;
+            margin: 24px 0;
+        }
+        
+        /* Footer styles */
+        .email-footer {
+            background-color: #f9fafb;
+            padding: 30px;
+            text-align: center;
+            border-top: 1px solid #e5e7eb;
+        }
+        
+        .footer-text {
+            font-size: 14px;
+            color: #6b7280;
+            margin: 0 0 16px 0;
+        }
+        
+        .social-links a {
+            display: inline-block;
+            margin: 0 8px;
+            color: #268078 !important;
+            text-decoration: none;
+        }
+        
+        /* Responsive styles */
+        @media only screen and (max-width: 600px) {
+            .email-container {
+                width: 100% !important;
+                margin: 0 !important;
+                border-radius: 0 !important;
+            }
+            
+            .email-header,
+            .email-content,
+            .email-footer {
+                padding: 20px !important;
+            }
+            
+            .greeting {
+                font-size: 20px !important;
+            }
+            
+            .event-card {
+                padding: 16px !important;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div style="margin: 0; padding: 40px 20px; background-color: #f8fafc; min-height: 100vh;">
+        <div class="email-container">
+            <!-- Header -->
+            <div class="email-header">
+                <a href="https://tuki.cl" class="logo">TUKI</a>
+                <p style="color: #ffffff; margin: 8px 0 0 0; font-size: 14px; opacity: 0.9;">
+                    Tu plataforma de experiencias únicas
+                </p>
+            </div>
+            
+            <!-- Content -->
+            <div class="email-content">
+                {% block content %}
+                <!-- Content will be inserted here -->
+                {% endblock %}
+            </div>
+            
+            <!-- Footer -->
+            <div class="email-footer">
+                <p class="footer-text">
+                    ¿Necesitas ayuda? Contáctanos en 
+                    <a href="mailto:soporte@tuki.cl" style="color: #268078;">soporte@tuki.cl</a>
+                </p>
+                
+                <div class="social-links">
+                    <a href="https://instagram.com/tuki.cl">Instagram</a>
+                    <a href="https://facebook.com/tuki.cl">Facebook</a>
+                    <a href="https://twitter.com/tuki_cl">Twitter</a>
+                </div>
+                
+                <p style="font-size: 12px; color: #9ca3af; margin: 16px 0 0 0;">
+                    © 2025 Tuki. Todos los derechos reservados.<br>
+                    Este email fue enviado a {{ email|default:"tu email" }}<br>
+                    <a href="#" style="color: #9ca3af;">Darse de baja</a>
+                </p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+

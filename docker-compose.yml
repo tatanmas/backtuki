@@ -12,7 +12,7 @@ services:
       - POSTGRES_USER=${DB_USER}
       - POSTGRES_DB=${DB_NAME}
     ports:
-      - "5432:5432"
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 10s
@@ -50,7 +50,7 @@ services:
     build:
       context: .
       target: base
-    command: celery -A config worker -l INFO
+    command: celery -A config worker -l INFO -Q default,critical,emails,documents,maintenance
     volumes:
       - .:/app/
     depends_on:
@@ -82,6 +82,8 @@ services:
       - DJANGO_SETTINGS_MODULE=config.settings.development
       - DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
       - REDIS_URL=redis://redis:6379/0
+
+
 
 volumes:
   postgres_data:

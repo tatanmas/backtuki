@@ -2,14 +2,14 @@
 
 from django.db import models
 from django.utils.translation import gettext_lazy as _
-from django_tenants.models import TenantMixin, DomainMixin
 from core.models import TimeStampedModel, UUIDModel
 from django.contrib.auth import get_user_model
-from django_tenants.utils import schema_context
+from django.utils.text import slugify
+from django.db import transaction
 
 
-class Organizer(TenantMixin, TimeStampedModel):
-    """Organizer model representing a tenant in the platform."""
+class Organizer(TimeStampedModel):
+    """Organizer model representing an organization in the platform."""
     
     ORGANIZATION_SIZE_CHOICES = (
         ('small', _('Small (1-10 employees)')),
@@ -70,7 +70,8 @@ class Organizer(TenantMixin, TimeStampedModel):
     representative_email = models.EmailField(_("representative email"), blank=True)
     representative_phone = models.CharField(_("representative phone"), max_length=30, blank=True)
     
-    auto_create_schema = True
+    # Organizer identifier for legacy compatibility
+    organizer_id = models.CharField(max_length=50, unique=True, db_index=True, null=True, blank=True)
     
     class Meta:
         verbose_name = _("organizer")
@@ -78,6 +79,19 @@ class Organizer(TenantMixin, TimeStampedModel):
     
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        """Set organizer_id if not provided."""
+        if not self.organizer_id:
+            # Use slug as organizer_id, ensuring it's unique
+            base_id = self.slug or slugify(self.name)
+            counter = 1
+            organizer_id = base_id
+            while Organizer.objects.filter(organizer_id=organizer_id).exclude(pk=self.pk).exists():
+                organizer_id = f"{base_id}-{counter}"
+                counter += 1
+            self.organizer_id = organizer_id
+        super().save(*args, **kwargs)
 
 
 class OrganizerOnboarding(TimeStampedModel):
@@ -129,11 +143,16 @@ class OrganizerOnboarding(TimeStampedModel):
         default=UUIDModel._meta.get_field('id').default,
         editable=False
     )
+    # Organizer is now nullable, it will be linked at the end.
     organizer = models.OneToOneField(
         Organizer,
-        on_delete=models.CASCADE,
-        related_name='onboarding'
+        on_delete=models.SET_NULL,
+        related_name='onboarding',
+        null=True,
+        blank=True
     )
+    # Use session_key for anonymous users
+    session_key = models.CharField(_("session key"), max_length=40, null=True, blank=True)
     
     # Module Selection (Step 1)
     selected_types = models.JSONField(_("selected modules"), default=list)
@@ -211,73 +230,65 @@ class OrganizerOnboarding(TimeStampedModel):
         verbose_name_plural = _("organizer onboardings")
     
     def __str__(self):
-        return f"Onboarding for {self.organizer.name}"
+        return f"Onboarding for {self.organization_name or 'N/A'}"
     
     def save(self, *args, **kwargs):
         """Update organizer modules based on selections."""
-        is_new = self._state.adding  # Check if it's a new record
-        
-        # First save the model itself
+        # The logic to create/update the organizer will be moved to the view
+        # to be called explicitly upon completion.
         super().save(*args, **kwargs)
         
-        # Update organizer based on onboarding data
-        if self.is_completed and self.organizer:
-            User = get_user_model()
-            
-            # Ensure we're in the public schema for tenant operations
-            with schema_context('public'):
-                # Check if we're creating a new tenant or updating an existing one
-                creating_tenant = self.organizer.status == 'pending' or self.organizer.status == 'onboarding'
-                
-                # Update modules based on selection
-                if isinstance(self.selected_types, list):
-                    self.organizer.has_events_module = 'events' in self.selected_types
-                    self.organizer.has_experience_module = 'experiences' in self.selected_types
-                    self.organizer.has_accommodation_module = 'accommodations' in self.selected_types
-                
-                # Update organization details
-                if self.organization_name:
-                    self.organizer.name = self.organization_name
-                if self.organization_slug:
-                    self.organizer.slug = self.organization_slug
-                if self.organization_size:
-                    self.organizer.organization_size = self.organization_size
-                    
-                # Update representative details
-                if self.contact_name:
-                    self.organizer.representative_name = self.contact_name
-                if self.contact_email:
-                    self.organizer.representative_email = self.contact_email
-                    self.organizer.contact_email = self.contact_email
-                    
-                    # Link user to organizer if this is a new tenant and the user exists
-                    if creating_tenant:
-                        try:
-                            user = User.objects.get(email=self.contact_email)
-                            # Create the user-organizer link if it doesn't exist
-                            self.organizer.organizer_users.get_or_create(
-                                user=user,
-                                defaults={
-                                    'is_admin': True,
-                                    'can_manage_events': True,
-                                    'can_manage_accommodations': True,
-                                    'can_manage_experiences': True,
-                                    'can_view_reports': True,
-                                    'can_manage_settings': True
-                                }
-                            )
-                        except User.DoesNotExist:
-                            # User doesn't exist yet - that's ok, they'll need to register
-                            pass
-                        
-                if self.contact_phone:
-                    self.organizer.representative_phone = self.contact_phone
-                    self.organizer.contact_phone = self.contact_phone
-                
-                # Set onboarding as completed and activate tenant
-                self.organizer.onboarding_completed = True
-                self.organizer.status = 'active'
-                self.organizer.save()
+    def complete_onboarding(self, user):
+        """
+        Creates the real Organizer instance from the onboarding data
+        and links it to the provided user.
+        """
+        if self.is_completed:
+            return self.organizer
+
+        with transaction.atomic():
+            # Create the organizer
+            organizer, created = Organizer.objects.update_or_create(
+                slug=self.organization_slug,
+                defaults={
+                    'name': self.organization_name,
+                    'contact_email': self.contact_email,
+                    'representative_name': self.contact_name,
+                    'representative_email': self.contact_email,
+                    'representative_phone': self.contact_phone,
+                    'organization_size': self.organization_size,
+                    'has_events_module': 'events' in self.selected_types,
+                    'has_experience_module': 'experiences' in self.selected_types,
+                    'has_accommodation_module': 'accommodations' in self.selected_types,
+                    'status': 'active',
+                    'onboarding_completed': True
+                }
+            )
+
+            # Link the onboarding instance to the organizer
+            self.organizer = organizer
+            self.is_completed = True
+            self.save()
+
+            # Link the user to the organizer
+            user.organizer = organizer
+            user.is_organizer = True
+            user.is_staff = True # Or based on some logic
+            user.save()
+
+            # Create an admin role for the user in the organization
+            OrganizerUser.objects.create(
+                organizer=organizer,
+                user=user,
+                is_admin=True,
+                can_manage_events=True,
+                can_manage_accommodations=True,
+                can_manage_experiences=True,
+                can_view_reports=True,
+                can_manage_settings=True
+            )
+
+        return organizer
 
 
 class BillingDetails(TimeStampedModel):
@@ -353,14 +364,6 @@ class BankingDetails(TimeStampedModel):
     
     def __str__(self):
         return f"Banking for {self.organizer.name}"
-
-
-class Domain(DomainMixin):
-    """Domain model for tenant domains."""
-    
-    class Meta:
-        verbose_name = _("domain")
-        verbose_name_plural = _("domains")
 
 
 class OrganizerUser(TimeStampedModel):

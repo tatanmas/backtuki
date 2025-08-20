@@ -2,7 +2,6 @@
 
 from django.db import migrations, models
 import django.db.models.deletion
-import django_tenants.postgresql_backend.base
 import uuid
 
 
@@ -29,7 +28,6 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='Organizer',
             fields=[
-                ('schema_name', models.CharField(db_index=True, max_length=63, unique=True, validators=[django_tenants.postgresql_backend.base._check_schema_name])),
                 ('created_at', models.DateTimeField(auto_now_add=True, db_index=True, verbose_name='Created at')),
                 ('updated_at', models.DateTimeField(auto_now=True, verbose_name='Updated at')),
                 ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),

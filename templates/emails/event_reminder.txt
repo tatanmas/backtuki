@@ -1,0 +1,35 @@
+¡Hola {{ attendee_name }}!
+
+⏰ ¡Tu evento "{{ event.title }}" es mañana!
+
+Te enviamos este recordatorio para que no te pierdas esta increíble experiencia.
+
+DETALLES DEL EVENTO:
+📅 Fecha: {{ event.start_date|date:"l, j \d\e F \d\e Y \a \l\a\s H:i" }}
+📍 Ubicación: {{ event.location.name }}{% if event.location.address %} - {{ event.location.address }}{% endif %}
+
+TU TICKET:
+🎫 Número: {{ ticket.ticket_number }}
+👤 Asistente: {{ attendee_name }}
+
+⏰ ¡FALTAN MENOS DE 24 HORAS!
+No olvides llegar 15 minutos antes
+
+LISTA DE VERIFICACIÓN:
+✅ Ticket guardado en el teléfono
+✅ Documento de identidad
+✅ Llegar 15 minutos antes
+{% if event.dresscode %}✅ Vestimenta: {{ event.dresscode }}{% endif %}
+
+Ver mi ticket: https://tuki.cl/tickets/{{ ticket.ticket_number }}
+
+¿Necesitas direcciones?
+Google Maps: https://maps.google.com/?q={{ event.location.address|urlencode }}
+
+¡Nos vemos mañana!
+
+--
+Equipo Tuki
+https://tuki.cl
+soporte@tuki.cl
+

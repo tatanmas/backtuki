@@ -1,0 +1,34 @@
+¡Hola {{ attendee_name }}!
+
+¡Excelente noticia! Tu reserva para "{{ event.title }}" ha sido confirmada exitosamente.
+
+DETALLES DEL EVENTO:
+📅 Fecha: {{ event.start_date|date:"l, j \d\e F \d\e Y \a \l\a\s H:i" }}
+📍 Ubicación: {{ event.location.name }}{% if event.location.address %} - {{ event.location.address }}{% endif %}
+
+TU TICKET:
+🎫 Número: {{ ticket.ticket_number }}
+👤 Asistente: {{ attendee_name }}
+🎟️ Tipo: {{ ticket.order_item.ticket_tier.name }}
+{% if order.total > 0 %}💰 Precio: ${{ order.total|floatformat:0 }} {{ order.currency }}{% else %}💰 GRATUITO{% endif %}
+📋 Orden: {{ order.order_number }}
+
+INFORMACIÓN IMPORTANTE:
+• Llega 15 minutos antes del evento
+• Presenta tu ticket número {{ ticket.ticket_number }}
+• Lleva un documento de identidad
+{% if event.age_restriction %}• Restricción de edad: {{ event.age_restriction }}{% endif %}
+{% if event.dresscode %}• Código de vestimenta: {{ event.dresscode }}{% endif %}
+
+Ver ticket completo: https://tuki.cl/tickets/{{ ticket.ticket_number }}
+
+¿Tienes alguna pregunta?
+Contacta al organizador: {{ event.organizer.email|default:'info@tuki.cl' }}
+
+¡Nos vemos en el evento!
+
+--
+Equipo Tuki
+https://tuki.cl
+soporte@tuki.cl
+

@@ -19,27 +19,23 @@ class IsOrganizer(permissions.BasePermission):
     """Permission to check if user is an organizer."""
     
     def has_permission(self, request, view):
-        """Check if user is an organizer."""
+        """Check if user has organizer permissions."""
         print(f"DEBUG - IsOrganizer.has_permission - User ID: {request.user.id if request.user.is_authenticated else 'Anonymous'}")
-        print(f"DEBUG - IsOrganizer.has_permission - User authenticated: {request.user.is_authenticated}")
-        print(f"DEBUG - IsOrganizer.has_permission - Has organizer_roles: {hasattr(request.user, 'organizer_roles')}")
         
         if not request.user.is_authenticated:
-            print(f"DEBUG - IsOrganizer.has_permission - FAIL: User not authenticated")
+            print("DEBUG - IsOrganizer.has_permission - FAIL: User not authenticated")
             return False
             
         if not hasattr(request.user, 'organizer_roles'):
-            print(f"DEBUG - IsOrganizer.has_permission - FAIL: User has no organizer_roles attribute")
+            print("DEBUG - IsOrganizer.has_permission - FAIL: User has no organizer_roles attribute")
             return False
         
-        # Check if the user has any organizer roles
-        has_roles = request.user.organizer_roles.exists()
-        print(f"DEBUG - IsOrganizer.has_permission - User has organizer roles: {has_roles}")
-        
-        return has_roles
+        has_role = request.user.organizer_roles.exists()
+        print(f"DEBUG - IsOrganizer.has_permission - User has organizer role: {has_role}")
+        return has_role
     
     def has_object_permission(self, request, view, obj):
-        """Check if object belongs to the user's organizer tenant."""
+        """Check if object belongs to the user's organizer."""
         print(f"DEBUG - IsOrganizer.has_object_permission - User ID: {request.user.id if request.user.is_authenticated else 'Anonymous'}")
         print(f"DEBUG - IsOrganizer.has_object_permission - Object: {obj}")
         print(f"DEBUG - IsOrganizer.has_object_permission - Object type: {type(obj)}")
@@ -52,39 +48,66 @@ class IsOrganizer(permissions.BasePermission):
             print("DEBUG - IsOrganizer.has_object_permission - FAIL: User has no organizer_roles attribute")
             return False
         
-        # Check if the object has tenant_id attribute (uses TenantAwareModel)
-        if hasattr(obj, 'tenant_id'):
-            # Get the organizer from the tenant_id
-            try:
-                organizer = Organizer.objects.get(schema_name=obj.tenant_id)
-                has_permission = request.user.organizer_roles.filter(organizer=organizer).exists()
-                print(f"DEBUG - IsOrganizer.has_object_permission - Tenant permission check result: {has_permission}")
-                if not has_permission:
-                    print(f"DEBUG - IsOrganizer.has_object_permission - FAIL: User has no role in this tenant")
-                return has_permission
-            except Organizer.DoesNotExist:
-                print(f"DEBUG - IsOrganizer.has_object_permission - FAIL: Organizer not found for tenant {obj.tenant_id}")
-                return False
-        
-        # For organizer-specific objects, check if user has a role in that organizer
+        # Check if the object has organizer attribute
         if hasattr(obj, 'organizer'):
-            print(f"DEBUG - IsOrganizer.has_object_permission - Checking organizer permission with object.organizer: {obj.organizer.id if obj.organizer else 'None'}")
+            # Get the organizer from the object
             has_permission = request.user.organizer_roles.filter(organizer=obj.organizer).exists()
             print(f"DEBUG - IsOrganizer.has_object_permission - Organizer permission check result: {has_permission}")
             if not has_permission:
                 print(f"DEBUG - IsOrganizer.has_object_permission - FAIL: User has no role in this organizer")
             return has_permission
         
-        # If the object is an Organizer instance itself
-        if isinstance(obj, Organizer):
-            print(f"DEBUG - IsOrganizer.has_object_permission - Checking direct organizer permission: {obj.id}")
-            has_permission = request.user.organizer_roles.filter(organizer=obj).exists()
-            print(f"DEBUG - IsOrganizer.has_object_permission - Direct organizer permission check result: {has_permission}")
-            if not has_permission:
-                print(f"DEBUG - IsOrganizer.has_object_permission - FAIL: User has no role in this organizer")
+        # Check if the object has event attribute (for event-related objects)
+        if hasattr(obj, 'event') and hasattr(obj.event, 'organizer'):
+            has_permission = request.user.organizer_roles.filter(organizer=obj.event.organizer).exists()
+            print(f"DEBUG - IsOrganizer.has_object_permission - Event organizer permission check result: {has_permission}")
             return has_permission
         
-        print("DEBUG - IsOrganizer.has_object_permission - FAIL: No permission checks passed")
+        # Check if the object is an event
+        if hasattr(obj, 'organizer'):
+            has_permission = request.user.organizer_roles.filter(organizer=obj.organizer).exists()
+            print(f"DEBUG - IsOrganizer.has_object_permission - Event organizer permission check result: {has_permission}")
+            return has_permission
+        
+        print(f"DEBUG - IsOrganizer.has_object_permission - FAIL: Object has no organizer or event attribute")
+        return False
+
+
+class IsOrganizerAdmin(permissions.BasePermission):
+    """Permission to check if user is an organizer admin."""
+    
+    def has_permission(self, request, view):
+        """Check if user has admin permissions for any organizer."""
+        if not request.user.is_authenticated:
+            return False
+        
+        if not hasattr(request.user, 'organizer_roles'):
+            return False
+        
+        return request.user.organizer_roles.filter(is_admin=True).exists()
+    
+    def has_object_permission(self, request, view, obj):
+        """Check if user has admin permissions for the object's organizer."""
+        if not request.user.is_authenticated:
+            return False
+        
+        if not hasattr(request.user, 'organizer_roles'):
+            return False
+        
+        # Check if the object has organizer attribute
+        if hasattr(obj, 'organizer'):
+            return request.user.organizer_roles.filter(
+                organizer=obj.organizer,
+                is_admin=True
+            ).exists()
+        
+        # Check if the object has event attribute
+        if hasattr(obj, 'event') and hasattr(obj.event, 'organizer'):
+            return request.user.organizer_roles.filter(
+                organizer=obj.event.organizer,
+                is_admin=True
+            ).exists()
+        
         return False
 
 

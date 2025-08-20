@@ -14,7 +14,8 @@ urlpatterns = [
     # Django Admin
     path('admin/', admin.site.urls),
     
-    # API URLs
+    # API URLs - Public URLs first to avoid authentication conflicts
+    path('api/v1/', include('api.v1.public_urls')),
     path('api/v1/', include('api.v1.urls')),
     
     # API Documentation

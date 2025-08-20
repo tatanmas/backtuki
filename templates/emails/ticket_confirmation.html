@@ -1,0 +1,115 @@
+{% extends "emails/base.html" %}
+{% load static %}
+
+{% block title %}¡Tu ticket está listo! - {{ event.title }} - Tuki{% endblock %}
+
+{% block content %}
+<h1 class="greeting">¡Hola {{ attendee_name }}! 🎉</h1>
+
+<p class="subtitle">
+    ¡Excelente noticia! Tu reserva para <strong>{{ event.title }}</strong> ha sido confirmada exitosamente. 
+    Estás a solo unos pasos de vivir una experiencia increíble.
+</p>
+
+<!-- Event Details Card -->
+<div class="event-card">
+    <h2 class="event-title">{{ event.title }}</h2>
+    <p class="event-date">
+        📅 {{ event.start_date|date:"l, j \d\e F \d\e Y \a \l\a\s H:i" }}
+    </p>
+    <p class="event-location">
+        📍 {{ event.location.name }}{% if event.location.address %} - {{ event.location.address }}{% endif %}
+    </p>
+    {% if event.description %}
+    <p style="font-size: 14px; color: #4b5563; margin: 12px 0 0 0; line-height: 1.5;">
+        {{ event.description|truncatewords:30|safe }}
+    </p>
+    {% endif %}
+</div>
+
+<!-- Ticket Information -->
+<div class="ticket-info">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <div>
+            <p class="ticket-number">Ticket #{{ ticket.ticket_number }}</p>
+            <p class="attendee-name">{{ attendee_name }}</p>
+        </div>
+        <div style="text-align: right;">
+            {% if order.total > 0 %}
+                <p style="font-size: 18px; font-weight: 600; margin: 0;">
+                    ${{ order.total|floatformat:0 }} {{ order.currency }}
+                </p>
+            {% else %}
+                <p style="font-size: 18px; font-weight: 600; margin: 0; color: #10b981;">
+                    GRATUITO
+                </p>
+            {% endif %}
+        </div>
+    </div>
+    
+    <div style="border-top: 1px solid rgba(255,255,255,0.3); padding-top: 16px;">
+        <p style="font-size: 14px; margin: 0; opacity: 0.9;">
+            Tipo de ticket: {{ ticket.order_item.ticket_tier.name }}
+        </p>
+        {% if order.order_number %}
+        <p style="font-size: 14px; margin: 4px 0 0 0; opacity: 0.9;">
+            Orden: {{ order.order_number }}
+        </p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- QR Code Placeholder -->
+<div style="text-align: center; margin: 32px 0;">
+    <div style="background-color: #ffffff; border: 2px dashed #268078; border-radius: 12px; padding: 40px; display: inline-block;">
+        <div style="width: 150px; height: 150px; background-color: #f3f4f6; border-radius: 8px; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
+            <p style="color: #6b7280; font-size: 14px; margin: 0; text-align: center;">
+                QR CODE<br>
+                <small>{{ ticket.ticket_number }}</small>
+            </p>
+        </div>
+        <p style="font-size: 14px; color: #4b5563; margin: 0; font-weight: 500;">
+            Presenta este código QR en el evento
+        </p>
+    </div>
+</div>
+
+<!-- Call to Action -->
+<div style="text-align: center; margin: 32px 0;">
+    <a href="https://tuki.cl/tickets/{{ ticket.ticket_number }}" class="cta-button">
+        Ver mi ticket completo
+    </a>
+</div>
+
+<!-- Important Information -->
+<div style="background-color: #fef3c7; border-left: 4px solid #f59e0b; padding: 16px; margin: 24px 0; border-radius: 6px;">
+    <h3 style="color: #92400e; font-size: 16px; margin: 0 0 8px 0; font-weight: 600;">
+        📋 Información importante
+    </h3>
+    <ul style="color: #92400e; font-size: 14px; margin: 0; padding-left: 20px; line-height: 1.6;">
+        <li>Llega 15 minutos antes del evento</li>
+        <li>Presenta tu QR code o ticket número {{ ticket.ticket_number }}</li>
+        <li>Lleva un documento de identidad</li>
+        {% if event.age_restriction %}
+        <li>Restricción de edad: {{ event.age_restriction }}</li>
+        {% endif %}
+        {% if event.dresscode %}
+        <li>Código de vestimenta: {{ event.dresscode }}</li>
+        {% endif %}
+    </ul>
+</div>
+
+<!-- Contact Information -->
+<div style="text-align: center; margin: 32px 0 0 0;">
+    <p style="font-size: 14px; color: #6b7280; margin: 0 0 16px 0;">
+        ¿Tienes alguna pregunta sobre el evento?
+    </p>
+    <p style="font-size: 14px; margin: 0;">
+        <a href="mailto:{{ event.organizer.email|default:'info@tuki.cl' }}" style="color: #268078; text-decoration: none; font-weight: 500;">
+            Contactar al organizador
+        </a>
+    </p>
+</div>
+
+{% endblock %}
+

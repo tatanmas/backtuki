@@ -23,7 +23,7 @@ CSRF_COOKIE_SECURE = True
 # Production databases - Use PostgreSQL
 DATABASES = {
     'default': {
-        'ENGINE': 'django_tenants.postgresql_backend',
+        'ENGINE': 'django.db.backends.postgresql',
         'NAME': config('DB_NAME'),
         'USER': config('DB_USER'),
         'PASSWORD': config('DB_PASSWORD'),
@@ -96,8 +96,39 @@ LOGGING = {
 # Stripe settings
 STRIPE_LIVE_MODE = True
 
-# AWS S3 settings if deployed on AWS
-if 'USE_AWS' in os.environ:
+# 🚀 GCP CLOUD STORAGE - ENTERPRISE CONFIGURATION
+if 'USE_GCP' in os.environ:
+    # Google Cloud Storage configuration
+    GS_BUCKET_NAME = config('GS_BUCKET_NAME')
+    GS_PROJECT_ID = config('GS_PROJECT_ID')
+    GS_CREDENTIALS = config('GS_CREDENTIALS', default=None)
+    
+    # Storage backend for media files
+    DEFAULT_FILE_STORAGE = 'storages.backends.gcloud.GoogleCloudStorage'
+    
+    # Media files configuration
+    GS_MEDIA_BUCKET_NAME = config('GS_MEDIA_BUCKET_NAME', default=GS_BUCKET_NAME)
+    GS_DEFAULT_ACL = 'publicRead'  # Images need to be publicly accessible
+    
+    # Cache control for better performance (24 hours)
+    GS_OBJECT_PARAMETERS = {
+        'CacheControl': 'max-age=86400',
+    }
+    
+    # Custom domain for CDN (optional but recommended for production)
+    GS_CUSTOM_ENDPOINT = config('GS_CUSTOM_ENDPOINT', default=None)
+    
+    # File overwrite behavior - False for unique filenames (better for versioning)
+    GS_FILE_OVERWRITE = False
+    
+    # Media URL configuration
+    if GS_CUSTOM_ENDPOINT:
+        MEDIA_URL = f"https://{GS_CUSTOM_ENDPOINT}/media/"
+    else:
+        MEDIA_URL = f"https://storage.googleapis.com/{GS_MEDIA_BUCKET_NAME}/media/"
+
+# AWS S3 settings if deployed on AWS (legacy support)
+elif 'USE_AWS' in os.environ:
     # S3 and CloudFront configuration
     AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID')
     AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY')
@@ -109,4 +140,4 @@ if 'USE_AWS' in os.environ:
     AWS_DEFAULT_ACL = None
 
     # Media and static storage
-    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage' 
+    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'

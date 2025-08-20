@@ -14,39 +14,29 @@ from apps.events.models import (
     EventImage,
     TicketTier,
     TicketCategory,
-    EventForm,
-    FormField,
     Order,
     OrderItem,
     Ticket,
     Coupon,
     EventCommunication,
+    SimpleBooking,
+    TicketRequest,
 )
+from apps.forms.models import Form, FormField
+from apps.forms.serializers import FormFieldSerializer, FormSerializer
 from apps.organizers.models import OrganizerUser
 
 
 class LocationSerializer(serializers.ModelSerializer):
     """
-    Serializer for location model.
+    Serializer for location model - supports both physical and virtual locations.
     """
-    coordinates = serializers.SerializerMethodField()
+    is_virtual = serializers.ReadOnlyField()
     
     class Meta:
         model = Location
-        fields = [
-            'id', 'name', 'address', 'city', 'country',
-            'coordinates', 'venue_details', 'capacity'
-        ]
-        read_only_fields = ['id']
-
-    def get_coordinates(self, obj) -> Optional[Dict[str, float]]:
-        """Return location coordinates as a dict."""
-        if obj.latitude and obj.longitude:
-            return {
-                'latitude': float(obj.latitude),
-                'longitude': float(obj.longitude)
-            }
-        return None
+        fields = ['id', 'name', 'address', 'is_virtual']
+        read_only_fields = ['id', 'is_virtual']
 
 
 class EventCategorySerializer(serializers.ModelSerializer):
@@ -69,98 +59,13 @@ class EventImageSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
 
-class FormFieldSerializer(serializers.ModelSerializer):
-    """
-    Serializer for form field model.
-    """
-    options_list = serializers.ListField(
-        child=serializers.CharField(),
-        read_only=True
-    )
-    
-    class Meta:
-        model = FormField
-        fields = [
-            'id', 'label', 'type', 'required', 'placeholder', 'help_text',
-            'order', 'options', 'options_list', 'default_value', 'width', 
-            'validations', 'conditional_display'
-        ]
-        read_only_fields = ['id']
-
-
-class EventFormSerializer(serializers.ModelSerializer):
-    """
-    Serializer for event form model.
-    """
-    fields = FormFieldSerializer(many=True, read_only=True)
-    
-    class Meta:
-        model = EventForm
-        fields = ['id', 'name', 'description', 'is_default', 'fields']
-        read_only_fields = ['id']
-
-
-class EventFormDetailSerializer(serializers.ModelSerializer):
-    """
-    Serializer for detailed event form model.
-    """
-    fields = FormFieldSerializer(many=True)
-    
-    class Meta:
-        model = EventForm
-        fields = ['id', 'name', 'description', 'is_default', 'fields']
-        read_only_fields = ['id']
-    
-    def create(self, validated_data):
-        fields_data = validated_data.pop('fields', [])
-        form = EventForm.objects.create(**validated_data)
-        
-        # Create fields with proper order
-        for i, field_data in enumerate(fields_data):
-            # Set explicit order if not provided
-            if 'order' not in field_data:
-                field_data['order'] = i
-            
-            # Process options for select, checkbox, radio
-            if field_data.get('type') in ['select', 'checkbox', 'radio'] and 'options' not in field_data:
-                field_data['options'] = 'Opción 1'
-            
-            FormField.objects.create(form=form, **field_data)
-        
-        return form
-    
-    def update(self, instance, validated_data):
-        fields_data = validated_data.pop('fields', [])
-        
-        # Update form instance
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-        
-        # Delete existing fields
-        instance.fields.all().delete()
-        
-        # Create new fields with proper order
-        for i, field_data in enumerate(fields_data):
-            # Set explicit order if not provided
-            if 'order' not in field_data:
-                field_data['order'] = i
-            
-            # Process options for select, checkbox, radio
-            if field_data.get('type') in ['select', 'checkbox', 'radio'] and 'options' not in field_data:
-                field_data['options'] = 'Opción 1'
-            
-            FormField.objects.create(form=instance, **field_data)
-        
-        return instance
-
-
 class TicketCategorySerializer(serializers.ModelSerializer):
     """
     Serializer for ticket category model.
     """
     available = serializers.IntegerField(read_only=True)
     is_sold_out = serializers.BooleanField(read_only=True)
+    has_capacity_limit = serializers.SerializerMethodField()
     
     class Meta:
         model = TicketCategory
@@ -170,9 +75,13 @@ class TicketCategorySerializer(serializers.ModelSerializer):
             'min_per_purchase', 'sale_start_date', 'sale_end_date',
             'sale_start_time', 'sale_end_time', 'access_start_date',
             'access_end_date', 'access_start_time', 'access_end_time',
-            'is_sold_out'
+            'is_sold_out', 'has_capacity_limit', 'requires_approval'
         ]
         read_only_fields = ['id', 'sold', 'available', 'is_sold_out']
+
+    def get_has_capacity_limit(self, obj):
+        """Return True if the category has a capacity limit."""
+        return obj.capacity is not None
 
 
 class TicketTierSerializer(serializers.ModelSerializer):
@@ -188,7 +97,7 @@ class TicketTierSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'type', 'description', 'price',
             'capacity', 'available', 'is_public', 'max_per_order',
-            'min_per_order', 'benefits', 'metadata'
+            'min_per_order', 'benefits', 'metadata', 'requires_approval'
         ]
         read_only_fields = ['id', 'available']
 
@@ -230,8 +139,15 @@ class TicketTierSerializer(serializers.ModelSerializer):
         metadata = {}
         
         if category:
-            metadata['category'] = category.name
+            metadata['category'] = category.id  # Use category ID for frontend mapping
+            metadata['categoryId'] = category.id  # Explicit categoryId field
+            metadata['categoryName'] = category.name  # Keep name for display
             metadata['categoryDescription'] = category.description
+        
+        # Add form information if present
+        if obj.form:
+            metadata['formId'] = obj.form.id
+            metadata['formName'] = obj.form.name
         
         if obj.is_highlighted:
             metadata['isHighlighted'] = True
@@ -249,18 +165,37 @@ class CouponSerializer(serializers.ModelSerializer):
     """
     Serializer for coupon model.
     """
-    is_active = serializers.BooleanField()
+    is_active = serializers.BooleanField(required=False, default=True)
     events = serializers.SerializerMethodField()
     maxUses = serializers.IntegerField(source='usage_limit', required=False, allow_null=True)
     usedCount = serializers.IntegerField(source='usage_count', read_only=True)
-    value = serializers.DecimalField(source='discount_value', max_digits=10, decimal_places=2)
-    type = serializers.CharField(source='discount_type')
+    
+    # 🚀 ENTERPRISE FIX: Accept both frontend and backend field names
+    value = serializers.DecimalField(source='discount_value', max_digits=10, decimal_places=2, required=False)
+    discount_value = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, write_only=True)
+    
+    type = serializers.CharField(source='discount_type', required=False, default='percentage')
+    discount_type = serializers.CharField(required=False, default='percentage', write_only=True)
+    
     minPurchase = serializers.DecimalField(source='min_purchase', max_digits=10, decimal_places=2, required=False, allow_null=True)
+    min_purchase = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True, write_only=True)
+    
     maxDiscount = serializers.DecimalField(source='max_discount', max_digits=10, decimal_places=2, required=False, allow_null=True)
+    max_discount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True, write_only=True)
+    
     startDate = serializers.DateTimeField(source='start_date', required=False, allow_null=True)
+    start_date = serializers.DateTimeField(required=False, allow_null=True, write_only=True)
+    
     endDate = serializers.DateTimeField(source='end_date', required=False, allow_null=True)
+    end_date = serializers.DateTimeField(required=False, allow_null=True, write_only=True)
+    
     startTime = serializers.TimeField(source='start_time', required=False, allow_null=True)
+    start_time = serializers.TimeField(required=False, allow_null=True, write_only=True)
+    
     endTime = serializers.TimeField(source='end_time', required=False, allow_null=True)
+    end_time = serializers.TimeField(required=False, allow_null=True, write_only=True)
+    
+    usage_limit = serializers.IntegerField(required=False, allow_null=True, write_only=True)
     
     class Meta:
         model = Coupon
@@ -268,7 +203,10 @@ class CouponSerializer(serializers.ModelSerializer):
             'id', 'code', 'description', 'type', 'value', 
             'minPurchase', 'maxDiscount', 'startDate', 'endDate',
             'startTime', 'endTime', 'maxUses', 'usedCount', 'status',
-            'is_active', 'events', 'ticket_tiers', 'ticket_categories'
+            'is_active', 'events', 'ticket_tiers', 'ticket_categories',
+            # 🚀 ENTERPRISE FIX: Include backend field names for compatibility
+            'discount_type', 'discount_value', 'min_purchase', 'max_discount',
+            'start_date', 'end_date', 'start_time', 'end_time', 'usage_limit'
         ]
         read_only_fields = ['id', 'usedCount']
     
@@ -292,19 +230,38 @@ class CouponSerializer(serializers.ModelSerializer):
         except OrganizerUser.DoesNotExist:
             raise serializers.ValidationError({"detail": "El usuario no tiene un organizador asociado"})
         
-        # Extract nested attributes
-        discount_type = validated_data.pop('discount_type', 'percentage')
-        discount_value = validated_data.pop('discount_value', 0)
-        usage_limit = validated_data.pop('usage_limit', None)
-        min_purchase = validated_data.pop('min_purchase', 0)
-        max_discount = validated_data.pop('max_discount', None)
-        start_date = validated_data.pop('start_date', None)
-        end_date = validated_data.pop('end_date', None)
-        start_time = validated_data.pop('start_time', None)
-        end_time = validated_data.pop('end_time', None)
+        # 🚀 ENTERPRISE FIX: Handle both frontend and backend field names
+        # Extract discount_type from either 'type' (frontend) or 'discount_type' (backend)
+        discount_type = validated_data.pop('type', validated_data.pop('discount_type', 'percentage'))
         
-        # Create the coupon
+        # Extract discount_value from either 'value' (frontend) or 'discount_value' (backend)
+        discount_value = validated_data.pop('value', validated_data.pop('discount_value', 0))
+        
+        # Extract usage_limit from either 'maxUses' (frontend) or 'usage_limit' (backend)
+        usage_limit = validated_data.pop('maxUses', validated_data.pop('usage_limit', None))
+        
+        # Extract min_purchase from either 'minPurchase' (frontend) or 'min_purchase' (backend)
+        min_purchase = validated_data.pop('minPurchase', validated_data.pop('min_purchase', 0))
+        
+        # Extract max_discount from either 'maxDiscount' (frontend) or 'max_discount' (backend)
+        max_discount = validated_data.pop('maxDiscount', validated_data.pop('max_discount', None))
+        
+        # Extract start_date from either 'startDate' (frontend) or 'start_date' (backend)
+        start_date = validated_data.pop('startDate', validated_data.pop('start_date', None))
+        
+        # Extract end_date from either 'endDate' (frontend) or 'end_date' (backend)
+        end_date = validated_data.pop('endDate', validated_data.pop('end_date', None))
+        
+        # Extract start_time from either 'startTime' (frontend) or 'start_time' (backend)
+        start_time = validated_data.pop('startTime', validated_data.pop('start_time', None))
+        
+        # Extract end_time from either 'endTime' (frontend) or 'end_time' (backend)
+        end_time = validated_data.pop('endTime', validated_data.pop('end_time', None))
+        
+        # Create the coupon with all fields
         coupon = Coupon.objects.create(
+            code=validated_data.get('code', ''),
+            description=validated_data.get('description', ''),
             discount_type=discount_type,
             discount_value=discount_value,
             usage_limit=usage_limit,
@@ -315,7 +272,7 @@ class CouponSerializer(serializers.ModelSerializer):
             start_time=start_time,
             end_time=end_time,
             events_list=events_data,
-            **validated_data
+            organizer=organizer
         )
         
         return coupon
@@ -360,21 +317,55 @@ class CouponSerializer(serializers.ModelSerializer):
 
 class TicketSerializer(serializers.ModelSerializer):
     """
-    Serializer for ticket model.
+    🚀 ENTERPRISE: Enhanced serializer for ticket model with approval and check-in workflow.
     """
     attendee_name = serializers.CharField(read_only=True)
     ticket_tier_name = serializers.CharField(source='ticket_tier.name', read_only=True)
     order_number = serializers.CharField(source='order_item.order.order_number', read_only=True)
     
+    # Frontend compatibility fields
+    name = serializers.SerializerMethodField()
+    ticketType = serializers.CharField(source='ticket_type', read_only=True)
+    ticketCategory = serializers.CharField(source='ticket_category', read_only=True)
+    purchaseDate = serializers.DateTimeField(source='purchase_date', read_only=True)
+    checkInStatus = serializers.CharField(source='check_in_status', read_only=True)
+    checkInTime = serializers.DateTimeField(source='check_in_time', read_only=True)
+    ticketPrice = serializers.DecimalField(source='ticket_price', max_digits=10, decimal_places=2, read_only=True)
+    ticketId = serializers.CharField(source='ticket_number', read_only=True)
+    requiresApproval = serializers.BooleanField(source='requires_approval', read_only=True)
+    approvalStatus = serializers.CharField(source='approval_status', read_only=True)
+    approvedBy = serializers.SerializerMethodField()
+    approvedAt = serializers.DateTimeField(source='approved_at', read_only=True)
+    rejectionReason = serializers.CharField(source='rejection_reason', read_only=True)
+    phone = serializers.CharField(read_only=True)
+    
     class Meta:
         model = Ticket
         fields = [
             'id', 'ticket_number', 'first_name', 'last_name', 'email',
-            'status', 'checked_in', 'check_in_time', 'form_data',
-            'attendee_name', 'ticket_tier_name', 'order_number'
+            'status', 'check_in_status', 'check_in_time', 'check_in_by',
+            'approval_status', 'approved_by', 'approved_at', 'rejection_reason',
+            'form_data', 'attendee_name', 'ticket_tier_name', 'order_number',
+            # Frontend compatibility fields
+            'name', 'ticketType', 'ticketCategory', 'purchaseDate', 
+            'checkInStatus', 'checkInTime', 'ticketPrice', 'ticketId',
+            'requiresApproval', 'approvalStatus', 'approvedBy', 'approvedAt',
+            'rejectionReason', 'phone'
         ]
         read_only_fields = ['id', 'ticket_number', 'attendee_name', 
-                           'ticket_tier_name', 'order_number']
+                           'ticket_tier_name', 'order_number', 'name', 'ticketType',
+                           'ticketCategory', 'purchaseDate', 'ticketPrice', 'ticketId',
+                           'requiresApproval', 'phone']
+    
+    def get_name(self, obj):
+        """Return full name for frontend compatibility."""
+        return obj.attendee_name
+    
+    def get_approvedBy(self, obj):
+        """Return name of user who approved the ticket."""
+        if obj.approved_by:
+            return f"{obj.approved_by.first_name} {obj.approved_by.last_name}".strip() or obj.approved_by.username
+        return None
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -507,7 +498,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
     location = LocationSerializer(read_only=True)
     category = EventCategorySerializer(read_only=True)
     images = serializers.SerializerMethodField()
-    ticket_tiers = TicketTierSerializer(source='ticket_tiers.filter(is_public=True)', many=True, read_only=True)
+    ticket_tiers = serializers.SerializerMethodField()
     ticket_categories = TicketCategorySerializer(many=True, read_only=True)
     organizer_name = serializers.CharField(source='organizer.name', read_only=True)
     organizer_logo = serializers.ImageField(source='organizer.logo', read_only=True)
@@ -552,6 +543,14 @@ class EventDetailSerializer(serializers.ModelSerializer):
                 'alt': image.alt or obj.title
             } for image in obj.images.all()
         ]
+    
+    def get_ticket_tiers(self, obj) -> List[Dict[str, Any]]:
+        """Return public ticket tiers for this event."""
+        # Get all public ticket tiers for this event
+        public_tiers = obj.ticket_tiers.filter(is_public=True).order_by('order', 'price')
+        
+        # Use the TicketTierSerializer to serialize each tier
+        return TicketTierSerializer(public_tiers, many=True, context=self.context).data
 
 
 class EventCreateUpdateSerializer(serializers.ModelSerializer):
@@ -578,7 +577,7 @@ class EventCreateUpdateSerializer(serializers.ModelSerializer):
             organizer = organizer_user.organizer
         except OrganizerUser.DoesNotExist:
             raise serializers.ValidationError({"detail": "El usuario no tiene un organizador asociado"})
-
+        
         # Create the event with the organizer
         event = Event.objects.create(
             organizer=organizer,
@@ -689,15 +688,7 @@ class EventCreateSerializer(serializers.ModelSerializer):
         if location_data:
             location, _ = Location.objects.get_or_create(
                 name=location_data.get('name', 'TBD'),
-                address=location_data.get('address', 'TBD'),
-                city=location_data.get('city', 'TBD'),
-                country=location_data.get('country', 'TBD'),
-                defaults={
-                    'latitude': location_data.get('coordinates', {}).get('latitude'),
-                    'longitude': location_data.get('coordinates', {}).get('longitude'),
-                    'venue_details': location_data.get('venue_details', ''),
-                    'capacity': location_data.get('capacity')
-                }
+                address=location_data.get('address', 'TBD')
             )
         
         # Find category or use default
@@ -731,16 +722,27 @@ class EventCreateSerializer(serializers.ModelSerializer):
         
         # If creating a draft without location, use a default temporary location
         if validated_data.get('status') == 'draft' and not location:
-            # Create a temporary location if needed
-            temp_location, _ = Location.objects.get_or_create(
-                name="Ubicación provisional",
-                address="Por definir",
-                city="Por definir",
-                country="Por definir",
-                defaults={
-                    'venue_details': 'Ubicación temporal para evento en borrador'
-                }
-            )
+            # Use simplified location lookup with new fields
+            try:
+                temp_location = Location.objects.filter(
+                    name="Ubicación provisional",
+                    address="Por definir"
+                ).first()
+                
+                # If no provisional location exists, create one with unique identifier
+                if not temp_location:
+                    temp_location = Location.objects.create(
+                        name="Ubicación provisional",
+                        address="Por definir"
+                    )
+                    
+            except Exception as e:
+                # Fallback: Create with unique identifier if anything fails
+                temp_location = Location.objects.create(
+                    name=f"Ubicación provisional {int(timezone.now().timestamp())}",
+                    address="Por definir"
+                )
+                
             event_data['location'] = temp_location
         
         # Create event
@@ -790,10 +792,10 @@ class EventCreateSerializer(serializers.ModelSerializer):
                     image=image_url,  # This assumes the URL is already a local file path
                     alt=f'{event.title or "Evento"} image {i+1}',
                     type='image',
-                    order=i
-                )
+                    order=i)
             
             return event
+            
         except Exception as e:
             print(f"Error creating event: {e}")
             raise e
@@ -868,8 +870,7 @@ class EventUpdateSerializer(serializers.ModelSerializer):
             # Check if location data is valid (not empty)
             has_valid_location = (
                 location_data.get('name') and 
-                location_data.get('address') and 
-                location_data.get('city')
+                location_data.get('address')
             )
             
             if has_valid_location:
@@ -878,13 +879,7 @@ class EventUpdateSerializer(serializers.ModelSerializer):
                     id=instance.location.id if instance.location else None,
                     defaults={
                         'name': location_data.get('name', ''),
-                        'address': location_data.get('address', ''),
-                        'city': location_data.get('city', ''),
-                        'country': location_data.get('country', ''),
-                        'latitude': location_data.get('coordinates', {}).get('latitude'),
-                        'longitude': location_data.get('coordinates', {}).get('longitude'),
-                        'venue_details': location_data.get('venue_details', ''),
-                        'capacity': location_data.get('capacity')
+                        'address': location_data.get('address', '')
                     }
                 )
                 instance.location = location
@@ -953,41 +948,40 @@ class BookingSerializer(serializers.Serializer):
     """Serializer for booking event tickets."""
     
     tickets = serializers.ListField(
-        child=serializers.DictField()
+        child=serializers.DictField(), required=False
     )
     customerInfo = serializers.DictField()
+    reservationId = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     
     def validate(self, data):
         """Validate booking data."""
         event_id = self.context['event_id']
         event = Event.objects.get(id=event_id)
         
-        # Check if event is active
-        if event.status != 'active':
+        # Check if event is published (available for bookings)
+        if event.status != 'published':
             raise serializers.ValidationError({"detail": "This event is not currently available for bookings."})
         
         # Check if event is in the past
         if event.is_past:
             raise serializers.ValidationError({"detail": "Cannot book tickets for past events."})
         
-        # Validate tickets
-        for ticket_data in data['tickets']:
-            tier_id = ticket_data.get('tierId')
-            quantity = ticket_data.get('quantity', 0)
-            
-            try:
-                tier = TicketTier.objects.get(id=tier_id, event=event)
-            except TicketTier.DoesNotExist:
-                raise serializers.ValidationError({"tickets": f"Ticket tier with ID {tier_id} does not exist"})
-            
-            if tier.available < quantity:
-                raise serializers.ValidationError({"tickets": f"Not enough tickets available for {tier.name}"})
-            
-            if quantity < tier.min_per_order:
-                raise serializers.ValidationError({"tickets": f"Minimum {tier.min_per_order} tickets required for {tier.name}"})
-            
-            if quantity > tier.max_per_order:
-                raise serializers.ValidationError({"tickets": f"Maximum {tier.max_per_order} tickets allowed for {tier.name}"})
+        # Validate tickets (when no reservationId)
+        tickets_data = data.get('tickets') or []
+        if not data.get('reservationId'):
+            for ticket_data in tickets_data:
+                tier_id = ticket_data.get('tierId')
+                quantity = ticket_data.get('quantity', 0)
+                try:
+                    tier = TicketTier.objects.get(id=tier_id, event=event)
+                except TicketTier.DoesNotExist:
+                    raise serializers.ValidationError({"tickets": f"Ticket tier with ID {tier_id} does not exist"})
+                if tier.available < quantity:
+                    raise serializers.ValidationError({"tickets": f"Not enough tickets available for {tier.name}"})
+                if quantity < tier.min_per_order:
+                    raise serializers.ValidationError({"tickets": f"Minimum {tier.min_per_order} tickets required for {tier.name}"})
+                if quantity > tier.max_per_order:
+                    raise serializers.ValidationError({"tickets": f"Maximum {tier.max_per_order} tickets allowed for {tier.name}"})
         
         # Validate customer info
         customer_info = data['customerInfo']
@@ -1015,9 +1009,15 @@ class BookingSerializer(serializers.Serializer):
         subtotal = 0
         service_fee = 0
         
+        # Get user if authenticated, otherwise None for anonymous orders
+        user = None
+        if hasattr(self.context.get('request'), 'user') and self.context['request'].user.is_authenticated:
+            user = self.context['request'].user
+        
         # Create order
         order = Order.objects.create(
             event=event,
+            user=user,  # Can be None for anonymous orders
             email=customer_info['email'],
             first_name=first_name,
             last_name=last_name,
@@ -1029,22 +1029,33 @@ class BookingSerializer(serializers.Serializer):
             status='pending'
         )
         
+        # 🚀 ENTERPRISE: Build items either from reservation holds or from payload
+        from apps.events.models import TicketHold
+        reservation_id = validated_data.get('reservationId') or self.initial_data.get('reservationId')
+        items_source = []
+
+        if reservation_id:
+            # 🚀 ENTERPRISE: Use holds; do not change availability here (it was adjusted at reserve time)
+            holds = TicketHold.objects.select_for_update().filter(order_id=reservation_id, released=False, event=event, expires_at__gt=timezone.now())
+            if not holds.exists():
+                raise serializers.ValidationError({"detail": "Reservation has expired or is invalid."})
+            # aggregate by tier
+            by_tier = {}
+            for h in holds:
+                by_tier[h.ticket_tier_id] = by_tier.get(h.ticket_tier_id, 0) + h.quantity
+            items_source = [{ 'tierId': tier_id, 'quantity': qty } for tier_id, qty in by_tier.items()]
+        else:
+            items_source = validated_data.get('tickets', [])
+
         # Create order items and tickets
-        for ticket_data in validated_data['tickets']:
+        for ticket_data in items_source:
             tier_id = ticket_data['tierId']
-            quantity = ticket_data['quantity']
-            
+            quantity = int(ticket_data['quantity'])
             tier = TicketTier.objects.get(id=tier_id)
-            
-            # Calculate amounts
             item_subtotal = tier.price * quantity
             item_service_fee = tier.service_fee * quantity
-            
-            # Update order totals
             subtotal += item_subtotal
             service_fee += item_service_fee
-            
-            # Create order item
             from apps.events.models import OrderItem
             order_item = OrderItem.objects.create(
                 order=order,
@@ -1052,18 +1063,15 @@ class BookingSerializer(serializers.Serializer):
                 quantity=quantity,
                 unit_price=tier.price,
                 unit_service_fee=tier.service_fee,
-                subtotal=item_subtotal,
-                total=item_subtotal + item_service_fee
+                subtotal=item_subtotal
             )
-            
-            # Update ticket availability
-            tier.available -= quantity
-            tier.save()
-            
-            # Create tickets - This would normally be done in payment webhook
-            # But for demonstration, we'll create them here
+            # 🚀 ENTERPRISE: Only decrement availability when no reservation was used
+            if not reservation_id:
+                tier.available -= quantity
+                tier.save()
+            # Create tickets immediately (for free events or confirmed payments)
             from apps.events.models import Ticket
-            for i in range(quantity):
+            for _ in range(quantity):
                 Ticket.objects.create(
                     order_item=order_item,
                     first_name=first_name,
@@ -1072,13 +1080,29 @@ class BookingSerializer(serializers.Serializer):
                     status='active'
                 )
         
+        # 🚀 ENTERPRISE: Clean up holds without restocking (tickets already created)
+        if reservation_id:
+            TicketHold.objects.filter(order_id=reservation_id, event=event).delete()
+        
         # Update order totals
         order.subtotal = subtotal
         order.service_fee = service_fee
         order.total = subtotal + service_fee
-        order.status = 'paid'  # In a real app, this would be set by payment webhook
+        # For free orders (total == 0) mark as paid immediately and tickets already created
+        if order.total == 0:
+            order.status = 'paid'
         order.save()
-        
+
+        # 🚀 ENTERPRISE: Send confirmation email asynchronously for paid orders
+        if order.status == 'paid':
+            try:
+                from apps.events.tasks import send_ticket_confirmation_email
+                print(f"📧 QUEUE: Enqueuing confirmation email for order {order.id} -> queue 'emails'")
+                send_ticket_confirmation_email.apply_async(args=[str(order.id)], queue='emails')
+            except Exception as e:
+                # Don't fail the booking if email task fails
+                print(f'Warning: Could not queue confirmation email: {e}')
+
         return {
             'bookingId': str(order.id),
             'status': order.status,
@@ -1136,12 +1160,72 @@ class TicketTierCreateUpdateSerializer(serializers.ModelSerializer):
 class EventSerializer(serializers.ModelSerializer):
     ticket_categories = TicketCategorySerializer(many=True, read_only=True)
     ticket_tiers = TicketTierSerializer(many=True, read_only=True)
+    location = LocationSerializer(read_only=True)
+    is_simple_event = serializers.ReadOnlyField()
+    is_complex_event = serializers.ReadOnlyField()
+    simple_available_capacity = serializers.ReadOnlyField()
     
     class Meta:
         model = Event
         fields = [
-            'id', 'title', 'description', 'start_date', 'end_date',
-            'location', 'organizer', 'status', 'created_at', 'updated_at',
-            'ticket_categories', 'ticket_tiers'
+            'id', 'title', 'slug', 'description', 'short_description',
+            'status', 'visibility', 'password', 'type', 'template',
+            'start_date', 'end_date', 'location', 'category', 'featured',
+            'tags', 'organizer', 'age_restriction', 'dresscode',
+            'accessibility', 'parking', 'max_tickets_per_purchase',
+            'ticket_sales_start', 'ticket_sales_end', 'views_count',
+            'cart_adds_count', 'conversion_count', 'created_at', 'updated_at',
+            'ticket_categories', 'ticket_tiers',
+            # New pricing mode fields
+            'pricing_mode', 'is_free', 'requires_approval', 
+            'simple_capacity', 'simple_price',
+            # Computed fields
+            'is_simple_event', 'is_complex_event', 'simple_available_capacity'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at'] 
+        read_only_fields = ['id', 'slug', 'organizer', 'views_count',
+                           'cart_adds_count', 'conversion_count', 'created_at', 'updated_at',
+                           'is_simple_event', 'is_complex_event', 'simple_available_capacity']
+
+
+class SimpleBookingSerializer(serializers.ModelSerializer):
+    """
+    Serializer for simple booking model.
+    """
+    attendee_name = serializers.ReadOnlyField()
+    is_pending = serializers.ReadOnlyField()
+    is_confirmed = serializers.ReadOnlyField()
+    
+    class Meta:
+        model = SimpleBooking
+        fields = [
+            'id', 'event', 'first_name', 'last_name', 'email', 'phone',
+            'status', 'notes', 'approved_by', 'approved_at',
+            'checked_in', 'check_in_time', 'created_at', 'updated_at',
+            'attendee_name', 'is_pending', 'is_confirmed'
+        ]
+        read_only_fields = ['id', 'approved_by', 'approved_at', 'created_at', 'updated_at',
+                           'attendee_name', 'is_pending', 'is_confirmed']
+
+
+class TicketRequestSerializer(serializers.ModelSerializer):
+    """
+    Serializer for ticket request model.
+    """
+    requester_name = serializers.ReadOnlyField()
+    is_pending = serializers.ReadOnlyField()
+    is_approved = serializers.ReadOnlyField()
+    is_rejected = serializers.ReadOnlyField()
+    target_name = serializers.ReadOnlyField()
+    
+    class Meta:
+        model = TicketRequest
+        fields = [
+            'id', 'event', 'ticket_tier', 'ticket_category', 'quantity',
+            'first_name', 'last_name', 'email', 'phone', 'message',
+            'status', 'reviewed_by', 'reviewed_at', 'review_notes',
+            'order', 'simple_booking', 'created_at', 'updated_at',
+            'requester_name', 'is_pending', 'is_approved', 'is_rejected', 'target_name'
+        ]
+        read_only_fields = ['id', 'reviewed_by', 'reviewed_at', 'order', 'simple_booking',
+                           'created_at', 'updated_at', 'requester_name', 'is_pending', 
+                           'is_approved', 'is_rejected', 'target_name']

@@ -42,13 +42,14 @@ class User(AbstractUser, TimeStampedModel):
         help_text=_("Designates whether this user can validate tickets."),
     )
     
-    # For django-tenants compatibility, used to filter users by tenant
-    tenant_id = models.CharField(
-        _("tenant ID"),
-        max_length=50,
-        blank=True,
+    # Relationship with organizer
+    organizer = models.ForeignKey(
+        'organizers.Organizer',
+        on_delete=models.SET_NULL,
+        related_name='users',
+        verbose_name=_("organizer"),
         null=True,
-        db_index=True
+        blank=True
     )
 
     # Track password changes
@@ -78,20 +79,6 @@ class User(AbstractUser, TimeStampedModel):
     def is_client(self):
         """Return True if the user is a regular client."""
         return not (self.is_organizer or self.is_validator or self.is_staff)
-    
-    def save(self, *args, **kwargs):
-        """Override save to handle tenant_id."""
-        # Users can exist in the public schema or be associated with a tenant
-        if not self.pk and not self.tenant_id:
-            # Try to get current schema name from connection
-            try:
-                from django.db import connection
-                if connection.schema_name != 'public':
-                    self.tenant_id = connection.schema_name
-            except:
-                pass
-        
-        super().save(*args, **kwargs)
 
 
 class Profile(TimeStampedModel):

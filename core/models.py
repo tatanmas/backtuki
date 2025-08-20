@@ -5,40 +5,18 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 
-class TenantAwareModel(models.Model):
-    """Base abstract model for tenant-aware models."""
-    
-    tenant_id = models.CharField(max_length=50, db_index=True)
-    
-    class Meta:
-        abstract = True
-    
-    def save(self, *args, **kwargs):
-        """Override save to automatically set tenant_id."""
-        if not self.tenant_id:
-            # Get the current tenant from connection
-            from django.db import connection
-            self.tenant_id = connection.schema_name
-            
-        super().save(*args, **kwargs)
-
-
 class TimeStampedModel(models.Model):
-    """Base abstract model with created and updated timestamps."""
+    """Abstract base model that provides self-updating created_at and updated_at fields."""
     
-    created_at = models.DateTimeField(
-        _("Created at"), auto_now_add=True, db_index=True
-    )
-    updated_at = models.DateTimeField(
-        _("Updated at"), auto_now=True
-    )
+    created_at = models.DateTimeField(_("Created at"), auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(_("Updated at"), auto_now=True)
     
     class Meta:
         abstract = True
 
 
 class UUIDModel(models.Model):
-    """Base abstract model with UUID as primary key."""
+    """Abstract base model that provides a UUID primary key."""
     
     id = models.UUIDField(
         primary_key=True,
@@ -50,7 +28,7 @@ class UUIDModel(models.Model):
         abstract = True
 
 
-class BaseModel(TenantAwareModel, TimeStampedModel, UUIDModel):
+class BaseModel(TimeStampedModel, UUIDModel):
     """Base model for all Tuki models."""
     
     class Meta:

@@ -5,13 +5,11 @@ from .views import (
     EventCategoryViewSet,
     TicketCategoryViewSet,
     TicketTierViewSet,
-    FormViewSet
 )
 
 router = DefaultRouter()
 router.register(r'events', EventViewSet)
 router.register(r'event-categories', EventCategoryViewSet)
-router.register(r'forms', FormViewSet, basename='form')
 
 # Nested routers for ticket categories and tiers
 event_router = DefaultRouter()

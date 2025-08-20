@@ -19,6 +19,8 @@ from django.db.models import Count, Sum, F, Q, Value
 from django.db.models.functions import Coalesce
 from django.http import Http404, JsonResponse
 from django.core.exceptions import PermissionDenied
+from django.utils import timezone
+from datetime import timedelta
 
 from core.permissions import IsOrganizer, HasEventModule
 from apps.events.models import (
@@ -27,15 +29,16 @@ from apps.events.models import (
     Location,
     TicketTier,
     TicketCategory,
-    EventForm,
-    FormField,
     Order,
     OrderItem,
     Ticket,
+    TicketHold,
     Coupon,
     EventCommunication,
     EventImage,
 )
+from apps.forms.models import Form, FormField
+from apps.forms.serializers import FormFieldSerializer
 from apps.organizers.models import OrganizerUser
 from .serializers import (
     EventListSerializer,
@@ -49,9 +52,6 @@ from .serializers import (
     TicketTierSerializer,
     TicketTierCreateUpdateSerializer,
     TicketCategorySerializer,
-    EventFormSerializer,
-    EventFormDetailSerializer,
-    FormFieldSerializer,
     OrderSerializer,
     OrderDetailSerializer,
     TicketSerializer,
@@ -70,6 +70,9 @@ class EventViewSet(viewsets.ModelViewSet):
     def get_organizer(self):
         """Obtener el organizador asociado al usuario actual."""
         try:
+            # Handle anonymous users
+            if not self.request.user.is_authenticated:
+                return None
             organizer_user = OrganizerUser.objects.get(user=self.request.user)
             return organizer_user.organizer
         except OrganizerUser.DoesNotExist:
@@ -77,10 +80,22 @@ class EventViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """Return events based on user permissions."""
+        # For public endpoints like book/reserve, allow access to all published events
+        if self.action in ['book', 'reserve', 'availability']:
+            return Event.objects.filter(status='published')
+            
         organizer = self.get_organizer()
+        print(f"DEBUG - EventViewSet.get_queryset - User: {self.request.user.id if self.request.user.is_authenticated else 'Anonymous'}")
+        print(f"DEBUG - EventViewSet.get_queryset - Organizer: {organizer.id if organizer else 'None'}")
+        
         if not organizer:
+            print("DEBUG - EventViewSet.get_queryset - No organizer found, returning empty queryset")
             return Event.objects.none()
-        return self.queryset.filter(organizer=organizer)
+        
+        queryset = self.queryset.filter(organizer=organizer)
+        print(f"DEBUG - EventViewSet.get_queryset - Found {queryset.count()} events for organizer")
+        
+        return queryset
     
     def get_serializer_class(self):
         """Return appropriate serializer based on action."""
@@ -97,6 +112,11 @@ class EventViewSet(viewsets.ModelViewSet):
         if self.action == 'book':
             return BookingSerializer
         return EventDetailSerializer
+    def get_permissions(self):
+        """Allow public access to availability and booking endpoints."""
+        if self.action in ['availability', 'book', 'reserve']:
+            return [permissions.AllowAny()]
+        return super().get_permissions()
     
     def get_serializer_context(self):
         """Add additional context to serializer."""
@@ -105,6 +125,20 @@ class EventViewSet(viewsets.ModelViewSet):
             context['event_id'] = self.kwargs.get('pk')
         return context
     
+    def retrieve(self, request, *args, **kwargs):
+        """Retrieve a single event with debugging."""
+        event_id = kwargs.get('pk')
+        print(f"DEBUG - EventViewSet.retrieve - Attempting to retrieve event ID: {event_id}")
+        
+        try:
+            instance = self.get_object()
+            print(f"DEBUG - EventViewSet.retrieve - Found event: {instance.title} (ID: {instance.id}, Status: {instance.status})")
+            serializer = self.get_serializer(instance)
+            return Response(serializer.data)
+        except Exception as e:
+            print(f"DEBUG - EventViewSet.retrieve - Error retrieving event {event_id}: {str(e)}")
+            raise
+
     def list(self, request, *args, **kwargs):
         """List events with optional filters."""
         queryset = self.get_queryset()
@@ -153,12 +187,148 @@ class EventViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def book(self, request, pk=None):
-        """Book tickets for an event."""
+        """🚀 ENTERPRISE: Book tickets for an event."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         event = self.get_object()
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        booking = serializer.save()
-        return Response(booking, status=status.HTTP_201_CREATED)
+        logger.info(f'📦 BOOKING: Attempting to book tickets for event {event.title} ({event.id})')
+        logger.info(f'📦 BOOKING: Request data: {request.data}')
+        
+        # Ensure event is published
+        if event.status != 'published':
+            logger.warning(f'📦 BOOKING: Event {event.id} not published (status: {event.status})')
+            return Response({"detail": "Event not available for booking."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # Create a clean context without request.user to avoid AnonymousUser issues
+            context = {'event_id': pk}
+            if request.user.is_authenticated:
+                context['request'] = request
+            
+            serializer = self.get_serializer(data=request.data, context=context)
+            if not serializer.is_valid():
+                logger.error(f'📦 BOOKING: Validation errors: {serializer.errors}')
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            
+            booking = serializer.save()
+            logger.info(f'📦 BOOKING: Successfully created booking: {booking}')
+            return Response(booking, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            logger.error(f'📦 BOOKING: Unexpected error: {str(e)}')
+            import traceback
+            logger.error(f'📦 BOOKING: Traceback: {traceback.format_exc()}')
+            return Response({"detail": f"Booking failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
+    def reserve(self, request, pk=None):
+        """🚀 ENTERPRISE: Reserve tickets with expiration to prevent overselling."""
+        event = self.get_object()
+        if event.status != 'published':
+            return Response({"detail": "Event not available for reservations."}, status=status.HTTP_400_BAD_REQUEST)
+
+        tickets = request.data.get('tickets', [])
+        reservation_id = request.data.get('reservationId')
+        hold_minutes = int(request.data.get('holdMinutes', 15))
+
+        if not isinstance(tickets, list) or not tickets:
+            return Response({"detail": "Tickets payload is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        now = timezone.now()
+        expires_at = now + timedelta(minutes=hold_minutes)
+
+        with transaction.atomic():
+            # 🚀 ENTERPRISE: Clean expired holds for these tiers before proceeding
+            tier_ids = [t.get('tierId') for t in tickets if t.get('tierId')]
+            expired_holds = TicketHold.objects.select_for_update().filter(
+                ticket_tier_id__in=tier_ids,
+                released=False,
+                expires_at__lte=now,
+            )
+            for hold in expired_holds:
+                hold.release()
+
+            # Get or create reservation order
+            if reservation_id:
+                try:
+                    order = Order.objects.select_for_update().get(id=reservation_id, event=event)
+                except Order.DoesNotExist:
+                    return Response({"detail": "Reservation not found."}, status=status.HTTP_404_NOT_FOUND)
+            else:
+                order = Order.objects.create(
+                    event=event,
+                    email='tatan@tuki.cl',  # placeholder until email collection
+                    first_name='Guest',
+                    last_name='Tuki',
+                    phone='',
+                    subtotal=0,
+                    service_fee=0,
+                    total=0,
+                    currency=event.ticket_tiers.first().currency if event.ticket_tiers.exists() else 'CLP',
+                    status='pending'
+                )
+
+            # 🚀 ENTERPRISE: Index existing active holds for this order
+            active_holds = list(TicketHold.objects.select_for_update().filter(
+                order=order, released=False, expires_at__gt=now
+            ))
+            holds_by_tier = {}
+            for hold in active_holds:
+                holds_by_tier.setdefault(str(hold.ticket_tier_id), []).append(hold)
+
+            # 🚀 ENTERPRISE: For each requested tier, adjust holds to match desired quantity
+            result_items = []
+            for t in tickets:
+                tier_id = t.get('tierId')
+                qty = int(t.get('quantity', 0))
+                if not tier_id or qty < 0:
+                    continue
+
+                try:
+                    tier = TicketTier.objects.select_for_update().get(id=tier_id, event=event)
+                except TicketTier.DoesNotExist:
+                    return Response({"detail": f"Ticket tier {tier_id} not found."}, status=status.HTTP_400_BAD_REQUEST)
+
+                existing_qty = sum(h.quantity for h in holds_by_tier.get(str(tier_id), []) if not h.is_expired)
+
+                if qty > existing_qty:
+                    need = qty - existing_qty
+                    if tier.available < need:
+                        return Response({"detail": f"Not enough availability for {tier.name}."}, status=status.HTTP_400_BAD_REQUEST)
+                    # 🚀 ENTERPRISE: Create one hold per unit to simplify partial release
+                    for _ in range(need):
+                        TicketHold.objects.create(
+                            event=event,
+                            ticket_tier=tier,
+                            order=order,
+                            quantity=1,
+                            expires_at=expires_at,
+                        )
+                    # 🚀 ENTERPRISE: Decrease availability now (atomic stock control)
+                    tier.available = F('available') - need
+                    tier.save(update_fields=['available'])
+                elif qty < existing_qty:
+                    to_release = existing_qty - qty
+                    # 🚀 ENTERPRISE: Release oldest holds first
+                    holds_list = sorted(holds_by_tier.get(str(tier_id), []), key=lambda h: h.expires_at)
+                    for hold in holds_list:
+                        if to_release <= 0:
+                            break
+                        hold.release()
+                        to_release -= hold.quantity
+
+                result_items.append({
+                    'tierId': str(tier_id),
+                    'quantity': qty
+                })
+
+            return Response({
+                'reservationId': str(order.id),
+                'expiresAt': expires_at.isoformat(),
+                'items': result_items,
+                'holdMinutes': hold_minutes
+            })
     
     @action(detail=False, methods=['get'])
     def categories(self, request):
@@ -168,25 +338,77 @@ class EventViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def upload(self, request):
-        """Upload an image file."""
+        """🚀 ENTERPRISE IMAGE UPLOAD - Upload an image file and optionally associate with an event."""
         if 'file' not in request.FILES:
             return Response({'detail': 'No file found'}, status=status.HTTP_400_BAD_REQUEST)
         
         file_obj = request.FILES['file']
+        event_id = request.data.get('event_id')  # Optional event association
+        
         # Generate a unique filename
         filename = f"{uuid.uuid4().hex}.{file_obj.name.split('.')[-1]}"
         
-        # Save file to media directory (a real implementation would use cloud storage)
+        # Save file to media directory (enterprise implementation would use cloud storage)
         file_path = os.path.join(settings.MEDIA_ROOT, 'event_images', filename)
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         
-        with open(file_path, 'wb+') as destination:
-            for chunk in file_obj.chunks():
-                destination.write(chunk)
-        
-        # Return the URL for the uploaded file
-        file_url = f"{settings.MEDIA_URL}event_images/{filename}"
-        return Response({'url': file_url}, status=status.HTTP_201_CREATED)
+        try:
+            with open(file_path, 'wb+') as destination:
+                for chunk in file_obj.chunks():
+                    destination.write(chunk)
+            
+            # Return the URL for the uploaded file (relative path)
+            file_url = f"{settings.MEDIA_URL}event_images/{filename}"
+            
+            # If event_id is provided, create EventImage record
+            if event_id:
+                try:
+                    event = Event.objects.get(id=event_id)
+                    
+                    # Verify user has permission to modify this event
+                    organizer = self.get_organizer()
+                    if not organizer or event.organizer != organizer:
+                        # Clean up uploaded file if permission denied
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                        return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+                    
+                    # Create EventImage record
+                    event_image = EventImage.objects.create(
+                        event=event,
+                        image=f"event_images/{filename}",  # Store relative path
+                        alt=request.data.get('alt', file_obj.name),
+                        type=request.data.get('type', 'image'),
+                        order=event.images.count()  # Set order as current count
+                    )
+                    
+                    print(f"[UPLOAD] ✅ Created EventImage record: {event_image.id} for event {event.id}")
+                    
+                    return Response({
+                        'url': file_url,
+                        'event_image_id': event_image.id,
+                        'message': 'Image uploaded and associated with event successfully'
+                    }, status=status.HTTP_201_CREATED)
+                
+                except Event.DoesNotExist:
+                    # Clean up uploaded file if event doesn't exist
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    return Response({'detail': 'Event not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+            # If no event_id provided, just return the uploaded file URL
+            print(f"[UPLOAD] ✅ File uploaded successfully: {file_url}")
+            return Response({
+                'url': file_url,
+                'message': 'Image uploaded successfully'
+            }, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            # Clean up file if something went wrong
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            print(f"[UPLOAD] ❌ Error during upload: {str(e)}")
+            return Response({'detail': f'Error uploading file: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=True, methods=['delete'], url_path=r'images/(?P<image_id>[^/.]+)')
     def delete_image(self, request, pk=None, image_id=None):
@@ -388,7 +610,7 @@ class LocationViewSet(viewsets.ModelViewSet):
         if not organizer:
             return Location.objects.none()
         
-        return Location.objects.filter(tenant_id=organizer.schema_name)
+        return Location.objects.filter(organizer=organizer)
     
     def get_permissions(self):
         """
@@ -593,7 +815,7 @@ class TicketTierViewSet(viewsets.ModelViewSet):
         try:
             organizer_user = OrganizerUser.objects.get(user=request.user)
             organizer = organizer_user.organizer
-            print(f"DEBUG - Found organizer: ID={organizer.id}, schema_name={organizer.schema_name}")
+            print(f"DEBUG - Found organizer: ID={organizer.id}")
             
             # Get the tier being updated
             instance = self.get_object()
@@ -666,25 +888,23 @@ class TicketTierViewSet(viewsets.ModelViewSet):
                 print(f"DEBUG - PERMISSION DENIED: Event organizer ({event.organizer.id}) does not match user's organizer ({organizer.id if organizer else 'None'})")
                 raise PermissionDenied("You don't have permission to add ticket tiers to this event.")
             
-            # Extract price from data if it's a structured object
-            price_data = None
-            if 'price' in self.request.data and isinstance(self.request.data['price'], dict):
-                price_data = self.request.data['price'].get('basePrice', 0)
+            # 🚀 ENTERPRISE FIX: Handle price properly regardless of format
+            price_data = self.request.data.get('price', 0)
+            if isinstance(price_data, dict):
+                price_data = price_data.get('basePrice', 0)
                 print(f"DEBUG - Extracted price from object: {price_data}")
-                
-                # Get capacity to set available field
-                capacity = self.request.data.get('capacity', 0)
-                print(f"DEBUG - Using capacity value for available: {capacity}")
-                
-                # Save with extracted price value and set available = capacity
-                serializer.save(event=event, price=price_data, available=capacity)
+            elif price_data is None:
+                price_data = 0
+                print(f"DEBUG - Price was None, using default: {price_data}")
             else:
-                # Get capacity to set available field
-                capacity = self.request.data.get('capacity', 0)
-                print(f"DEBUG - Using capacity value for available: {capacity}")
+                print(f"DEBUG - Using direct price value: {price_data}")
                 
-                # Create the ticket tier with the event as normal
-                serializer.save(event=event, available=capacity)
+            # Get capacity to set available field
+            capacity = self.request.data.get('capacity', 0)
+            print(f"DEBUG - Using capacity value for available: {capacity}")
+            
+            # Save with extracted price value and set available = capacity
+            serializer.save(event=event, price=price_data, available=capacity)
         else:
             # Extract event ID from request data for top-level view
             event_id = self.request.data.get('event')
@@ -703,25 +923,23 @@ class TicketTierViewSet(viewsets.ModelViewSet):
                 print(f"DEBUG - PERMISSION DENIED: Event organizer ({event.organizer.id}) does not match user's organizer ({organizer.id if organizer else 'None'})")
                 raise PermissionDenied("You don't have permission to add ticket tiers to this event.")
             
-            # Extract price from data if it's a structured object
-            price_data = None
-            if 'price' in self.request.data and isinstance(self.request.data['price'], dict):
-                price_data = self.request.data['price'].get('basePrice', 0)
+            # 🚀 ENTERPRISE FIX: Handle price properly regardless of format
+            price_data = self.request.data.get('price', 0)
+            if isinstance(price_data, dict):
+                price_data = price_data.get('basePrice', 0)
                 print(f"DEBUG - Extracted price from object: {price_data}")
-                
-                # Get capacity to set available field
-                capacity = self.request.data.get('capacity', 0)
-                print(f"DEBUG - Using capacity value for available: {capacity}")
-                
-                # Save with extracted price value and set available = capacity
-                serializer.save(event=event, price=price_data, available=capacity)
+            elif price_data is None:
+                price_data = 0
+                print(f"DEBUG - Price was None, using default: {price_data}")
             else:
-                # Get capacity to set available field
-                capacity = self.request.data.get('capacity', 0)
-                print(f"DEBUG - Using capacity value for available: {capacity}")
+                print(f"DEBUG - Using direct price value: {price_data}")
                 
-                # Create the ticket tier with the event as normal
-                serializer.save(event=event, available=capacity)
+            # Get capacity to set available field
+            capacity = self.request.data.get('capacity', 0)
+            print(f"DEBUG - Using capacity value for available: {capacity}")
+            
+            # Save with extracted price value and set available = capacity
+            serializer.save(event=event, price=price_data, available=capacity)
 
     @action(detail=True, methods=['post'])
     def form_link(self, request, pk=None):
@@ -736,7 +954,6 @@ class TicketTierViewSet(viewsets.ModelViewSet):
             )
         
         try:
-            from apps.forms.models import Form
             form = Form.objects.get(id=form_id)
             
             # Get the organizer properly
@@ -749,10 +966,8 @@ class TicketTierViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_403_FORBIDDEN
                 )
             
-            # Update the ticket tier with the form ID in metadata
-            metadata = ticket_tier.metadata or {}
-            metadata['form_id'] = str(form_id)
-            ticket_tier.metadata = metadata
+            # Update the ticket tier with the form directly
+            ticket_tier.form = form
             ticket_tier.save()
             
             return Response({
@@ -773,64 +988,62 @@ class TicketTierViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
-class EventFormViewSet(viewsets.ModelViewSet):
-    """
-    API endpoint for event forms.
-    """
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['is_default']
-    search_fields = ['name', 'description']
-    ordering_fields = ['name', 'created_at']
-    ordering = ['-created_at']
-    
-    def get_organizer(self):
-        """Obtener el organizador asociado al usuario actual."""
+    @action(detail=True, methods=['post'])
+    def category_link(self, request, pk=None):
+        """Link a category to a ticket tier"""
+        ticket_tier = self.get_object()
+        category_id = request.data.get('category_id')
+        
+        if not category_id:
+            return Response(
+                {"detail": "Category ID is required"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
         try:
-            organizer_user = OrganizerUser.objects.get(user=self.request.user)
-            return organizer_user.organizer
-        except OrganizerUser.DoesNotExist:
-            return None
-    
-    def get_serializer_class(self):
-        """
-        Return appropriate serializer class.
-        """
-        if self.action in ['create', 'update', 'partial_update']:
-            return EventFormDetailSerializer
-        return EventFormSerializer
-    
-    def get_queryset(self):
-        """
-        Get forms for the current organizer.
-        """
-        if not self.request.user.is_authenticated:
-            return EventForm.objects.none()
-        
-        organizer = self.get_organizer()
-        if not organizer:
-            return EventForm.objects.none()
-        
-        return EventForm.objects.filter(organizer=organizer)
-    
-    def perform_create(self, serializer):
-        """
-        Create a new form for the current organizer.
-        """
-        organizer = self.get_organizer()
-        if not organizer:
-            raise serializers.ValidationError({"detail": "El usuario no tiene un organizador asociado"})
+            category = TicketCategory.objects.get(id=category_id)
             
-        serializer.save(organizer=organizer)
-    
-    @action(detail=True, methods=['get'])
-    def preview(self, request, pk=None):
-        """
-        Get a preview representation of the form with its fields.
-        """
-        form = self.get_object()
-        serializer = EventFormDetailSerializer(form)
-        return Response(serializer.data)
+            # Get the organizer properly
+            organizer = self.get_organizer()
+            
+            # Verify the category belongs to the same organizer and event
+            if category.event.organizer != organizer:
+                return Response(
+                    {"detail": "You don't have permission to use this category"}, 
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Verify the category belongs to the same event as the ticket tier
+            if category.event != ticket_tier.event:
+                return Response(
+                    {"detail": "Category must belong to the same event as the ticket tier"}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Update the ticket tier with the category directly
+            ticket_tier.category = category
+            ticket_tier.save()
+            
+            return Response({
+                "id": ticket_tier.id,
+                "name": ticket_tier.name,
+                "category_id": category_id,
+                "category_name": category.name
+            })
+            
+        except TicketCategory.DoesNotExist:
+            return Response(
+                {"detail": "Category not found"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"detail": str(e)}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+
     
     @action(detail=False, methods=['get'])
     def types(self, request):
@@ -1005,8 +1218,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         if order.status != 'paid':
             return Response(
                 {"detail": "Only paid orders can be refunded."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+                status=status.HTTP_400_BAD_REQUEST)
         
         # Get reason from request data
         reason = request.data.get('reason', '')
@@ -1090,9 +1302,8 @@ class TicketViewSet(viewsets.ModelViewSet):
         if self.request.user.is_authenticated:
             organizer = self.get_organizer()
             if organizer:
-                return Ticket.objects.filter(
-                    order_item__order__event__organizer=organizer
-                )
+                return Ticket.objects.filter( #aca comento para que no vuelva a fallar
+                    order_item__order__event__organizer=organizer)
         
         # No tickets for unauthenticated users
         return Ticket.objects.none()

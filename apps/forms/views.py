@@ -11,17 +11,17 @@ from apps.organizers.models import OrganizerUser
 
 class IsOrganizerUser(permissions.BasePermission):
     """
-    Custom permission to only allow users from the current tenant organization.
+    Custom permission to only allow users from the current organization.
     """
     def has_permission(self, request, view):
-        # Check if the user is authenticated and is a member of the tenant organization
-        if not request.user.is_authenticated or not hasattr(request, 'tenant'):
+        # Check if the user is authenticated and is a member of the organization
+        if not request.user.is_authenticated:
             return False
             
-        # Check if the user is associated with the tenant through OrganizerUser
+        # Check if the user is associated with an organizer through OrganizerUser
         try:
             organizer_user = OrganizerUser.objects.get(user=request.user)
-            return request.tenant == organizer_user.organizer
+            return organizer_user.organizer is not None
         except OrganizerUser.DoesNotExist:
             return False
 
@@ -38,12 +38,11 @@ class FormViewSet(viewsets.ModelViewSet):
         This view should return a list of all forms
         for the currently authenticated user's organization.
         """
-        organizer = self.request.tenant
-        return Form.objects.filter(organizer=organizer)
+        return Form.objects.filter(organizer=self.request.user.organizer)
     
     def perform_create(self, serializer):
         serializer.save(
-            organizer=self.request.tenant,
+            organizer=self.request.user.organizer,
             created_by=self.request.user
         )
     
@@ -78,7 +77,7 @@ class FormViewSet(viewsets.ModelViewSet):
             new_form = Form.objects.create(
                 name=f"Copy of {original_form.name}",
                 description=original_form.description,
-                organizer=self.request.tenant,
+                organizer=self.request.user.organizer,
                 created_by=self.request.user,
                 status=original_form.status
             )

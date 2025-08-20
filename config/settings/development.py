@@ -14,13 +14,21 @@ INSTALLED_APPS += ['debug_toolbar']
 MIDDLEWARE += ['debug_toolbar.middleware.DebugToolbarMiddleware']
 INTERNAL_IPS = ['127.0.0.1']
 
-# Email backend for development
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+# 🚀 ENTERPRISE EMAIL CONFIGURATION for Tuki
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'mail.tuki.cl'
+EMAIL_PORT = 465
+EMAIL_USE_SSL = True
+EMAIL_USE_TLS = False  # SSL and TLS are mutually exclusive
+EMAIL_HOST_USER = 'noreply@tuki.cl'
+EMAIL_HOST_PASSWORD = '-W7)HsC<Hsfk'
+DEFAULT_FROM_EMAIL = 'Tuki <noreply@tuki.cl>'
+SERVER_EMAIL = DEFAULT_FROM_EMAIL
 
-# Database - Use PostgreSQL for django-tenants
+# Database - Use PostgreSQL
 DATABASES = {
     'default': {
-        'ENGINE': 'django_tenants.postgresql_backend',
+        'ENGINE': 'django.db.backends.postgresql',
         'NAME': config('DB_NAME', default='tuki_db'),
         'USER': config('DB_USER', default='tuki_user'),
         'PASSWORD': config('DB_PASSWORD', default='tuki_password'),

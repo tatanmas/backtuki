@@ -19,10 +19,7 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=Csv(
 CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='http://localhost:8000,http://127.0.0.1:8000', cast=Csv())
 
 # Application definition
-SHARED_APPS = [
-    'django_tenants',  # Mandatory for Django Tenants
-    'apps.organizers', # Tenant model
-    
+INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -31,7 +28,7 @@ SHARED_APPS = [
     'django.contrib.staticfiles',
     'django.contrib.sites',
     
-    # Third party shared apps
+    # Third party apps
     'rest_framework',
     'rest_framework.authtoken',
     'rest_framework_simplejwt',
@@ -43,17 +40,9 @@ SHARED_APPS = [
     'allauth.account',
     'allauth.socialaccount',
     
-    # Our shared apps
+    # Our apps
     'apps.users',
-    'core',
-]
-
-TENANT_APPS = [
-    # Apps that should be tenant-specific
-    'django.contrib.contenttypes',
-    'django.contrib.auth',
-    
-    # Our tenant-specific apps
+    'apps.organizers',
     'apps.events',
     'apps.accommodations',
     'apps.experiences',
@@ -61,12 +50,10 @@ TENANT_APPS = [
     'apps.payments',
     'apps.forms',
     'apps.ticket_validation',
+    'core',
 ]
 
-INSTALLED_APPS = SHARED_APPS + [app for app in TENANT_APPS if app not in SHARED_APPS]
-
 MIDDLEWARE = [
-    'django_tenants.middleware.main.TenantMainMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -80,7 +67,6 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'config.urls'
-PUBLIC_SCHEMA_URLCONF = 'config.public_urls'
 
 TEMPLATES = [
     {
@@ -111,11 +97,6 @@ DATABASES = {
         'PORT': config('DB_PORT', default=''),
     }
 }
-
-# Django Tenant settings
-TENANT_MODEL = 'organizers.Organizer'
-TENANT_DOMAIN_MODEL = 'organizers.Domain'
-DATABASE_ROUTERS = ('django_tenants.routers.TenantSyncRouter',)
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
@@ -210,9 +191,27 @@ SPECTACULAR_SETTINGS = {
 # CORS settings
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
-    default='http://localhost:3000,http://127.0.0.1:3000',
+    default='http://localhost:3000,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080',
     cast=Csv()
 )
+
+# Add CORS_ALLOW_HEADERS to allow cache-control and other common headers
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+    'cache-control',
+    'pragma',
+]
+
+# Allow credentials in CORS requests
+CORS_ALLOW_CREDENTIALS = True
 
 # Site ID
 SITE_ID = 1
@@ -220,14 +219,21 @@ SITE_ID = 1
 # Auth settings
 AUTH_USER_MODEL = 'users.User'
 
-# Email settings
-EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
-EMAIL_HOST = config('EMAIL_HOST', default='')
-EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='no-reply@tuki.cl')
+# 🚀 ENTERPRISE EMAIL SETTINGS for Tuki Platform
+EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST = config('EMAIL_HOST', default='mail.tuki.cl')
+EMAIL_PORT = config('EMAIL_PORT', default=465, cast=int)
+EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=True, cast=bool)  # Port 465 uses SSL
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=False, cast=bool)  # SSL and TLS are mutually exclusive
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='noreply@tuki.cl')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='-W7)HsC<Hsfk')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Tuki <noreply@tuki.cl>')
+SERVER_EMAIL = DEFAULT_FROM_EMAIL
+
+# Email timeout settings for reliability
+EMAIL_TIMEOUT = 30
+EMAIL_SSL_CERTFILE = None
+EMAIL_SSL_KEYFILE = None
 
 # Stripe settings
 STRIPE_PUBLIC_KEY = config('STRIPE_PUBLIC_KEY', default='')
