@@ -947,6 +947,41 @@ class Ticket(BaseModel):
     def attendee_name(self):
         """Return the attendee's full name."""
         return f"{self.first_name} {self.last_name}"
+
+
+class TicketNote(BaseModel):
+    """Model for internal notes on tickets."""
+    
+    ticket = models.ForeignKey(
+        Ticket,
+        on_delete=models.CASCADE,
+        related_name='notes',
+        verbose_name=_("ticket")
+    )
+    content = models.TextField(_("content"))
+    author = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name=_("author")
+    )
+    is_internal = models.BooleanField(
+        _("is internal"),
+        default=True,
+        help_text=_("Whether this note is internal (not visible to customer)")
+    )
+    
+    class Meta:
+        verbose_name = _("ticket note")
+        verbose_name_plural = _("ticket notes")
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"Note on {self.ticket.ticket_number} by {self.author.username if self.author else 'System'}"
+
+
+
     
     @property
     def event(self):

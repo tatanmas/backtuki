@@ -17,6 +17,8 @@ from apps.events.models import (
     Order,
     OrderItem,
     Ticket,
+    TicketNote,
+    EmailLog,
     Coupon,
     EventCommunication,
     SimpleBooking,
@@ -25,6 +27,12 @@ from apps.events.models import (
 from apps.forms.models import Form, FormField
 from apps.forms.serializers import FormFieldSerializer, FormSerializer
 from apps.organizers.models import OrganizerUser
+
+# Import payment processor models for payment details
+try:
+    from payment_processor.models import Payment
+except ImportError:
+    Payment = None
 
 
 class LocationSerializer(serializers.ModelSerializer):
@@ -359,6 +367,76 @@ class CouponSerializer(serializers.ModelSerializer):
         return instance
 
 
+
+
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    """
+    Serializer for order item model.
+    """
+    ticket_tier_name = serializers.CharField(source='ticket_tier.name', read_only=True)
+    tickets_count = serializers.IntegerField(source='tickets.count', read_only=True)
+    attendees = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = OrderItem
+        fields = [
+            'id', 'ticket_tier', 'ticket_tier_name', 'quantity', 'unit_price',
+            'unit_service_fee', 'subtotal', 'tickets_count', 'attendees'
+        ]
+        read_only_fields = ['id', 'ticket_tier_name', 'subtotal', 'tickets_count', 'attendees']
+    
+    def get_attendees(self, obj):
+        """Return attendees data for this order item."""
+        attendees = []
+        for ticket in obj.tickets.all():
+            attendees.append({
+                'name': f"{ticket.first_name} {ticket.last_name}".strip(),
+                'email': ticket.email,
+                'checkIn': ticket.check_in_status == 'checked_in'
+            })
+        return attendees
+
+
+class TicketNoteSerializer(serializers.ModelSerializer):
+    """Serializer for ticket notes."""
+    author_name = serializers.CharField(source='author.get_full_name', read_only=True)
+    
+    class Meta:
+        model = TicketNote
+        fields = [
+            'id', 'content', 'author', 'author_name', 'is_internal', 
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'author', 'author_name', 'created_at', 'updated_at']
+
+
+class EmailLogSerializer(serializers.ModelSerializer):
+    """Serializer for email logs."""
+    recipient = serializers.CharField(source='to_email', read_only=True)
+    error_message = serializers.CharField(source='error', read_only=True)
+    email_type = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = EmailLog
+        fields = [
+            'id', 'email_type', 'recipient', 'subject', 'status',
+            'sent_at', 'error_message', 'created_at'
+        ]
+        read_only_fields = ['id', 'created_at']
+    
+    def get_email_type(self, obj):
+        """Get email type from template or metadata."""
+        if obj.template:
+            if 'ticket' in obj.template.lower():
+                return 'ticket'
+            elif 'reminder' in obj.template.lower():
+                return 'reminder'
+            elif 'update' in obj.template.lower():
+                return 'update'
+        return 'custom'
+
+
 class TicketSerializer(serializers.ModelSerializer):
     """
     🚀 ENTERPRISE: Enhanced serializer for ticket model with approval and check-in workflow.
@@ -383,6 +461,10 @@ class TicketSerializer(serializers.ModelSerializer):
     rejectionReason = serializers.CharField(source='rejection_reason', read_only=True)
     phone = serializers.CharField(read_only=True)
     
+    # Notes and email logs
+    notes = TicketNoteSerializer(many=True, read_only=True)
+    email_logs = EmailLogSerializer(many=True, read_only=True)
+    
     class Meta:
         model = Ticket
         fields = [
@@ -394,12 +476,14 @@ class TicketSerializer(serializers.ModelSerializer):
             'name', 'ticketType', 'ticketCategory', 'purchaseDate', 
             'checkInStatus', 'checkInTime', 'ticketPrice', 'ticketId',
             'requiresApproval', 'approvalStatus', 'approvedBy', 'approvedAt',
-            'rejectionReason', 'phone'
+            'rejectionReason', 'phone',
+            # Notes and email logs
+            'notes', 'email_logs'
         ]
         read_only_fields = ['id', 'ticket_number', 'attendee_name', 
                            'ticket_tier_name', 'order_number', 'name', 'ticketType',
                            'ticketCategory', 'purchaseDate', 'ticketPrice', 'ticketId',
-                           'requiresApproval', 'phone']
+                           'requiresApproval', 'phone', 'notes', 'email_logs']
     
     def get_name(self, obj):
         """Return full name for frontend compatibility."""
@@ -412,22 +496,6 @@ class TicketSerializer(serializers.ModelSerializer):
         return None
 
 
-class OrderItemSerializer(serializers.ModelSerializer):
-    """
-    Serializer for order item model.
-    """
-    ticket_tier_name = serializers.CharField(source='ticket_tier.name', read_only=True)
-    tickets_count = serializers.IntegerField(source='tickets.count', read_only=True)
-    
-    class Meta:
-        model = OrderItem
-        fields = [
-            'id', 'ticket_tier', 'ticket_tier_name', 'quantity', 'unit_price',
-            'unit_service_fee', 'subtotal', 'tickets_count'
-        ]
-        read_only_fields = ['id', 'ticket_tier_name', 'subtotal', 'tickets_count']
-
-
 class OrderSerializer(serializers.ModelSerializer):
     """
     Serializer for order model.
@@ -436,6 +504,7 @@ class OrderSerializer(serializers.ModelSerializer):
     buyer_name = serializers.CharField(read_only=True)
     event_title = serializers.CharField(source='event.title', read_only=True)
     coupon_code = serializers.CharField(source='coupon.code', read_only=True)
+    payment_details = serializers.SerializerMethodField()
     
     class Meta:
         model = Order
@@ -444,10 +513,47 @@ class OrderSerializer(serializers.ModelSerializer):
             'first_name', 'last_name', 'phone', 'subtotal', 'taxes',
             'service_fee', 'total', 'currency', 'payment_method', 'payment_id',
             'coupon', 'coupon_code', 'discount', 'notes', 'items', 'buyer_name',
-            'created_at', 'updated_at', 'refund_reason', 'refunded_amount'
+            'created_at', 'updated_at', 'refund_reason', 'refunded_amount',
+            'payment_details'
         ]
         read_only_fields = ['id', 'order_number', 'buyer_name', 'event_title',
-                           'coupon_code', 'created_at', 'updated_at']
+                           'coupon_code', 'created_at', 'updated_at', 'payment_details']
+    
+    def get_payment_details(self, obj):
+        """Get detailed payment information from the payment processor."""
+        if Payment is None:
+            # Payment processor not available
+            return {
+                'payment_method': obj.payment_method or 'Método desconocido',
+                'payment_status': 'unknown'
+            }
+        
+        try:
+            # Get the most recent payment for this order
+            payment = obj.payments.order_by('-created_at').first()
+            if payment:
+                return {
+                    'payment_id': str(payment.id),
+                    'payment_method': payment.payment_method.display_name if payment.payment_method else 'Método desconocido',
+                    'payment_provider': payment.payment_method.provider.name if payment.payment_method and payment.payment_method.provider else 'Desconocido',
+                    'payment_status': payment.status,
+                    'external_id': payment.external_id,
+                    'buy_order': payment.buy_order,
+                    'token': payment.token,
+                    'metadata': payment.metadata,
+                    'authorized_at': payment.authorized_at,
+                    'completed_at': payment.completed_at,
+                    'expires_at': payment.expires_at
+                }
+        except Exception as e:
+            # Log error but don't fail the serializer
+            print(f"Error getting payment details for order {obj.id}: {e}")
+        
+        # Fallback to basic payment info
+        return {
+            'payment_method': obj.payment_method or 'Método desconocido',
+            'payment_status': 'unknown'
+        }
 
 
 class OrderDetailSerializer(OrderSerializer):
@@ -1136,31 +1242,43 @@ class BookingSerializer(serializers.Serializer):
         print(f"🚀 DEBUG - Order totals: subtotal={subtotal}, service_fee={service_fee}, total={order.total}")
         print(f"🚀 DEBUG - Order status before: {order.status}")
         
-        # For free orders (total == 0) mark as paid immediately and tickets already created
+        # 🚀 ENTERPRISE: Handle payment flow
         if order.total == 0:
+            # Free orders: mark as paid immediately and send confirmation
             print(f"🚀 DEBUG - Free order detected! Setting status to 'paid'")
             order.status = 'paid'
-        else:
-            print(f"🚀 DEBUG - Paid order detected! Keeping status as '{order.status}'")
-        
-        order.save()
-        print(f"🚀 DEBUG - Order status after save: {order.status}")
-
-        # 🚀 ENTERPRISE: Send confirmation email asynchronously for paid orders
-        if order.status == 'paid':
+            order.save()
+            print(f"🚀 DEBUG - Order status after save: {order.status}")
+            
+            # Send confirmation email for free orders
             try:
                 from apps.events.tasks import send_ticket_confirmation_email
                 print(f"📧 QUEUE: Enqueuing confirmation email for order {order.id} -> queue 'emails'")
                 send_ticket_confirmation_email.apply_async(args=[str(order.id)], queue='emails')
             except Exception as e:
-                # Don't fail the booking if email task fails
                 print(f'Warning: Could not queue confirmation email: {e}')
-
-        return {
-            'bookingId': str(order.id),
-            'status': order.status,
-            'totalAmount': float(order.total)
-        } 
+            
+            return {
+                'bookingId': str(order.id),
+                'status': order.status,
+                'totalAmount': float(order.total),
+                'payment_required': False,
+                'message': 'Reserva confirmada exitosamente'
+            }
+        else:
+            # Paid orders: keep as pending and require payment
+            print(f"🚀 DEBUG - Paid order detected! Keeping status as '{order.status}' - Payment required")
+            order.save()
+            print(f"🚀 DEBUG - Order status after save: {order.status}")
+            
+            return {
+                'bookingId': str(order.id),
+                'status': order.status,
+                'totalAmount': float(order.total),
+                'payment_required': True,
+                'message': 'Orden creada exitosamente. Proceder al pago.',
+                'next_step': 'payment'
+            } 
 
 
 class TicketTierCreateUpdateSerializer(serializers.ModelSerializer):

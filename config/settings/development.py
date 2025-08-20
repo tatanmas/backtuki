@@ -87,4 +87,7 @@ CSRF_TRUSTED_ORIGINS = ['http://localhost:8081', 'http://localhost:8000']
 CSRF_COOKIE_SECURE = False
 CSRF_USE_SESSIONS = False
 CSRF_COOKIE_HTTPONLY = False
-CSRF_COOKIE_SAMESITE = None  # Needed for cross-origin requests 
+CSRF_COOKIE_SAMESITE = None  # Needed for cross-origin requests
+
+# 🚀 ENTERPRISE: Override frontend URL for development
+FRONTEND_URL = 'http://localhost:8080' 
