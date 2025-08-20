@@ -1192,17 +1192,35 @@ class OrderViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """
-        Get orders based on permissions.
+        Get orders based on permissions with STRICT event isolation.
+        🚀 ENTERPRISE: Multi-level filtering to prevent data leakage between events.
         """
         # Regular users can only see their own orders
         if self.request.user.is_authenticated and not hasattr(self.request.user, 'organizer_roles'):
             return Order.objects.filter(user=self.request.user)
         
-        # Organizers can see orders for their events
+        # 🚀 ENTERPRISE: Organizers can see orders for their events with STRICT isolation
         if self.request.user.is_authenticated:
             organizer = self.get_organizer()
             if organizer:
-                return Order.objects.filter(event__organizer=organizer)
+                # 🚨 CRITICAL: Event ID is MANDATORY for security
+                event_id = self.request.query_params.get('event_id')
+                if not event_id:
+                    # 🚨 SECURITY: Without event_id, return empty to prevent data leakage
+                    return Order.objects.none()
+                
+                # 🚀 ENTERPRISE: Multi-level filtering for maximum security
+                queryset = Order.objects.filter(
+                    event__organizer=organizer,
+                    event_id=event_id  # ← STRICT event isolation
+                )
+                
+                # 🚨 SECURITY: Additional validation - ensure event belongs to organizer
+                event = Event.objects.filter(id=event_id, organizer=organizer).first()
+                if not event:
+                    return Order.objects.none()
+                
+                return queryset
         
         # No orders for unauthenticated users
         return Order.objects.none()
@@ -1292,18 +1310,35 @@ class TicketViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """
-        Get tickets based on permissions.
+        Get tickets based on permissions with STRICT event isolation.
+        🚀 ENTERPRISE: Multi-level filtering to prevent data leakage between events.
         """
         # Regular users can only see their own tickets
         if self.request.user.is_authenticated and not hasattr(self.request.user, 'organizer_roles'):
             return Ticket.objects.filter(order_item__order__user=self.request.user)
         
-        # Organizers can see tickets for their events
+        # 🚀 ENTERPRISE: Organizers can see tickets for their events with STRICT isolation
         if self.request.user.is_authenticated:
             organizer = self.get_organizer()
             if organizer:
-                return Ticket.objects.filter( #aca comento para que no vuelva a fallar
-                    order_item__order__event__organizer=organizer)
+                # 🚨 CRITICAL: Event ID is MANDATORY for security
+                event_id = self.request.query_params.get('event_id')
+                if not event_id:
+                    # 🚨 SECURITY: Without event_id, return empty to prevent data leakage
+                    return Ticket.objects.none()
+                
+                # 🚀 ENTERPRISE: Multi-level filtering for maximum security
+                queryset = Ticket.objects.filter(
+                    order_item__order__event__organizer=organizer,
+                    order_item__order__event_id=event_id  # ← STRICT event isolation
+                )
+                
+                # 🚨 SECURITY: Additional validation - ensure event belongs to organizer
+                event = Event.objects.filter(id=event_id, organizer=organizer).first()
+                if not event:
+                    return Ticket.objects.none()
+                
+                return queryset
         
         # No tickets for unauthenticated users
         return Ticket.objects.none()
@@ -1545,29 +1580,95 @@ class CouponViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """
-        Get coupons for the current organizer.
+        Get coupons for the current organizer with STRICT event isolation.
+        🚀 ENTERPRISE: Multi-level filtering to prevent data leakage between events.
         """
         if not self.request.user.is_authenticated:
+            print(f"🔒 DEBUG - CouponViewSet.get_queryset: User not authenticated")
             return Coupon.objects.none()
         
         organizer = self.get_organizer()
         if not organizer:
+            print(f"🔒 DEBUG - CouponViewSet.get_queryset: No organizer found")
             return Coupon.objects.none()
         
-        # Base queryset filtered by organizer
-        queryset = Coupon.objects.filter(organizer=organizer)
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Organizer: {organizer.id} ({organizer.name})")
         
-        # Filter by event if provided
+        # 🚨 CRITICAL: Event ID is MANDATORY for security
         event_id = self.request.query_params.get('event_id')
-        if event_id:
-            # Need to filter by both direct event reference and events_list field
-            return queryset.filter(
-                Q(event_id=event_id) | 
-                Q(events_list__contains=[event_id]) |
-                Q(events_list__isnull=True)
-            )
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Event ID from query: {event_id}")
         
-        return queryset
+        if not event_id:
+            print(f"🔒 DEBUG - CouponViewSet.get_queryset: No event_id provided, returning empty")
+            # 🚨 SECURITY: Without event_id, return empty to prevent data leakage
+            return Coupon.objects.none()
+        
+        # 🚨 SECURITY: Additional validation - ensure event belongs to organizer
+        event = Event.objects.filter(id=event_id, organizer=organizer).first()
+        if not event:
+            print(f"🔒 DEBUG - CouponViewSet.get_queryset: Event {event_id} not found or not owned by organizer")
+            return Coupon.objects.none()
+        
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Event validated: {event.id} ({event.title})")
+        
+        # 🚀 ENTERPRISE: Multi-level filtering for maximum security
+        base_queryset = Coupon.objects.filter(organizer=organizer)
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Base queryset (organizer only): {base_queryset.count()} coupons")
+        
+        # 🚀 ENTERPRISE: Simplified Global vs Local filtering
+        # Global coupons (null events_list = all events)
+        global_coupons = base_queryset.filter(events_list__isnull=True)
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Global coupons: {global_coupons.count()}")
+        
+        # Local coupons (events_list contains current event)
+        local_coupons = base_queryset.filter(events_list__contains=[event_id])
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Local coupons: {local_coupons.count()}")
+        
+        # Combine both types
+        final_queryset = base_queryset.filter(
+            Q(events_list__isnull=True) |  # Global
+            Q(events_list__contains=[event_id])  # Local
+        ).distinct()
+        
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Final queryset: {final_queryset.count()} coupons")
+        
+        # Log each coupon for debugging
+        for coupon in final_queryset:
+            print(f"🔒 DEBUG - Coupon: {coupon.code} (ID: {coupon.id}) - {coupon}")
+            print(f"  - events_list: {coupon.events_list}")
+            print(f"  - organizer: {coupon.organizer_id}")
+            print(f"  - is_global: {coupon.is_global}")
+            print(f"  - is_local: {coupon.is_local}")
+            print(f"  - applicable_event_id: {coupon.applicable_event_id}")
+        
+        return final_queryset
+    
+    def get_object(self):
+        """
+        🚀 ENTERPRISE: Override get_object to handle individual coupon operations (GET, PUT, DELETE)
+        without requiring event_id in query params.
+        """
+        # Get the coupon by ID first
+        coupon_id = self.kwargs.get('pk')
+        if not coupon_id:
+            raise Http404("Coupon ID is required")
+        
+        try:
+            # Find coupon by ID and organizer (security check)
+            organizer = self.get_organizer()
+            if not organizer:
+                raise Http404("Organizer not found")
+            
+            coupon = Coupon.objects.get(id=coupon_id, organizer=organizer)
+            
+            # 🚨 SECURITY: Additional validation - ensure user can access this coupon
+            # For individual operations, we don't need event_id validation
+            # The organizer check is sufficient for security
+            
+            return coupon
+            
+        except Coupon.DoesNotExist:
+            raise Http404("Coupon not found")
     
     def perform_create(self, serializer):
         """

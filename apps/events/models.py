@@ -1079,22 +1079,14 @@ class Coupon(BaseModel):
         related_name='coupons',
         verbose_name=_("organizer")
     )
-    # Single event reference (legacy)
-    event = models.ForeignKey(
-        Event,
-        on_delete=models.CASCADE,
-        related_name='coupons',
-        verbose_name=_("event"),
-        null=True,
-        blank=True,
-        help_text=_("Legacy field. If null, coupon applies to all events or specified in events_list")
-    )
-    # Multiple events support as JSON array of event IDs
+    # 🚀 ENTERPRISE: Simplified Global vs Local coupon system
+    # events_list = null -> GLOBAL (applies to all events)
+    # events_list = [event_id] -> LOCAL (applies to specific event)
     events_list = models.JSONField(
         _("applicable events"),
         null=True,
         blank=True,
-        help_text=_("List of event IDs this coupon applies to. Null means all events.")
+        help_text=_("null = Global (all events), [event_id] = Local (specific event)")
     )
     discount_type = models.CharField(
         _("discount type"),
@@ -1155,6 +1147,31 @@ class Coupon(BaseModel):
         blank=True
     )
     
+    # 🚀 ENTERPRISE: Helper methods for Global vs Local functionality
+    @property
+    def is_global(self) -> bool:
+        """Return True if coupon is global (applies to all events)."""
+        return self.events_list is None
+    
+    @property
+    def is_local(self) -> bool:
+        """Return True if coupon is local (applies to specific event)."""
+        return self.events_list is not None and len(self.events_list) > 0
+    
+    @property
+    def applicable_event_id(self) -> str | None:
+        """Return the event ID this coupon applies to (for local coupons)."""
+        if self.is_local and self.events_list:
+            return self.events_list[0]  # Local coupons have only one event
+        return None
+    
+    def get_applicable_events(self) -> list[str] | None:
+        """Return list of applicable event IDs or None for global."""
+        return self.events_list
+    
+    def __str__(self):
+        scope = "🌍 GLOBAL" if self.is_global else "🎯 LOCAL"
+        return f"{self.code} ({scope}) - {self.get_discount_type_display()}"
     class Meta:
         verbose_name = _("coupon")
         verbose_name_plural = _("coupons")

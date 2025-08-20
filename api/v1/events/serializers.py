@@ -170,6 +170,11 @@ class CouponSerializer(serializers.ModelSerializer):
     maxUses = serializers.IntegerField(source='usage_limit', required=False, allow_null=True)
     usedCount = serializers.IntegerField(source='usage_count', read_only=True)
     
+    # 🚀 ENTERPRISE: Fields to distinguish global vs local coupons
+    is_global = serializers.SerializerMethodField()
+    coupon_scope = serializers.SerializerMethodField()
+    applicable_events_count = serializers.SerializerMethodField()
+    
     # 🚀 ENTERPRISE FIX: Accept both frontend and backend field names
     value = serializers.DecimalField(source='discount_value', max_digits=10, decimal_places=2, required=False)
     discount_value = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, write_only=True)
@@ -204,6 +209,8 @@ class CouponSerializer(serializers.ModelSerializer):
             'minPurchase', 'maxDiscount', 'startDate', 'endDate',
             'startTime', 'endTime', 'maxUses', 'usedCount', 'status',
             'is_active', 'events', 'ticket_tiers', 'ticket_categories',
+            # 🚀 ENTERPRISE: Global vs local coupon fields
+            'is_global', 'coupon_scope', 'applicable_events_count',
             # 🚀 ENTERPRISE FIX: Include backend field names for compatibility
             'discount_type', 'discount_value', 'min_purchase', 'max_discount',
             'start_date', 'end_date', 'start_time', 'end_time', 'usage_limit'
@@ -215,6 +222,38 @@ class CouponSerializer(serializers.ModelSerializer):
         Return the applicable events as a list of event IDs or null.
         """
         return obj.get_applicable_events()
+    
+    def get_is_global(self, obj) -> bool:
+        """
+        🚀 ENTERPRISE: Return True if coupon is global (applies to all events).
+        """
+        return obj.events_list is None
+    
+    def get_coupon_scope(self, obj) -> str:
+        """
+        🚀 ENTERPRISE: Return human-readable scope description.
+        """
+        if obj.events_list is None:
+            return "🌍 Global - Aplica a todos los eventos"
+        elif obj.events_list and len(obj.events_list) == 1:
+            return "🎯 Evento específico"
+        elif obj.events_list and len(obj.events_list) > 1:
+            return f"📋 Múltiples eventos ({len(obj.events_list)} eventos)"
+        else:
+            return "❓ Scope no definido"
+    
+    def get_applicable_events_count(self, obj) -> int:
+        """
+        🚀 ENTERPRISE: Return count of applicable events.
+        """
+        if obj.events_list is None:
+            return -1  # -1 means "all events"
+        elif obj.events_list and len(obj.events_list) == 1:
+            return 1
+        elif obj.events_list and len(obj.events_list) > 1:
+            return len(obj.events_list)
+        else:
+            return 0
     
     def create(self, validated_data):
         """
@@ -258,6 +297,11 @@ class CouponSerializer(serializers.ModelSerializer):
         # Extract end_time from either 'endTime' (frontend) or 'end_time' (backend)
         end_time = validated_data.pop('endTime', validated_data.pop('end_time', None))
         
+        # 🚀 ENTERPRISE: Handle events field correctly
+        # If events is null -> Global coupon (events_list = null)
+        # If events is array -> Local coupon (events_list = events array)
+        events_list = None if events_data is None else events_data
+        
         # Create the coupon with all fields
         coupon = Coupon.objects.create(
             code=validated_data.get('code', ''),
@@ -271,7 +315,7 @@ class CouponSerializer(serializers.ModelSerializer):
             end_date=end_date,
             start_time=start_time,
             end_time=end_time,
-            events_list=events_data,
+            events_list=events_list,  # 🚀 ENTERPRISE: Global (null) or Local (array)
             organizer=organizer
         )
         
@@ -1088,10 +1132,19 @@ class BookingSerializer(serializers.Serializer):
         order.subtotal = subtotal
         order.service_fee = service_fee
         order.total = subtotal + service_fee
+        
+        print(f"🚀 DEBUG - Order totals: subtotal={subtotal}, service_fee={service_fee}, total={order.total}")
+        print(f"🚀 DEBUG - Order status before: {order.status}")
+        
         # For free orders (total == 0) mark as paid immediately and tickets already created
         if order.total == 0:
+            print(f"🚀 DEBUG - Free order detected! Setting status to 'paid'")
             order.status = 'paid'
+        else:
+            print(f"🚀 DEBUG - Paid order detected! Keeping status as '{order.status}'")
+        
         order.save()
+        print(f"🚀 DEBUG - Order status after save: {order.status}")
 
         # 🚀 ENTERPRISE: Send confirmation email asynchronously for paid orders
         if order.status == 'paid':
