@@ -59,6 +59,21 @@ class User(AbstractUser, TimeStampedModel):
         help_text=_("When the password was last changed.")
     )
     
+    # Guest user tracking
+    is_guest = models.BooleanField(
+        _("guest status"),
+        default=False,
+        help_text=_("User created automatically from purchase, hasn't completed profile.")
+    )
+    
+    # Profile completion tracking
+    profile_completed_at = models.DateTimeField(
+        _("profile completed at"),
+        null=True,
+        blank=True,
+        help_text=_("When the user completed their profile.")
+    )
+    
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username']
     
@@ -79,6 +94,50 @@ class User(AbstractUser, TimeStampedModel):
     def is_client(self):
         """Return True if the user is a regular client."""
         return not (self.is_organizer or self.is_validator or self.is_staff)
+    
+    @property
+    def is_profile_complete(self):
+        """Return True if the user has completed their profile."""
+        return (
+            self.first_name and 
+            self.last_name and 
+            not self.is_guest and
+            self.profile_completed_at is not None
+        )
+    
+    @property
+    def has_password(self):
+        """Return True if the user has set a password."""
+        return bool(self.password)
+    
+    def mark_profile_complete(self):
+        """Mark the profile as completed."""
+        self.is_guest = False
+        self.profile_completed_at = timezone.now()
+        self.save(update_fields=['is_guest', 'profile_completed_at'])
+    
+    @classmethod
+    def create_guest_user(cls, email, first_name=None, last_name=None):
+        """Create a guest user from purchase."""
+        # Generate a unique username from email
+        username = email.split('@')[0]
+        counter = 1
+        original_username = username
+        
+        while cls.objects.filter(username=username).exists():
+            username = f"{original_username}{counter}"
+            counter += 1
+        
+        user = cls.objects.create_user(
+            username=username,
+            email=email,
+            first_name=first_name or '',
+            last_name=last_name or '',
+            is_guest=True,
+            password=None  # No password initially
+        )
+        
+        return user
 
 
 class Profile(TimeStampedModel):

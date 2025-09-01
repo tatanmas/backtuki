@@ -48,6 +48,7 @@ router.register(r'forms', FormViewSet, basename='form')
 urlpatterns = [
     path('', include(router.urls)),
     path('auth/', include('api.v1.auth.urls')),
+    path('user/', include('api.v1.users.urls')),
     # Onboarding URLs
     path('organizers/onboarding/start/', CurrentOnboardingView.as_view(), name='onboarding-start'),
     path('organizers/onboarding/step/', OnboardingStepView.as_view(), name='onboarding-step'),

@@ -18,6 +18,9 @@ urlpatterns = [
     path('api/v1/', include('api.v1.public_urls')),
     path('api/v1/', include('api.v1.urls')),
     
+    # 🔐 OTP Authentication System
+    path('api/v1/otp/', include('apps.otp.urls')),
+    
     # 🚀 ENTERPRISE Payment System
     path('', include('payment_processor.urls')),
     

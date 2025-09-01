@@ -3,7 +3,7 @@
 from rest_framework import serializers
 from django.utils import timezone
 from django.utils.text import slugify
-from django.db import transaction
+from django.db import transaction, models
 import uuid
 from typing import List, Optional, Dict, Any, Union
 
@@ -596,6 +596,146 @@ class OrganizerMinimalSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'description', 'logo']
 
 
+class PublicEventSerializer(serializers.ModelSerializer):
+    """
+    Serializer for public events on the homepage.
+    Maps backend fields to frontend expected format.
+    """
+    # Map backend fields to frontend expected fields
+    image = serializers.SerializerMethodField()
+    price = serializers.SerializerMethodField()
+    rating = serializers.SerializerMethodField()
+    reviews = serializers.SerializerMethodField()
+    location = serializers.SerializerMethodField()
+    date = serializers.SerializerMethodField()
+    time = serializers.SerializerMethodField()
+    ticketsAvailable = serializers.SerializerMethodField()
+    ticketsSold = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Event
+        fields = [
+            'id', 'title', 'image', 'price', 'rating', 'reviews', 
+            'location', 'date', 'time', 'ticketsAvailable', 'ticketsSold'
+        ]
+        read_only_fields = ['id']
+
+    def get_image(self, obj) -> str:
+        """Get the first event image or a default image."""
+        request = self.context.get('request')
+        first_image = obj.images.first()
+        if first_image and first_image.image:
+            return request.build_absolute_uri(first_image.image.url)
+        # Return a default image based on event type
+        default_images = {
+            'concert': 'https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3',
+            'festival': 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6',
+            'theater': 'https://images.unsplash.com/photo-1555939594-58d7cb561ad1',
+            'sports': 'https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b',
+            'workshop': 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3',
+            'conference': 'https://images.unsplash.com/photo-1540575467063-178a50c2df87',
+            'party': 'https://images.unsplash.com/photo-1530103862676-de8c9debad1d',
+        }
+        return default_images.get(obj.type, 'https://images.unsplash.com/photo-1511795409834-ef04bbd61622')
+
+    def get_price(self, obj) -> int:
+        """Get the minimum ticket price or 0 if free."""
+        if obj.pricing_mode == 'simple':
+            return int(obj.simple_price) if not obj.is_free else 0
+        
+        # For complex events, get the minimum price from ticket tiers
+        min_price = obj.ticket_tiers.filter(is_public=True).aggregate(
+            min_price=models.Min('price')
+        )['min_price']
+        return int(min_price) if min_price else 0
+
+    def get_rating(self, obj) -> float:
+        """Get event rating (events don't have ratings like experiences)."""
+        return 0
+
+    def get_reviews(self, obj) -> int:
+        """Get number of reviews (events don't have reviews like experiences)."""
+        return 0
+
+    def get_location(self, obj) -> str:
+        """Get location as string."""
+        if obj.location:
+            location_parts = []
+            if obj.location.name:
+                location_parts.append(obj.location.name)
+            if obj.location.address:
+                # Extract city from address if possible
+                address_parts = obj.location.address.split(',')
+                if len(address_parts) > 1:
+                    location_parts.append(address_parts[-1].strip())
+            return ', '.join(location_parts) if location_parts else 'Ubicación por confirmar'
+        return 'Ubicación por confirmar'
+
+    def get_date(self, obj) -> str:
+        """Format start date as string in Spanish."""
+        if obj.start_date:
+            # Convert to local timezone before formatting
+            local_time = timezone.localtime(obj.start_date)
+            
+            # Spanish month names
+            months = {
+                1: 'Enero', 2: 'Febrero', 3: 'Marzo', 4: 'Abril',
+                5: 'Mayo', 6: 'Junio', 7: 'Julio', 8: 'Agosto',
+                9: 'Septiembre', 10: 'Octubre', 11: 'Noviembre', 12: 'Diciembre'
+            }
+            
+            day = local_time.day
+            month = months[local_time.month]
+            year = local_time.year
+            
+            return f"{day} {month} {year}"
+        return 'Fecha por confirmar'
+
+    def get_time(self, obj) -> str:
+        """Format start time as string."""
+        if obj.start_date:
+            # Convert to local timezone before formatting
+            local_time = timezone.localtime(obj.start_date)
+            # Format as "19:30"
+            return local_time.strftime("%H:%M")
+        return ''
+
+    def get_ticketsAvailable(self, obj) -> int:
+        """Get available tickets count."""
+        # Get all public ticket tiers
+        public_tiers = obj.ticket_tiers.filter(is_public=True)
+        
+        if public_tiers.exists():
+            # Check if any tier has unlimited capacity (available is None or very high)
+            unlimited_tiers = public_tiers.filter(
+                models.Q(available__isnull=True) | 
+                models.Q(available__gte=99990)  # Lower threshold for unlimited detection
+            )
+            if unlimited_tiers.exists():
+                return -1  # -1 indicates unlimited capacity
+            
+            # Sum available capacity from limited tiers
+            total_available = public_tiers.aggregate(
+                total=models.Sum('available')
+            )['total']
+            return total_available or 0
+        
+        # Fallback for events without ticket tiers
+        if obj.pricing_mode == 'simple':
+            if obj.simple_capacity:
+                # TODO: Calculate actual sold tickets
+                sold = 0  # Placeholder
+                return max(0, obj.simple_capacity - sold)
+            return -1  # -1 indicates unlimited capacity
+        
+        return 0
+
+    def get_ticketsSold(self, obj) -> int:
+        """Get sold tickets count (mock for now)."""
+        # TODO: Implement real ticket counting
+        return 0
+
+
 class EventListSerializer(serializers.ModelSerializer):
     """
     Serializer for listing events.
@@ -650,6 +790,8 @@ class EventDetailSerializer(serializers.ModelSerializer):
     images = serializers.SerializerMethodField()
     ticket_tiers = serializers.SerializerMethodField()
     ticket_categories = TicketCategorySerializer(many=True, read_only=True)
+    date = serializers.SerializerMethodField()
+    time = serializers.SerializerMethodField()
     organizer_name = serializers.CharField(source='organizer.name', read_only=True)
     organizer_logo = serializers.ImageField(source='organizer.logo', read_only=True)
     organizer_description = serializers.CharField(source='organizer.description', read_only=True)
@@ -675,7 +817,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
             'organizer_name', 'organizer_logo', 'organizer_description',
             'age_restriction', 'dresscode', 'accessibility', 'parking',
             'max_tickets_per_purchase', 'ticket_sales_start', 'ticket_sales_end',
-            'images', 'ticket_tiers', 'ticket_categories', 'is_active', 'is_past', 
+            'images', 'ticket_tiers', 'ticket_categories', 'date', 'time', 'is_active', 'is_past', 
             'is_upcoming', 'is_ongoing', 'views_count', 'cart_adds_count', 
             'conversion_count'
         ]
@@ -701,6 +843,35 @@ class EventDetailSerializer(serializers.ModelSerializer):
         
         # Use the TicketTierSerializer to serialize each tier
         return TicketTierSerializer(public_tiers, many=True, context=self.context).data
+
+    def get_date(self, obj) -> str:
+        """Format start date as string in Spanish."""
+        if obj.start_date:
+            # Convert to local timezone before formatting
+            local_time = timezone.localtime(obj.start_date)
+            
+            # Spanish month names
+            months = {
+                1: 'Enero', 2: 'Febrero', 3: 'Marzo', 4: 'Abril',
+                5: 'Mayo', 6: 'Junio', 7: 'Julio', 8: 'Agosto',
+                9: 'Septiembre', 10: 'Octubre', 11: 'Noviembre', 12: 'Diciembre'
+            }
+            
+            day = local_time.day
+            month = months[local_time.month]
+            year = local_time.year
+            
+            return f"{day} {month} {year}"
+        return 'Fecha por confirmar'
+
+    def get_time(self, obj) -> str:
+        """Format start time as string."""
+        if obj.start_date:
+            # Convert to local timezone before formatting
+            local_time = timezone.localtime(obj.start_date)
+            # Format as "19:30"
+            return local_time.strftime("%H:%M")
+        return ''
 
 
 class EventCreateUpdateSerializer(serializers.ModelSerializer):

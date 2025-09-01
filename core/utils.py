@@ -15,6 +15,22 @@ def generate_unique_code(prefix='', length=8):
     return f"{prefix}{unique_id}"
 
 
+def generate_username(email):
+    """Generate a unique username from email."""
+    from django.contrib.auth import get_user_model
+    
+    User = get_user_model()
+    base_username = email.split('@')[0]
+    username = base_username
+    counter = 1
+    
+    while User.objects.filter(username=username).exists():
+        username = f"{base_username}{counter}"
+        counter += 1
+    
+    return username
+
+
 def generate_qr_code(data, size=10):
     """Generate a QR code image from the given data."""
     qr = qrcode.QRCode(

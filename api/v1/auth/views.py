@@ -1,219 +1,401 @@
-"""Views for authentication API."""
-
-from django.contrib.auth import get_user_model
-from django.utils.translation import gettext_lazy as _
-from rest_framework import status, generics
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.decorators import api_view, permission_classes
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.views import TokenObtainPairView
+from django.contrib.auth import authenticate, get_user_model
+from django.contrib.auth.hashers import make_password
 from django.utils import timezone
-from django.shortcuts import get_object_or_404
 from django.db import transaction
-from apps.organizers.models import OrganizerOnboarding
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
 
+from apps.otp.models import OTPPurpose
+from apps.otp.services import OTPService
 from .serializers import (
-    UserRegistrationSerializer,
-    PasswordResetSerializer,
-    PasswordResetConfirmSerializer,
-    UserProfileSerializer,
-    EmailTokenObtainPairSerializer,
+    UserLoginSerializer, UserCheckSerializer, UserProfileSerializer,
+    UserRegistrationSerializer, OTPLoginSerializer
 )
+import logging
 
+logger = logging.getLogger(__name__)
 User = get_user_model()
 
 
-class EmailTokenObtainPairView(TokenObtainPairView):
-    """
-    Custom JWT token view that accepts email instead of username.
-    """
-    serializer_class = EmailTokenObtainPairSerializer
-
-
-class RegistrationView(generics.CreateAPIView):
-    """
-    API view for user registration.
-    """
-    serializer_class = UserRegistrationSerializer
+# Alias para compatibilidad con public_urls
+class RegistrationView(APIView):
+    """Vista de registro (alias para compatibilidad)"""
     permission_classes = [AllowAny]
     
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        user = serializer.save()
-        
-        # Generate JWT tokens for the user
-        refresh = RefreshToken.for_user(user)
-        
+    def post(self, request):
+        # TODO: Implementar registro con OTP
         return Response({
-            'user': serializer.data,
-            'tokens': {
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-            }
-        }, status=status.HTTP_201_CREATED)
+            'success': False,
+            'message': 'Registro temporal deshabilitado. Usa OTP.'
+        }, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CheckUserView(APIView):
+    """
+    Verifica si un usuario existe y si tiene contraseña
+    """
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        serializer = UserCheckSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({
+                'success': False,
+                'message': 'Email inválido',
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        email = serializer.validated_data['email']
+        
+        try:
+            user = User.objects.get(email__iexact=email)
+            
+            # Verificar si es organizador
+            is_organizer = hasattr(user, 'organizer_roles') and user.organizer_roles.exists()
+            
+            return Response({
+                'exists': True,
+                'has_password': user.has_password,
+                'is_guest': user.is_guest,
+                'is_profile_complete': user.is_profile_complete,
+                'is_organizer': is_organizer,
+                'user': {
+                    'id': user.id,
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'is_guest': user.is_guest,
+                    'is_organizer': is_organizer
+                }
+            }, status=status.HTTP_200_OK)
+            
+        except User.DoesNotExist:
+            return Response({
+                'exists': False,
+                'has_password': False,
+                'is_guest': False,
+                'is_profile_complete': False,
+                'is_organizer': False
+            }, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class LoginView(APIView):
+    """
+    Login tradicional con email y contraseña
+    """
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        serializer = UserLoginSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({
+                'success': False,
+                'message': 'Datos inválidos',
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        email = serializer.validated_data['email']
+        password = serializer.validated_data['password']
+        
+        # Autenticar usuario
+        user = authenticate(request, username=email, password=password)
+        
+        if user:
+            if not user.is_active:
+                return Response({
+                    'success': False,
+                    'message': 'Cuenta desactivada'
+                }, status=status.HTTP_401_UNAUTHORIZED)
+            
+            # Generar tokens JWT
+            refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+            
+            # Actualizar último login
+            user.last_login = timezone.now()
+            user.save(update_fields=['last_login'])
+        
+            return Response({
+                    'success': True,
+                    'message': 'Login exitoso',
+                    'token': access_token,
+                    'refresh': str(refresh),
+                    'user': UserProfileSerializer(user).data
+                }, status=status.HTTP_200_OK)
+        else:
+            return Response({
+                'success': False,
+                'message': 'Credenciales incorrectas'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class OTPLoginView(APIView):
+    """
+    Login/registro con OTP
+    """
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        serializer = OTPLoginSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({
+                'success': False,
+                'message': 'Datos inválidos',
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        email = serializer.validated_data['email']
+        code = serializer.validated_data['code']
+        
+        # Validar OTP
+        result = OTPService.validate_code(
+            email=email,
+            code=code,
+            purpose=OTPPurpose.LOGIN,
+            request=request
+        )
+        
+        if not result['success']:
+            return Response({
+                'success': False,
+                'message': result['message']
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            with transaction.atomic():
+                # Buscar o crear usuario
+                user, created = User.objects.get_or_create(
+                    email__iexact=email,
+                    defaults={
+                        'username': email.split('@')[0],
+                        'email': email,
+                        'is_guest': True,
+                        'is_active': True
+                    }
+                )
+                
+                # Si es un usuario existente, actualizar último login
+                if not created:
+                    user.last_login = timezone.now()
+                    user.save(update_fields=['last_login'])
+                
+                # Generar tokens JWT
+                refresh = RefreshToken.for_user(user)
+                access_token = str(refresh.access_token)
+                
+                return Response({
+                    'success': True,
+                    'message': 'Acceso autorizado',
+                    'access_token': access_token,
+                    'refresh': str(refresh),
+                    'user': UserProfileSerializer(user).data,
+                    'is_new_user': created,
+                    'requires_profile_completion': not user.is_profile_complete
+                }, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            logger.error(f"Error in OTP login: {str(e)}")
+            return Response({
+                'success': False,
+                'message': 'Error interno del sistema'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class UserProfileView(APIView):
+    """
+    Vista para obtener y actualizar el perfil del usuario
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Obtener perfil actual"""
+        serializer = UserProfileSerializer(request.user)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    def put(self, request):
+        """Actualizar perfil"""
+        serializer = UserProfileSerializer(request.user, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response({
+                'success': False,
+                'message': 'Datos inválidos',
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            with transaction.atomic():
+                user = serializer.save()
+                
+                # Si se completó el perfil por primera vez
+                if (user.first_name and user.last_name and 
+                    user.is_guest and not user.profile_completed_at):
+                    user.mark_profile_complete()
+                
+                return Response({
+                    'success': True,
+                    'message': 'Perfil actualizado',
+                    'user': UserProfileSerializer(user).data
+                }, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            logger.error(f"Error updating profile: {str(e)}")
+            return Response({
+                'success': False,
+                'message': 'Error al actualizar perfil'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class LogoutView(APIView):
     """
-    API view for user logout.
+    Cerrar sesión
     """
     permission_classes = [IsAuthenticated]
     
     def post(self, request):
         try:
-            # Get the refresh token from request
+            # Invalidar refresh token si se proporciona
             refresh_token = request.data.get('refresh')
-            
             if refresh_token:
-                # Blacklist the refresh token
                 token = RefreshToken(refresh_token)
                 token.blacklist()
                 
-            return Response({"detail": "Successfully logged out."}, status=status.HTTP_200_OK)
+            return Response({
+                'success': True,
+                'message': 'Sesión cerrada correctamente'
+            }, status=status.HTTP_200_OK)
+            
         except Exception as e:
-            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-
-class PasswordResetView(generics.GenericAPIView):
-    """
-    API view for requesting a password reset.
-    """
-    permission_classes = [AllowAny]
-    serializer_class = PasswordResetSerializer
-    
-    def post(self, request):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        
-        return Response({
-            'detail': _('Password reset email has been sent.')
-        }, status=status.HTTP_200_OK)
-
-
-class PasswordResetConfirmView(generics.GenericAPIView):
-    """
-    API view for confirming a password reset.
-    """
-    permission_classes = [AllowAny]
-    serializer_class = PasswordResetConfirmSerializer
-    
-    def post(self, request):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        
-        return Response({
-            'detail': _('Password has been reset successfully.')
-        }, status=status.HTTP_200_OK)
+            logger.error(f"Error logging out: {str(e)}")
+            return Response({
+                'success': True,  # Siempre exitoso desde el punto de vista del cliente
+                'message': 'Sesión cerrada'
+            }, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
-def set_password_view(request):
+def create_guest_user_from_purchase(request):
     """
-    API view for setting password during onboarding.
-    This endpoint creates a new user and completes the onboarding process.
+    Crea un usuario invitado automáticamente desde una compra
     """
     email = request.data.get('email')
-    password = request.data.get('password')
-    onboarding_id = request.data.get('onboarding_id')
-
-    if not email or not password:
-        return Response(
-            {"detail": "Email and password are required."},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+    first_name = request.data.get('first_name', '')
+    last_name = request.data.get('last_name', '')
+    order_id = request.data.get('order_id')
     
-    if not onboarding_id:
-        return Response(
-            {"detail": "Onboarding ID is required."},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-    # Prevent creating duplicate users
-    if User.objects.filter(email=email).exists():
-        return Response(
-            {"detail": "A user with this email already exists."},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-        
-    onboarding = get_object_or_404(OrganizerOnboarding, id=onboarding_id)
-
-    with transaction.atomic():
-        # Create the user
-        user = User.objects.create_user(
-            email=email,
-            password=password,
-            username=email, # Or generate a unique username
-            is_active=True
-        )
-
-        # Complete the onboarding process, which creates the organizer and links the user
-        organizer = onboarding.complete_onboarding(user=user)
-
-    # Generate tokens for the new user
-    refresh = RefreshToken.for_user(user)
-    tokens = {
-        'refresh': str(refresh),
-        'access': str(refresh.access_token),
-    }
-
-    return Response(
-        {
-            "message": "User created and onboarding completed successfully.",
-            "user_id": user.id,
-            "organizer_id": organizer.id,
-            "tokens": tokens
-        },
-        status=status.HTTP_201_CREATED
-    )
-
-
-class UserProfileView(generics.RetrieveUpdateAPIView):
-    """
-    API view for retrieving and updating user profile.
-    """
-    permission_classes = [IsAuthenticated]
-    serializer_class = UserProfileSerializer
+    if not email:
+        return Response({
+            'success': False,
+            'message': 'Email requerido'
+        }, status=status.HTTP_400_BAD_REQUEST)
     
-    def get_object(self):
-        return self.request.user
+    try:
+        with transaction.atomic():
+            # Verificar si ya existe
+            user, created = User.objects.get_or_create(
+                email__iexact=email,
+                defaults={
+                    'username': email.split('@')[0],
+                    'email': email,
+                    'first_name': first_name,
+                    'last_name': last_name,
+                    'is_guest': True,
+                    'is_active': True
+                }
+            )
+            
+            # Si no es nuevo pero es guest, actualizar datos si están vacíos
+            if not created and user.is_guest:
+                updated = False
+                if not user.first_name and first_name:
+                    user.first_name = first_name
+                    updated = True
+                if not user.last_name and last_name:
+                    user.last_name = last_name
+                    updated = True
+                if updated:
+                    user.save(update_fields=['first_name', 'last_name'])
+            
+            return Response({
+                'success': True,
+                'user_created': created,
+                'user': {
+                    'id': user.id,
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'is_guest': user.is_guest
+                },
+                'message': 'Usuario guest creado' if created else 'Usuario existente actualizado'
+            }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+            
+    except Exception as e:
+        logger.error(f"Error creating guest user: {str(e)}")
+        return Response({
+            'success': False,
+            'message': 'Error al crear usuario'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# Vistas adicionales para compatibilidad
+class PasswordResetView(APIView):
+    """Vista de reset de contraseña (placeholder)"""
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        return Response({
+            'success': False,
+            'message': 'Usa OTP para recuperar acceso'
+        }, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class PasswordResetConfirmView(APIView):
+    """Vista de confirmación de reset (placeholder)"""
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        return Response({
+            'success': False,
+            'message': 'Usa OTP para recuperar acceso'
+        }, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def set_password_view(request):
+    """Vista para establecer contraseña"""
+    return Response({
+        'success': False,
+        'message': 'Usa el perfil para cambiar contraseña'
+    }, status=status.HTTP_501_NOT_IMPLEMENTED)
 
 
 class PasswordChangeView(APIView):
-    """
-    API view for changing user password.
-    """
+    """Vista para cambiar contraseña"""
     permission_classes = [IsAuthenticated]
     
     def post(self, request):
-        user = request.user
-        current_password = request.data.get('current_password')
-        new_password = request.data.get('new_password')
-        
-        if not current_password or not new_password:
-            return Response(
-                {"detail": "Current password and new password are required."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Verify current password
-        if not user.check_password(current_password):
-            return Response(
-                {"detail": "Current password is incorrect."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Set new password and update last_password_change
-        user.set_password(new_password)
-        user.last_password_change = timezone.now()
-        user.save()
-        
-        return Response(
-            {"detail": "Password changed successfully."},
-            status=status.HTTP_200_OK
-        ) 
+        return Response({
+            'success': False,
+            'message': 'Usa el perfil para cambiar contraseña'
+        }, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class EmailTokenObtainPairView(APIView):
+    """Vista para obtener token JWT con email"""
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        return Response({
+            'success': False,
+            'message': 'Usa el nuevo sistema de login'
+        }, status=status.HTTP_501_NOT_IMPLEMENTED)

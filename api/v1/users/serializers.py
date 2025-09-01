@@ -1,69 +1,75 @@
-"""Serializers for users API."""
-
-from django.contrib.auth import get_user_model
 from rest_framework import serializers
-
-from apps.users.models import Profile
+from django.contrib.auth import get_user_model
+from apps.events.models import Order
 
 User = get_user_model()
 
 
-class ProfileSerializer(serializers.ModelSerializer):
-    """
-    Serializer for profile model.
-    """
-    class Meta:
-        model = Profile
-        fields = [
-            'address', 'city', 'country', 'bio', 'birth_date'
-        ]
-
-
-class UserSerializer(serializers.ModelSerializer):
-    """
-    Serializer for basic user information.
-    """
-    class Meta:
-        model = User
-        fields = [
-            'id', 'email', 'username', 'first_name', 'last_name',
-            'is_active', 'date_joined', 'is_organizer', 'is_validator',
-            'last_password_change'
-        ]
-        read_only_fields = ['id', 'date_joined', 'last_password_change']
-
-
-class UserDetailSerializer(serializers.ModelSerializer):
-    """
-    Serializer for detailed user information.
-    """
-    profile = ProfileSerializer()
+class UserReservationSerializer(serializers.ModelSerializer):
+    """Serializer para reservas de usuario"""
+    
+    eventId = serializers.CharField(source='event.id', read_only=True)
+    eventTitle = serializers.CharField(source='event.title', read_only=True)
+    eventImage = serializers.SerializerMethodField()
+    eventDate = serializers.SerializerMethodField()
+    eventTime = serializers.SerializerMethodField()
+    location = serializers.CharField(source='event.location.name', read_only=True)
+    orderId = serializers.CharField(source='order_number', read_only=True)
+    totalAmount = serializers.DecimalField(source='total_amount', max_digits=10, decimal_places=2, read_only=True)
+    ticketCount = serializers.SerializerMethodField()
+    tickets = serializers.SerializerMethodField()
+    purchaseDate = serializers.DateTimeField(source='created_at', read_only=True)
+    attendees = serializers.SerializerMethodField()
     
     class Meta:
-        model = User
+        model = Order
         fields = [
-            'id', 'email', 'username', 'first_name', 'last_name',
-            'phone_number', 'profile_picture', 'is_active', 'date_joined',
-            'last_login', 'is_organizer', 'is_validator', 'profile'
+            'id', 'orderId', 'eventId', 'eventTitle', 'eventImage',
+            'eventDate', 'eventTime', 'location', 'status',
+            'totalAmount', 'currency', 'ticketCount', 'tickets',
+            'purchaseDate', 'attendees'
         ]
-        read_only_fields = ['id', 'date_joined', 'last_login']
     
-    def update(self, instance, validated_data):
-        """
-        Update user and profile.
-        """
-        profile_data = validated_data.pop('profile', None)
-        
-        # Update user fields
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-        
-        # Update profile if data exists
-        if profile_data:
-            profile = instance.profile
-            for attr, value in profile_data.items():
-                setattr(profile, attr, value)
-            profile.save()
-        
-        return instance 
+    def get_eventImage(self, obj):
+        """Obtener imagen del evento"""
+        if obj.event and obj.event.images.exists():
+            return obj.event.images.first().url
+        return None
+    
+    def get_eventDate(self, obj):
+        """Formatear fecha del evento"""
+        if obj.event and obj.event.start_date:
+            return obj.event.start_date.strftime('%d %B %Y')
+        return None
+    
+    def get_eventTime(self, obj):
+        """Formatear hora del evento"""
+        if obj.event and obj.event.start_date:
+            return obj.event.start_date.strftime('%H:%M')
+        return None
+    
+    def get_ticketCount(self, obj):
+        """Contar total de tickets"""
+        return sum(item.quantity for item in obj.items.all())
+    
+    def get_tickets(self, obj):
+        """Obtener detalles de tickets"""
+        tickets = []
+        for item in obj.items.all():
+            tickets.append({
+                'id': item.id,
+                'tierName': item.ticket_tier_name or 'General',
+                'quantity': item.quantity,
+                'unitPrice': float(item.unit_price)
+            })
+        return tickets
+    
+    def get_attendees(self, obj):
+        """Obtener información de asistentes"""
+        attendees = []
+        if obj.customer_first_name or obj.customer_last_name:
+            attendees.append({
+                'name': f"{obj.customer_first_name} {obj.customer_last_name}".strip(),
+                'email': obj.customer_email
+            })
+        return attendees

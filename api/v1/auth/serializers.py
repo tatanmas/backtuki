@@ -1,221 +1,137 @@
-"""Serializers for authentication API."""
-
-from django.contrib.auth import get_user_model
-from django.contrib.auth.tokens import default_token_generator
-from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
-from django.utils.encoding import force_bytes, force_str
-from django.utils.translation import gettext_lazy as _
-from django.core.mail import send_mail
-from django.conf import settings
 from rest_framework import serializers
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-
-from apps.users.models import Profile
+from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.hashers import make_password
+from django.utils import timezone
+from core.utils import generate_username
 
 User = get_user_model()
 
 
-class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
-    """
-    Custom JWT token serializer that accepts email instead of username.
-    """
-    username_field = User.EMAIL_FIELD
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.fields[self.username_field] = serializers.CharField()
-        self.fields['password'] = serializers.CharField(
-            style={'input_type': 'password'},
-            trim_whitespace=False
-        )
-
-
-class UserRegistrationSerializer(serializers.ModelSerializer):
-    """
-    Serializer for user registration.
-    """
-    password = serializers.CharField(
-        write_only=True,
-        required=True,
-        style={'input_type': 'password'}
-    )
-    password_confirm = serializers.CharField(
-        write_only=True,
-        required=True,
-        style={'input_type': 'password'}
-    )
-    
-    class Meta:
-        model = User
-        fields = [
-            'id', 'email', 'username', 'password', 'password_confirm',
-            'first_name', 'last_name', 'phone_number'
-        ]
-        read_only_fields = ['id']
-        extra_kwargs = {
-            'username': {'required': False},
-        }
-    
-    def validate(self, data):
-        """
-        Check that the passwords match.
-        """
-        if data['password'] != data['password_confirm']:
-            raise serializers.ValidationError(
-                {'password_confirm': _("Passwords don't match.")}
-            )
-        return data
-    
-    def create(self, validated_data):
-        """
-        Create and return a new user instance.
-        """
-        # If username is not provided, use email
-        if 'username' not in validated_data or not validated_data['username']:
-            validated_data['username'] = validated_data['email']
-        
-        # Remove password_confirm field
-        validated_data.pop('password_confirm')
-        
-        # Create the user
-        user = User.objects.create_user(**validated_data)
-        
-        return user
-
-
-class PasswordResetSerializer(serializers.Serializer):
-    """
-    Serializer for requesting a password reset.
-    """
-    email = serializers.EmailField(required=True)
+class UserCheckSerializer(serializers.Serializer):
+    """Serializer para verificar si un usuario existe"""
+    email = serializers.EmailField()
     
     def validate_email(self, value):
-        """
-        Validate that the email exists.
-        """
-        if not User.objects.filter(email=value).exists():
-            raise serializers.ValidationError(
-                _("User with this email address does not exist.")
-            )
-        return value
+        return value.lower().strip()
+
+
+class UserLoginSerializer(serializers.Serializer):
+    """Serializer for user login."""
     
-    def save(self):
-        """
-        Generate a password reset token and send the email.
-        """
-        email = self.validated_data['email']
-        user = User.objects.get(email=email)
-        
-        # Generate token
-        token = default_token_generator.make_token(user)
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        
-        # Build reset url (frontend url)
-        reset_url = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
-        
-        # Send email
-        send_mail(
-            subject=_("Reset your Tuki password"),
-            message=_(
-                f"Follow this link to reset your password: {reset_url}\n\n"
-                f"If you didn't request this, please ignore this email."
-            ),
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-            fail_silently=False
-        )
-
-
-class PasswordResetConfirmSerializer(serializers.Serializer):
-    """
-    Serializer for confirming a password reset.
-    """
-    uid = serializers.CharField(required=True)
-    token = serializers.CharField(required=True)
-    password = serializers.CharField(
-        write_only=True,
-        required=True,
-        style={'input_type': 'password'}
-    )
-    password_confirm = serializers.CharField(
-        write_only=True,
-        required=True,
-        style={'input_type': 'password'}
-    )
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True)
     
-    def validate(self, data):
-        """
-        Validate token and passwords.
-        """
-        try:
-            uid = force_str(urlsafe_base64_decode(data['uid']))
-            user = User.objects.get(pk=uid)
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-            raise serializers.ValidationError(
-                {'uid': _("Invalid user ID.")}
-            )
-        
-        if not default_token_generator.check_token(user, data['token']):
-            raise serializers.ValidationError(
-                {'token': _("Invalid or expired token.")}
-            )
-        
-        if data['password'] != data['password_confirm']:
-            raise serializers.ValidationError(
-                {'password_confirm': _("Passwords don't match.")}
-            )
-        
-        self.user = user
-        return data
+    def validate_email(self, value):
+        return value.lower()
+
+
+class OTPLoginSerializer(serializers.Serializer):
+    """Serializer para login con OTP"""
+    email = serializers.EmailField()
+    code = serializers.CharField(min_length=6, max_length=6)
     
-    def save(self):
-        """
-        Set the new password.
-        """
-        self.user.set_password(self.validated_data['password'])
-        self.user.save()
-
-
-class ProfileSerializer(serializers.ModelSerializer):
-    """
-    Serializer for user profile.
-    """
-    class Meta:
-        model = Profile
-        fields = [
-            'address', 'city', 'country', 'bio', 'birth_date'
-        ]
+    def validate_email(self, value):
+        return value.lower().strip()
+    
+    def validate_code(self, value):
+        code = value.strip().replace(' ', '')
+        if not code.isdigit():
+            raise serializers.ValidationError("El código debe contener solo números")
+        return code
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
-    """
-    Serializer for retrieving and updating user profile.
-    """
-    profile = ProfileSerializer()
+    """Serializer for user profile."""
+    
+    full_name = serializers.SerializerMethodField()
+    is_profile_complete = serializers.ReadOnlyField()
+    has_password = serializers.ReadOnlyField()
+    password = serializers.CharField(write_only=True, required=False, min_length=6)
     
     class Meta:
         model = User
         fields = [
             'id', 'email', 'username', 'first_name', 'last_name',
-            'phone_number', 'profile_picture', 'profile', 'last_password_change'
+            'phone_number', 'full_name', 'is_organizer', 'is_validator',
+            'is_guest', 'is_profile_complete', 'has_password',
+            'date_joined', 'last_login', 'profile_completed_at', 'password'
         ]
-        read_only_fields = ['id', 'email', 'last_password_change']
+        read_only_fields = [
+            'id', 'email', 'username', 'date_joined', 'last_login',
+            'is_organizer', 'is_validator', 'is_guest', 'profile_completed_at'
+        ]
+    
+    def get_full_name(self, obj):
+        return obj.get_full_name()
     
     def update(self, instance, validated_data):
-        """
-        Update user and profile.
-        """
-        profile_data = validated_data.pop('profile', {})
+        """Actualizar perfil del usuario"""
+        # Si se proporciona una contraseña, hashearla
+        password = validated_data.pop('password', None)
+        if password:
+            instance.set_password(password)
+            instance.last_password_change = timezone.now()
         
-        # Update user fields
+        # Actualizar otros campos
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
+        
         instance.save()
+        return instance
+
+
+class UserRegistrationSerializer(serializers.ModelSerializer):
+    """Serializer for user registration via OTP."""
+    
+    password = serializers.CharField(
+        write_only=True,
+        min_length=6,
+        required=False
+    )
+    password_confirm = serializers.CharField(write_only=True, required=False)
+    code = serializers.CharField(min_length=6, max_length=6, write_only=True)
+    
+    class Meta:
+        model = User
+        fields = ['email', 'first_name', 'last_name', 'phone_number', 'password', 'password_confirm', 'code']
+        extra_kwargs = {
+            'email': {'required': True},
+            'first_name': {'required': True},
+            'last_name': {'required': True},
+        }
+    
+    def validate(self, attrs):
+        """Validate passwords if provided."""
+        password = attrs.get('password')
+        password_confirm = attrs.get('password_confirm')
         
-        # Update profile fields
-        profile = instance.profile
-        for attr, value in profile_data.items():
-            setattr(profile, attr, value)
-        profile.save()
+        if password and password_confirm:
+            if password != password_confirm:
+                raise serializers.ValidationError("Las contraseñas no coinciden")
+        elif password and not password_confirm:
+            raise serializers.ValidationError("Confirma tu contraseña")
         
-        return instance 
+        return attrs
+    
+    def validate_email(self, value):
+        """Validate email format."""
+        return value.lower().strip()
+    
+    def validate_code(self, value):
+        """Validate OTP code format."""
+        code = value.strip().replace(' ', '')
+        if not code.isdigit():
+            raise serializers.ValidationError("El código debe contener solo números")
+        return code
+
+
+class GuestUserSerializer(serializers.Serializer):
+    """Serializer para crear usuario guest desde compra"""
+    email = serializers.EmailField()
+    first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    order_id = serializers.CharField(max_length=100, required=False)
+    
+    def validate_email(self, value):
+        return value.lower().strip()

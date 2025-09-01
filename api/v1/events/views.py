@@ -57,6 +57,7 @@ from .serializers import (
     TicketSerializer,
     CouponSerializer,
     EventCommunicationSerializer,
+    PublicEventSerializer,
 )
 
 
@@ -80,9 +81,9 @@ class EventViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """Return events based on user permissions."""
-        # For public endpoints like book/reserve, allow access to all published events
-        if self.action in ['book', 'reserve', 'availability']:
-            return Event.objects.filter(status='published')
+        # For public endpoints like book/reserve/retrieve, allow access to all published events
+        if self.action in ['book', 'reserve', 'availability', 'retrieve']:
+            return Event.objects.filter(status='published', visibility='public')
             
         organizer = self.get_organizer()
         print(f"DEBUG - EventViewSet.get_queryset - User: {self.request.user.id if self.request.user.is_authenticated else 'Anonymous'}")
@@ -114,7 +115,10 @@ class EventViewSet(viewsets.ModelViewSet):
         return EventDetailSerializer
     def get_permissions(self):
         """Allow public access to availability and booking endpoints."""
-        if self.action in ['availability', 'book', 'reserve']:
+        if self.action in ['availability', 'book', 'reserve', 'public_list']:
+            return [permissions.AllowAny()]
+        if self.action == 'retrieve':
+            # Allow public access to published events
             return [permissions.AllowAny()]
         return super().get_permissions()
     
@@ -183,6 +187,49 @@ class EventViewSet(viewsets.ModelViewSet):
         """Get ticket availability for an event."""
         event = self.get_object()
         serializer = self.get_serializer(event)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def public_list(self, request):
+        """Get all public published events for the homepage."""
+        queryset = Event.objects.filter(
+            status='published',
+            visibility='public'
+        ).order_by('-featured', '-start_date')
+        
+        # Apply filters
+        event_type = request.query_params.getlist('type', [])
+        if event_type:
+            queryset = queryset.filter(type__in=event_type)
+        
+        start_date = request.query_params.get('start_date')
+        if start_date:
+            queryset = queryset.filter(start_date__gte=start_date)
+        
+        end_date = request.query_params.get('end_date')
+        if end_date:
+            queryset = queryset.filter(start_date__lte=end_date)
+        
+        location = request.query_params.get('location')
+        if location:
+            location_terms = location.lower()
+            queryset = queryset.filter(
+                Q(location__city__icontains=location_terms) |
+                Q(location__country__icontains=location_terms) |
+                Q(location__name__icontains=location_terms)
+            )
+        
+        categories = request.query_params.getlist('category', [])
+        if categories:
+            queryset = queryset.filter(category__name__in=categories)
+        
+        # Pagination
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = PublicEventSerializer(page, many=True, context={'request': request})
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = PublicEventSerializer(queryset, many=True, context={'request': request})
         return Response(serializer.data)
     
     @action(detail=True, methods=['post'])

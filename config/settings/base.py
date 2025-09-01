@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     'apps.payments',
     'apps.forms',
     'apps.ticket_validation',
+    'apps.otp',  # 🔐 OTP Authentication System
     'payment_processor',  # 🚀 ENTERPRISE Payment System
     'core',
 ]

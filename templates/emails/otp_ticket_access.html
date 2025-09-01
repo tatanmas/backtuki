@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Accede a tus tickets - Tuki</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .logo {
+            font-size: 32px;
+            font-weight: bold;
+            color: #4F46E5;
+            margin-bottom: 10px;
+        }
+        .icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        .code-container {
+            background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+            border-radius: 12px;
+            padding: 30px;
+            text-align: center;
+            margin: 30px 0;
+            color: white;
+        }
+        .code {
+            font-size: 36px;
+            font-weight: bold;
+            letter-spacing: 8px;
+            font-family: 'Courier New', monospace;
+        }
+        .code-label {
+            font-size: 14px;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            opacity: 0.9;
+        }
+        .ticket-info {
+            background: #f0fff4;
+            border-left: 4px solid #10B981;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        .features {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .feature {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .feature-icon {
+            margin-right: 12px;
+            font-size: 18px;
+        }
+        .footer {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }
+        .expires-info {
+            background: #fff3e0;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 20px 0;
+            text-align: center;
+            color: #f57c00;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">Tuki</div>
+            <div class="icon">🎫</div>
+            <h1>Accede a tus tickets</h1>
+        </div>
+
+        <p>¡Hola!</p>
+        <p>Usa este código para acceder a tus tickets y toda la información de tu compra:</p>
+
+        <div class="code-container">
+            <div class="code-label">Tu código de acceso:</div>
+            <div class="code">{{ code }}</div>
+        </div>
+
+        <div class="expires-info">
+            ⏰ Este código expira en {{ time_remaining_minutes }} minutos
+        </div>
+
+        <div class="ticket-info">
+            <strong>🎟️ ¿Qué podrás hacer?</strong>
+            <p>Una vez que ingreses el código, tendrás acceso a:</p>
+        </div>
+
+        <div class="features">
+            <div class="feature">
+                <div class="feature-icon">📱</div>
+                <div>Ver y descargar tus tickets</div>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">📧</div>
+                <div>Reenviar tickets por email</div>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">📄</div>
+                <div>Ver detalles de tu compra</div>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">📍</div>
+                <div>Obtener información del evento</div>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">🔄</div>
+                <div>Gestionar transferencias (si aplica)</div>
+            </div>
+        </div>
+
+        {% if otp.metadata.order_id %}
+        <div style="background: #e3f2fd; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            <strong>📋 Orden:</strong> #{{ otp.metadata.order_id }}
+        </div>
+        {% endif %}
+
+        <p><strong>💡 Consejo:</strong> Guarda tus tickets en tu teléfono para acceso rápido el día del evento.</p>
+
+        <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; border-radius: 4px;">
+            <strong>⚠️ Importante:</strong><br>
+            Este código es personal e intransferible. No lo compartas con nadie para mantener la seguridad de tus tickets.
+        </div>
+
+        <div class="footer">
+            <p>Este email fue enviado por Tuki<br>
+            Si no solicitaste acceso a tickets, puedes ignorar este mensaje.</p>
+        </div>
+    </div>
+</body>
+</html>
