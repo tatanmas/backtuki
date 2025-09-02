@@ -83,7 +83,7 @@ REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] = {
 }
 
 # CSRF settings for development
-CSRF_TRUSTED_ORIGINS = ['http://localhost:8081', 'http://localhost:8000']
+CSRF_TRUSTED_ORIGINS = ['http://localhost:8080', 'http://localhost:8081', 'http://localhost:8000']
 CSRF_COOKIE_SECURE = False
 CSRF_USE_SESSIONS = False
 CSRF_COOKIE_HTTPONLY = False

@@ -3,6 +3,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.renderers import JSONRenderer
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.hashers import make_password
@@ -24,6 +25,7 @@ User = get_user_model()
 
 
 # Alias para compatibilidad con public_urls
+@method_decorator(csrf_exempt, name='dispatch')
 class RegistrationView(APIView):
     """Vista de registro (alias para compatibilidad)"""
     permission_classes = [AllowAny]
@@ -42,6 +44,7 @@ class CheckUserView(APIView):
     Verifica si un usuario existe y si tiene contraseña
     """
     permission_classes = [AllowAny]
+    renderer_classes = [JSONRenderer]
     
     def post(self, request):
         serializer = UserCheckSerializer(data=request.data)
@@ -92,6 +95,15 @@ class LoginView(APIView):
     Login tradicional con email y contraseña
     """
     permission_classes = [AllowAny]
+    renderer_classes = [JSONRenderer]
+    
+    def get(self, request):
+        """Debug method - should not be called in production"""
+        return Response({
+            'success': False,
+            'message': 'GET method not allowed for login',
+            'debug': 'This endpoint only accepts POST requests'
+        }, status=status.HTTP_405_METHOD_NOT_ALLOWED)
     
     def post(self, request):
         serializer = UserLoginSerializer(data=request.data)
@@ -143,6 +155,7 @@ class OTPLoginView(APIView):
     Login/registro con OTP
     """
     permission_classes = [AllowAny]
+    renderer_classes = [JSONRenderer]
     
     def post(self, request):
         serializer = OTPLoginSerializer(data=request.data)
@@ -390,12 +403,49 @@ class PasswordChangeView(APIView):
         }, status=status.HTTP_501_NOT_IMPLEMENTED)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class EmailTokenObtainPairView(APIView):
-    """Vista para obtener token JWT con email"""
+    """Vista para obtener token JWT con email (para organizadores)"""
     permission_classes = [AllowAny]
+    renderer_classes = [JSONRenderer]
     
     def post(self, request):
-        return Response({
-            'success': False,
-            'message': 'Usa el nuevo sistema de login'
-        }, status=status.HTTP_501_NOT_IMPLEMENTED)
+        serializer = UserLoginSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({
+                'success': False,
+                'message': 'Datos inválidos',
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        email = serializer.validated_data['email']
+        password = serializer.validated_data['password']
+        
+        # Autenticar usuario
+        user = authenticate(request, username=email, password=password)
+        
+        if user:
+            if not user.is_active:
+                return Response({
+                    'success': False,
+                    'message': 'Cuenta desactivada'
+                }, status=status.HTTP_401_UNAUTHORIZED)
+            
+            # Generar tokens JWT
+            refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+            
+            # Actualizar último login
+            user.last_login = timezone.now()
+            user.save(update_fields=['last_login'])
+        
+            return Response({
+                'access': access_token,
+                'refresh': str(refresh),
+                'user': UserProfileSerializer(user).data
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({
+                'success': False,
+                'message': 'Credenciales incorrectas'
+            }, status=status.HTTP_401_UNAUTHORIZED)

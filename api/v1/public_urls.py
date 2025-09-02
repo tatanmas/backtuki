@@ -13,6 +13,17 @@ from api.v1.auth.views import (
 )
 from api.v1.organizers.views import CheckSubdomainAvailabilityView, CheckEmailAvailabilityView
 
+# 🔐 OTP Authentication System - Import public OTP views
+from apps.otp.views import (
+    OTPGenerateView, 
+    OTPValidateView, 
+    OTPResendView, 
+    OTPStatusView,
+    EventCreationOTPView, 
+    LoginOTPView, 
+    TicketAccessOTPView
+)
+
 # Create a router and register our public viewsets
 public_router = DefaultRouter()
 
@@ -31,4 +42,13 @@ urlpatterns = [
     # Public organizer endpoints  
     path('organizers/check-subdomain/', CheckSubdomainAvailabilityView.as_view(), name='public_check_subdomain'),
     path('organizers/check-email/', CheckEmailAvailabilityView.as_view(), name='public_check_email'),
+    
+    # 🔐 OTP Authentication System - Public endpoints
+    path('otp/generate/', OTPGenerateView.as_view(), name='otp_generate'),
+    path('otp/validate/', OTPValidateView.as_view(), name='otp_validate'),
+    path('otp/resend/', OTPResendView.as_view(), name='otp_resend'),
+    path('otp/status/', OTPStatusView.as_view(), name='otp_status'),
+    path('otp/event-creation/', EventCreationOTPView.as_view(), name='otp_event_creation'),
+    path('otp/login/', LoginOTPView.as_view(), name='otp_login'),
+    path('otp/ticket-access/', TicketAccessOTPView.as_view(), name='otp_ticket_access'),
 ] 

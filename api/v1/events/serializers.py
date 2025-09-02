@@ -27,6 +27,9 @@ from apps.events.models import (
 from apps.forms.models import Form, FormField
 from apps.forms.serializers import FormFieldSerializer, FormSerializer
 from apps.organizers.models import OrganizerUser
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
 
 # Import payment processor models for payment details
 try:
@@ -1330,15 +1333,44 @@ class BookingSerializer(serializers.Serializer):
         subtotal = 0
         service_fee = 0
         
-        # Get user if authenticated, otherwise None for anonymous orders
+        # 🚀 ENTERPRISE: ALWAYS get or create user for order - ROBUST LINKING
+        customer_email = customer_info['email']
         user = None
-        if hasattr(self.context.get('request'), 'user') and self.context['request'].user.is_authenticated:
-            user = self.context['request'].user
         
-        # Create order
+        print(f"🎯 [BookingSerializer] Processing order for email: {customer_email}")
+        
+        # 1. SIEMPRE buscar primero si existe un usuario con ese email
+        try:
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            existing_user = User.objects.get(email__iexact=customer_email)
+            user = existing_user
+            print(f"🔍 [BookingSerializer] ✅ FOUND existing user for email {customer_email}: {user.id} (is_guest: {user.is_guest})")
+        except User.DoesNotExist:
+            # 2. Solo si NO existe usuario, crear uno como invitado
+            print(f"👤 [BookingSerializer] No existing user found, creating NEW guest user for email: {customer_email}")
+            user = User.create_guest_user(
+                email=customer_email,
+                first_name=first_name,
+                last_name=last_name
+            )
+            print(f"✅ [BookingSerializer] Created NEW guest user: {user.id}")
+        
+        # 3. Si hay usuario autenticado, verificar que coincida con el email
+        if hasattr(self.context.get('request'), 'user') and self.context['request'].user.is_authenticated:
+            auth_user = self.context['request'].user
+            if auth_user.email.lower() == customer_email.lower():
+                user = auth_user  # Usar el usuario autenticado si coincide
+                print(f"🔐 [BookingSerializer] Using authenticated user (email matches): {user.email} (ID: {user.id})")
+            else:
+                print(f"⚠️ [BookingSerializer] Authenticated user email ({auth_user.email}) differs from order email ({customer_email})")
+        
+        print(f"🎯 [BookingSerializer] FINAL USER FOR ORDER: {user.email} (ID: {user.id}, is_guest: {user.is_guest})")
+        
+        # Create order - ALWAYS with user linked
         order = Order.objects.create(
             event=event,
-            user=user,  # Can be None for anonymous orders
+            user=user,  # ALWAYS linked to a user (existing or new guest)
             email=customer_info['email'],
             first_name=first_name,
             last_name=last_name,
@@ -1349,6 +1381,8 @@ class BookingSerializer(serializers.Serializer):
             currency=event.ticket_tiers.first().currency if event.ticket_tiers.exists() else 'CLP',
             status='pending'
         )
+        
+        print(f"📝 [BookingSerializer] Created order {order.order_number} linked to user {user.id} ({user.email})")
         
         # 🚀 ENTERPRISE: Build items either from reservation holds or from payload
         from apps.events.models import TicketHold
@@ -1390,19 +1424,13 @@ class BookingSerializer(serializers.Serializer):
             if not reservation_id:
                 tier.available -= quantity
                 tier.save()
-            # Create tickets immediately (for free events or confirmed payments)
-            from apps.events.models import Ticket
-            for _ in range(quantity):
-                Ticket.objects.create(
-                    order_item=order_item,
-                    first_name=first_name,
-                    last_name=last_name,
-                    email=customer_info['email'],
-                    status='active'
-                )
+            
+            # 🚀 ENTERPRISE: Only create tickets for free orders (paid immediately)
+            # For paid orders, tickets will be created when payment is successful
         
-        # 🚀 ENTERPRISE: Clean up holds without restocking (tickets already created)
-        if reservation_id:
+        # 🚀 ENTERPRISE: Only clean up holds for free orders (paid immediately)
+        # For paid orders, holds will be cleaned up when payment is successful
+        if reservation_id and order.total == 0:
             TicketHold.objects.filter(order_id=reservation_id, event=event).delete()
         
         # Update order totals
@@ -1420,6 +1448,18 @@ class BookingSerializer(serializers.Serializer):
             order.status = 'paid'
             order.save()
             print(f"🚀 DEBUG - Order status after save: {order.status}")
+            
+            # 🚀 ENTERPRISE: Create tickets for free orders immediately
+            from apps.events.models import Ticket
+            for order_item in order.items.all():
+                for _ in range(order_item.quantity):
+                    Ticket.objects.create(
+                        order_item=order_item,
+                        first_name=first_name,
+                        last_name=last_name,
+                        email=customer_info['email'],
+                        status='active'
+                    )
             
             # Send confirmation email for free orders
             try:

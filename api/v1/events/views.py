@@ -341,8 +341,13 @@ class EventViewSet(viewsets.ModelViewSet):
 
                 if qty > existing_qty:
                     need = qty - existing_qty
-                    if tier.available < need:
-                        return Response({"detail": f"Not enough availability for {tier.name}."}, status=status.HTTP_400_BAD_REQUEST)
+                    # 🚀 ENTERPRISE: Verificar disponibilidad real antes de crear holds
+                    if not tier.can_reserve(need):
+                        return Response({
+                            "detail": f"No hay suficientes tickets disponibles para {tier.name}. "
+                                    f"Disponibles: {tier.real_available}, Solicitados: {need}"
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                
                     # 🚀 ENTERPRISE: Create one hold per unit to simplify partial release
                     for _ in range(need):
                         TicketHold.objects.create(
@@ -355,6 +360,7 @@ class EventViewSet(viewsets.ModelViewSet):
                     # 🚀 ENTERPRISE: Decrease availability now (atomic stock control)
                     tier.available = F('available') - need
                     tier.save(update_fields=['available'])
+                
                 elif qty < existing_qty:
                     to_release = existing_qty - qty
                     # 🚀 ENTERPRISE: Release oldest holds first
@@ -382,6 +388,96 @@ class EventViewSet(viewsets.ModelViewSet):
         """Get list of event categories."""
         categories = EventCategory.objects.all()
         return Response([category.name for category in categories])
+    
+    @action(detail=False, methods=['get'])
+    def organizer(self, request):
+        """Get events for the current organizer with metrics."""
+        organizer = self.get_organizer()
+        if not organizer:
+            return Response(
+                {"detail": "Usuario sin organizador asociado"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Get all events for the organizer
+        events = Event.objects.filter(organizer=organizer).select_related(
+            'location', 'category'
+        ).prefetch_related(
+            'ticket_tiers', 'images'
+        ).order_by('-start_date')
+        
+        # Apply filters
+        status_filter = request.query_params.getlist('status', [])
+        if status_filter:
+            events = events.filter(status__in=status_filter)
+        
+        start_date = request.query_params.get('start_date')
+        if start_date:
+            events = events.filter(start_date__gte=start_date)
+        
+        end_date = request.query_params.get('end_date')
+        if end_date:
+            events = events.filter(start_date__lte=end_date)
+        
+        # Filter out events without start_date for proper sorting
+        events = events.exclude(start_date__isnull=True)
+        
+        search = request.query_params.get('search')
+        if search:
+            events = events.filter(
+                Q(title__icontains=search) |
+                Q(description__icontains=search) |
+                Q(location__name__icontains=search) |
+                Q(location__address__icontains=search)
+            )
+        
+        # Calculate metrics for each event
+        events_with_metrics = []
+        for event in events:
+            # Calculate ticket metrics
+            total_tickets = 0
+            sold_tickets = 0
+            total_revenue = 0
+            
+            for tier in event.ticket_tiers.all():
+                total_tickets += tier.capacity
+                sold_tickets += (tier.capacity - tier.available)
+                total_revenue += (tier.capacity - tier.available) * tier.price
+            
+            events_with_metrics.append({
+                'id': str(event.id),
+                'title': event.title,
+                'start_date': event.start_date.isoformat() if event.start_date else None,
+                'end_date': event.end_date.isoformat() if event.end_date else None,
+                'status': event.status,
+                'location': {
+                    'name': event.location.name if event.location else '',
+                    'address': event.location.address if event.location else '',
+                    'is_virtual': event.location.is_virtual if event.location else False
+                },
+                'ticket_tiers': [
+                    {
+                        'id': str(tier.id),
+                        'name': tier.name,
+                        'price': tier.price,
+                        'quantity': tier.capacity,
+                        'sold_quantity': tier.capacity - tier.available
+                    }
+                    for tier in event.ticket_tiers.all()
+                ],
+                'total_revenue': total_revenue,
+                'total_tickets': total_tickets,
+                'sold_tickets': sold_tickets,
+                'images': [
+                    {
+                        'id': str(img.id),
+                        'url': request.build_absolute_uri(img.image.url) if img.image else ''
+                    }
+                    for img in event.images.all()
+                ]
+            })
+        
+        return Response(events_with_metrics)
     
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def upload(self, request):
@@ -1689,6 +1785,35 @@ class CouponViewSet(viewsets.ModelViewSet):
             print(f"  - applicable_event_id: {coupon.applicable_event_id}")
         
         return final_queryset
+    
+    @action(detail=False, methods=['get'], url_path='organizer/all')
+    def list_organizer_coupons(self, request):
+        """
+        🚀 ENTERPRISE: Get all coupons for the current organizer across all events.
+        This endpoint is specifically for the organizer dashboard view.
+        """
+        if not request.user.is_authenticated:
+            return Response({'error': 'Authentication required'}, status=401)
+        
+        organizer = self.get_organizer()
+        if not organizer:
+            return Response({'error': 'Organizer not found'}, status=404)
+        
+        print(f"🌐 DEBUG - list_organizer_coupons: Organizer {organizer.id} requesting all coupons")
+        
+        # Get all coupons for this organizer (both global and local)
+        coupons = Coupon.objects.filter(organizer=organizer).order_by('-created_at')
+        
+        print(f"🌐 DEBUG - list_organizer_coupons: Found {coupons.count()} coupons for organizer")
+        
+        # Serialize the coupons
+        serializer = self.get_serializer(coupons, many=True)
+        
+        return Response({
+            'count': coupons.count(),
+            'results': serializer.data,
+            'message': f'Successfully retrieved {coupons.count()} coupons for organizer'
+        })
     
     def get_object(self):
         """

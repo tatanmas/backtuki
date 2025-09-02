@@ -28,7 +28,7 @@ urlpatterns = [
     
     # OTP Authentication System
     path('check-user/', CheckUserView.as_view(), name='check_user'),
-    path('login/', LoginView.as_view(), name='login'),
+    path('login-password/', LoginView.as_view(), name='login_password'),
     path('login/otp/', OTPLoginView.as_view(), name='otp_login'),
     path('logout/', LogoutView.as_view(), name='logout'),
     

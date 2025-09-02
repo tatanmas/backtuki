@@ -15,7 +15,7 @@ class UserReservationSerializer(serializers.ModelSerializer):
     eventTime = serializers.SerializerMethodField()
     location = serializers.CharField(source='event.location.name', read_only=True)
     orderId = serializers.CharField(source='order_number', read_only=True)
-    totalAmount = serializers.DecimalField(source='total_amount', max_digits=10, decimal_places=2, read_only=True)
+    totalAmount = serializers.DecimalField(source='total', max_digits=10, decimal_places=2, read_only=True)
     ticketCount = serializers.SerializerMethodField()
     tickets = serializers.SerializerMethodField()
     purchaseDate = serializers.DateTimeField(source='created_at', read_only=True)
@@ -58,7 +58,7 @@ class UserReservationSerializer(serializers.ModelSerializer):
         for item in obj.items.all():
             tickets.append({
                 'id': item.id,
-                'tierName': item.ticket_tier_name or 'General',
+                'tierName': item.ticket_tier.name if item.ticket_tier else 'General',
                 'quantity': item.quantity,
                 'unitPrice': float(item.unit_price)
             })
@@ -67,9 +67,9 @@ class UserReservationSerializer(serializers.ModelSerializer):
     def get_attendees(self, obj):
         """Obtener información de asistentes"""
         attendees = []
-        if obj.customer_first_name or obj.customer_last_name:
+        if obj.first_name or obj.last_name:
             attendees.append({
-                'name': f"{obj.customer_first_name} {obj.customer_last_name}".strip(),
-                'email': obj.customer_email
+                'name': f"{obj.first_name} {obj.last_name}".strip(),
+                'email': obj.email
             })
         return attendees

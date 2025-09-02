@@ -115,6 +115,27 @@ class User(AbstractUser, TimeStampedModel):
         self.is_guest = False
         self.profile_completed_at = timezone.now()
         self.save(update_fields=['is_guest', 'profile_completed_at'])
+        
+        # 🚀 ENTERPRISE: Vincular órdenes existentes cuando el usuario completa su perfil
+        self.link_existing_orders()
+    
+    def link_existing_orders(self):
+        """Vincular órdenes existentes que coincidan con el email del usuario."""
+        from apps.events.models import Order
+        
+        # Buscar órdenes que tengan el mismo email pero no estén vinculadas a ningún usuario
+        unlinked_orders = Order.objects.filter(
+            email__iexact=self.email,
+            user__isnull=True
+        )
+        
+        count = unlinked_orders.count()
+        if count > 0:
+            print(f"🔗 [User.link_existing_orders] Linking {count} existing orders to user {self.email}")
+            unlinked_orders.update(user=self)
+            print(f"✅ [User.link_existing_orders] Successfully linked {count} orders")
+        else:
+            print(f"📝 [User.link_existing_orders] No unlinked orders found for {self.email}")
     
     @classmethod
     def create_guest_user(cls, email, first_name=None, last_name=None):

@@ -36,13 +36,17 @@ class UserReservationsView(APIView):
         try:
             user = request.user
             
-            # Obtener órdenes del usuario
+            # 🚀 ENTERPRISE: Obtener órdenes del usuario - tanto las vinculadas por user_id como por email
+            # Esto permite mostrar compras hechas como invitado antes de registrarse
             orders = Order.objects.filter(
-                customer_email__iexact=user.email,
-                status__in=['completed', 'confirmed']
-            ).select_related('event').prefetch_related('items').order_by('-created_at')
+                Q(user=user) | Q(email__iexact=user.email),  # Órdenes vinculadas al user O al email
+                status__in=['paid']
+            ).select_related('event', 'event__location').prefetch_related('items__ticket_tier', 'event__images').order_by('-created_at')
             
-            # Serializar reservas
+            print(f"🔍 [UserReservationsView] User: {user.email} (ID: {user.id})")
+            print(f"🔍 [UserReservationsView] Found {orders.count()} orders for user")
+            
+            # 🚀 ENTERPRISE: Serializar reservas usando modelo completo
             reservations = []
             for order in orders:
                 try:
@@ -51,37 +55,76 @@ class UserReservationsView(APIView):
                     if not event:
                         continue
                     
-                    # Calcular información de tickets
-                    ticket_count = sum(item.quantity for item in order.items.all())
+                    # 🎯 ENTERPRISE: Obtener imagen del evento correctamente
+                    event_image = None
+                    if event.images.exists():
+                        first_image = event.images.first()
+                        if first_image and hasattr(first_image, 'image') and first_image.image:
+                            event_image = first_image.image.url
+                    
+                    # 🎯 ENTERPRISE: Construir información de tickets y asistentes reales
+                    ticket_count = 0
                     tickets = []
+                    attendees = []
                     
                     for item in order.items.all():
+                        ticket_count += item.quantity
+                        
+                        # Información del ticket tier
                         tickets.append({
                             'id': item.id,
-                            'tierName': item.ticket_tier_name or 'General',
+                            'tierName': item.ticket_tier.name if item.ticket_tier else 'General',
                             'quantity': item.quantity,
-                            'unitPrice': float(item.unit_price)
+                            'unitPrice': float(item.unit_price),
+                            'subtotal': float(item.subtotal),
+                            'status': 'Válido' if order.status == 'paid' else 'Pendiente'
                         })
+                        
+                        # 🎯 ENTERPRISE: Obtener asistentes reales de los tickets
+                        for ticket in item.tickets.all():
+                            attendees.append({
+                                'name': f"{ticket.first_name} {ticket.last_name}".strip(),
+                                'email': ticket.email,
+                                'ticketType': item.ticket_tier.name if item.ticket_tier else 'General',
+                                'checkIn': ticket.check_in_status or 'Pendiente',
+                                'ticketNumber': ticket.ticket_number
+                            })
+                    
+                    # 🎯 ENTERPRISE: Información de pago (basada en modelo real)
+                    payment_info = {
+                        'method': order.payment_method or 'Método desconocido',
+                        'provider': 'Transbank' if order.payment_method else 'Desconocido',
+                        'status': 'Pagado' if order.status == 'paid' else 'Pendiente'
+                    }
                     
                     reservation = {
                         'id': order.id,
                         'orderId': order.order_number,
                         'eventId': event.id,
                         'eventTitle': event.title,
-                        'eventImage': event.images.first().url if event.images.exists() else None,
+                        'eventImage': event_image,
                         'eventDate': event.start_date.strftime('%d %B %Y'),
                         'eventTime': event.start_date.strftime('%H:%M'),
-                        'location': event.location.name,
-                        'status': 'confirmed' if order.status == 'completed' else order.status,
-                        'totalAmount': float(order.total_amount),
+                        'date': event.start_date.isoformat(),
+                        'location': event.location.name if event.location else 'Ubicación no especificada',
+                        'status': 'confirmed' if order.status == 'paid' else order.status,
+                        'totalAmount': float(order.total),
+                        'subtotal': float(order.subtotal),
+                        'serviceFee': float(order.service_fee),
+                        'discount': float(order.discount) if order.discount else 0,
                         'currency': order.currency,
                         'ticketCount': ticket_count,
                         'tickets': tickets,
+                        'attendees': attendees,
                         'purchaseDate': order.created_at.isoformat(),
-                        'attendees': [{
-                            'name': f"{order.customer_first_name} {order.customer_last_name}".strip(),
-                            'email': order.customer_email
-                        }] if order.customer_first_name else []
+                        'type': 'event',
+                        'paymentInfo': payment_info,
+                        # 🎯 ENTERPRISE: Información del cliente
+                        'customerInfo': {
+                            'name': f"{order.first_name} {order.last_name}".strip(),
+                            'email': order.email,
+                            'phone': order.phone or ''
+                        }
                     }
                     
                     reservations.append(reservation)
@@ -114,10 +157,10 @@ class ReservationDetailView(APIView):
         try:
             user = request.user
             
-            # Obtener la orden
-            order = Order.objects.select_related('event').prefetch_related('items').get(
-                id=reservation_id,
-                customer_email__iexact=user.email
+            # 🚀 ENTERPRISE: Obtener la orden - tanto vinculada por user_id como por email
+            order = Order.objects.select_related('event', 'event__location').prefetch_related('items__ticket_tier', 'event__images').get(
+                Q(user=user) | Q(email__iexact=user.email),
+                id=reservation_id
             )
             
             # Serializar la reserva
@@ -162,9 +205,9 @@ def get_reservations_by_email_otp(request):
         
         # Obtener órdenes por email
         orders = Order.objects.filter(
-            customer_email__iexact=email,
-            status__in=['completed', 'confirmed']
-        ).select_related('event').prefetch_related('items').order_by('-created_at')
+            email__iexact=email,
+            status__in=['paid']
+        ).select_related('event', 'event__location').prefetch_related('items__ticket_tier', 'event__images').order_by('-created_at')
         
         reservations = []
         for order in orders:
@@ -185,7 +228,7 @@ def get_reservations_by_email_otp(request):
                     'eventTime': event.start_date.strftime('%H:%M'),
                     'location': event.location.name,
                     'status': 'confirmed',
-                    'totalAmount': float(order.total_amount),
+                    'totalAmount': float(order.total),
                     'currency': order.currency,
                     'ticketCount': ticket_count,
                     'purchaseDate': order.created_at.isoformat()

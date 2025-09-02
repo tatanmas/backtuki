@@ -62,7 +62,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
     🚀 ENTERPRISE: Payment processing endpoints
     """
     serializer_class = PaymentSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]  # Public endpoint like booking and payment-methods
     
     def get_queryset(self):
         """Get payments for authenticated user's orders"""
@@ -79,6 +79,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
         """
         🚀 ENTERPRISE: Create a new payment
         """
+        
         serializer = CreatePaymentSerializer(data=request.data)
         
         if not serializer.is_valid():
@@ -94,13 +95,37 @@ class PaymentViewSet(viewsets.ModelViewSet):
                 order = Order.objects.get(id=serializer.validated_data['order_id'])
                 payment_method = PaymentMethod.objects.get(id=serializer.validated_data['payment_method_id'])
                 
-                # Verify user owns the order (security check)
-                if order.user != request.user:
-                    logger.error(f"🚨 SECURITY: User {request.user.id} tried to pay for order {order.id} owned by {order.user_id}")
-                    return Response({
-                        'success': False,
-                        'error': 'Unauthorized access to order'
-                    }, status=status.HTTP_403_FORBIDDEN)
+                
+                # 🚀 ENTERPRISE: Security check for public endpoint
+                # Allow payment if:
+                # 1. User is anonymous (order created anonymously and will be linked by email)
+                # 2. User is authenticated and owns the order directly  
+                # 3. User is authenticated and email matches order email (existing account flow)
+                
+                if request.user.is_authenticated:
+                    user_owns_order = order.user == request.user
+                    email_matches = request.user.email.lower() == order.email.lower()
+                    
+                    
+                    if not (user_owns_order or email_matches):
+                        logger.error(f"🚨 SECURITY: User {request.user.id} ({request.user.email}) tried to pay for order {order.id} owned by {order.user_id} ({order.email})")
+                        return Response({
+                            'success': False,
+                            'error': 'Unauthorized access to order'
+                        }, status=status.HTTP_403_FORBIDDEN)
+                else:
+                    # Anonymous user - payment allowed (order linking happens during booking)
+                    pass
+                
+                # Log successful authorization
+                if request.user.is_authenticated:
+                    user_owns_order = order.user == request.user
+                    if user_owns_order:
+                        logger.info(f"✅ PAYMENT AUTH: User {request.user.id} owns order {order.id}")
+                    else:
+                        logger.info(f"✅ PAYMENT AUTH: User {request.user.id} authorized by email match for order {order.id}")
+                else:
+                    logger.info(f"✅ PAYMENT AUTH: Anonymous user payment for order {order.id}")
                 
                 # Create payment service
                 service = PaymentServiceFactory.create_service(payment_method.provider)

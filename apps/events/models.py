@@ -624,6 +624,47 @@ class TicketTier(BaseModel):
     def is_sold_out(self):
         """Return True if ticket is sold out."""
         return self.available <= 0
+    
+    @property
+    def tickets_on_hold(self):
+        """🚀 ENTERPRISE: Return number of tickets currently on hold."""
+        from django.utils import timezone
+        return self.holds.filter(
+            released=False,
+            expires_at__gt=timezone.now()
+        ).aggregate(total=models.Sum('quantity'))['total'] or 0
+    
+    @property
+    def real_available(self):
+        """🚀 ENTERPRISE: Return tickets available for immediate purchase (excluding holds)."""
+        return max(0, self.available - self.tickets_on_hold)
+    
+    @property
+    def tickets_sold(self):
+        """🚀 ENTERPRISE: Return number of tickets actually sold (paid orders)."""
+        return self.order_items.filter(
+            order__status='paid'
+        ).aggregate(total=models.Sum('quantity'))['total'] or 0
+    
+
+    
+    def can_reserve(self, quantity):
+        """
+        🚀 ENTERPRISE: Check if we can reserve the requested quantity.
+        Takes into account current holds and available stock.
+        """
+        return self.real_available >= quantity
+    
+    def get_availability_summary(self):
+        """🚀 ENTERPRISE: Get complete availability summary for transparency."""
+        return {
+            'total_capacity': self.capacity,
+            'available': self.available,
+            'sold': self.tickets_sold,
+            'on_hold': self.tickets_on_hold,
+            'real_available': self.real_available,
+            'utilization_rate': (self.tickets_sold / self.capacity * 100) if self.capacity > 0 else 0
+        }
 
 
 

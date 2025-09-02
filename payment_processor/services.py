@@ -348,6 +348,23 @@ class TransbankWebPayPlusService(BasePaymentService):
                     payment.order.status = 'paid'
                     payment.order.save()
                     
+                    # 🚀 ENTERPRISE: Create tickets after successful payment
+                    from apps.events.models import TicketHold, Ticket
+                    for order_item in payment.order.items.all():
+                        # Only create tickets if they don't exist yet
+                        if not order_item.tickets.exists():
+                            for _ in range(order_item.quantity):
+                                Ticket.objects.create(
+                                    order_item=order_item,
+                                    first_name=payment.order.first_name,
+                                    last_name=payment.order.last_name,
+                                    email=payment.order.email,
+                                    status='active'
+                                )
+                    
+                    # 🚀 ENTERPRISE: Clean up holds after successful payment
+                    TicketHold.objects.filter(order=payment.order).delete()
+                    
                     # Trigger email sending
                     from apps.events.tasks import send_ticket_confirmation_email
                     send_ticket_confirmation_email.apply_async(
@@ -374,6 +391,15 @@ class TransbankWebPayPlusService(BasePaymentService):
                 
                 payment.status = 'failed'
                 payment.save()
+                
+                # 🚀 ENTERPRISE: Release holds immediately when payment fails
+                from apps.events.models import TicketHold
+                expired_holds = TicketHold.objects.filter(
+                    order=payment.order,
+                    released=False
+                )
+                for hold in expired_holds:
+                    hold.release()  # Returns tickets to availability
                 
                 return {
                     'success': False,

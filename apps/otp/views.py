@@ -134,8 +134,45 @@ class OTPValidateView(APIView):
                 })
             
             elif purpose == OTPPurpose.LOGIN:
+                # Para login, generar tokens JWT automáticamente
+                from rest_framework_simplejwt.tokens import RefreshToken
+                from core.utils import generate_username
+                
+                # Si no existe usuario, crearlo
+                if user is None:
+                    user = User.objects.create_user(
+                        email=email,
+                        username=generate_username(email),
+                        first_name='',
+                        last_name='',
+                        is_guest=True
+                    )
+                    is_new_user = True
+                else:
+                    is_new_user = False
+                
+                # Generar tokens JWT
+                refresh = RefreshToken.for_user(user)
+                access_token = str(refresh.access_token)
+                
+                # Actualizar último login
+                from django.utils import timezone
+                user.last_login = timezone.now()
+                user.save(update_fields=['last_login'])
+                
                 response_data.update({
-                    'next_step': 'dashboard' if user else 'complete_profile',
+                    'access_token': access_token,
+                    'refresh_token': str(refresh),
+                    'user': {
+                        'id': user.id,
+                        'email': user.email,
+                        'first_name': user.first_name,
+                        'last_name': user.last_name,
+                        'is_guest': user.is_guest,
+                        'is_profile_complete': user.is_profile_complete
+                    },
+                    'is_new_user': is_new_user,
+                    'next_step': 'dashboard' if not is_new_user else 'complete_profile',
                     'requires_onboarding': False
                 })
             

@@ -77,7 +77,20 @@ class UserProfileSerializer(serializers.ModelSerializer):
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         
-        instance.save()
+        # 🚀 ENTERPRISE: Marcar perfil como completo si se proporcionaron first_name y last_name
+        if validated_data.get('first_name') and validated_data.get('last_name'):
+            if instance.is_guest:
+                print(f"🎯 [UserProfileSerializer] Marking profile complete for user {instance.email}")
+                instance.mark_profile_complete()
+            else:
+                # Si no es guest pero no tiene profile_completed_at, marcarlo también
+                if not instance.profile_completed_at:
+                    print(f"🎯 [UserProfileSerializer] Setting profile_completed_at for user {instance.email}")
+                    instance.profile_completed_at = timezone.now()
+                    instance.save(update_fields=['profile_completed_at'])
+        else:
+            instance.save()
+        
         return instance
 
 

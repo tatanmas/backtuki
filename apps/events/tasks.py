@@ -31,10 +31,13 @@ def cleanup_expired_ticket_holds(self):
     try:
         with transaction.atomic():
             # Find all expired holds that haven't been released
-            # 🚀 ENTERPRISE FIX: Remove select_related with nullable joins to avoid FOR UPDATE error
+            # 🚀 ENTERPRISE: Exclude holds with active payments (payment protection)
             expired_holds = TicketHold.objects.select_for_update().filter(
                 released=False,
                 expires_at__lte=now
+            ).exclude(
+                # Exclude holds where order has an active payment in progress
+                order__payments__status__in=['pending', 'processing', 'authorized']
             )
             
             total_holds = expired_holds.count()
