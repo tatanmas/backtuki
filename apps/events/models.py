@@ -238,10 +238,6 @@ class Event(BaseModel):
     def __str__(self):
         return self.title
     
-    @property
-    def is_active(self):
-        """Return True if the event is active."""
-        return self.status == 'active'
     
     @property
     def is_past(self):
@@ -252,23 +248,76 @@ class Event(BaseModel):
     
     @property
     def is_upcoming(self):
-        """Return True if the event is upcoming."""
+        """Return True if the event is upcoming and available for sales."""
         if not self.start_date:
             return False
-        return self.start_date > timezone.now() and self.status == 'active'
+        now = timezone.now()
+        return (
+            self.start_date > now and 
+            self.status == 'published' and
+            self.is_sales_active
+        )
     
     @property
     def is_ongoing(self):
-        """Return True if the event is ongoing."""
+        """Return True if the event is currently happening."""
         if not self.start_date or not self.end_date:
             return False
         now = timezone.now()
         return (
             self.start_date <= now and 
             self.end_date >= now and 
-            self.status == 'active'
+            self.status == 'published'
         )
     
+    @property
+    def is_sales_active(self):
+        """🚀 ENTERPRISE: Return True if ticket sales are currently active for this event."""
+        now = timezone.now()
+        
+        # Check if event is in correct status for sales
+        if self.status != 'published':
+            return False
+            
+        # Check sales window
+        if self.ticket_sales_start and now < self.ticket_sales_start:
+            return False
+            
+        if self.ticket_sales_end and now > self.ticket_sales_end:
+            return False
+            
+        # Check if event hasn't passed
+        if self.is_past:
+            return False
+            
+        return True
+    
+    @property
+    def is_available_for_purchase(self):
+        """
+        🚀 ENTERPRISE: Return True if event is available for ticket purchase.
+        This is the main method for frontend filtering.
+        """
+        return (
+            self.is_sales_active and
+            self.visibility == 'public' and
+            self.has_available_tickets
+        )
+    
+    @property
+    def has_available_tickets(self):
+        """🚀 ENTERPRISE: Check if event has available tickets for purchase."""
+        if self.pricing_mode == 'simple':
+            if self.simple_capacity is None:
+                return True  # Unlimited capacity
+            return self.simple_available_capacity > 0
+        
+        # For complex events, check ticket tiers
+        return self.ticket_tiers.filter(
+            is_public=True,
+            available__gt=0
+        ).exists()
+
     @property
     def tags_list(self):
         """Return a list of tags."""
@@ -381,7 +430,8 @@ class TicketCategory(BaseModel):
     description = models.TextField(_("description"), blank=True)
     capacity = models.PositiveIntegerField(_("capacity"), default=0, null=True, blank=True, 
                                           help_text=_("Leave empty for unlimited capacity"))
-    sold = models.PositiveIntegerField(_("sold"), default=0)
+    # 🚀 ENTERPRISE: Removed sold field - now calculated dynamically via property
+    # sold = models.PositiveIntegerField(_("sold"), default=0)  # ❌ DEPRECATED: Never updated
     status = models.CharField(
         _("status"),
         max_length=20,
@@ -470,6 +520,15 @@ class TicketCategory(BaseModel):
     def __str__(self):
         return f"{self.name} - {self.event.title}"
     
+    @property 
+    def sold(self):
+        """🚀 ENTERPRISE: Return number of tickets sold in this category (calculated dynamically)."""
+        # Sum tickets sold across all tiers in this category
+        total_sold = 0
+        for tier in self.ticket_tiers.all():
+            total_sold += tier.tickets_sold
+        return total_sold
+    
     @property
     def available(self):
         """Return number of available tickets."""
@@ -531,7 +590,7 @@ class TicketTier(BaseModel):
     )
     currency = models.CharField(_("currency"), max_length=3, default='CLP')
     capacity = models.PositiveIntegerField(_("capacity"))
-    available = models.PositiveIntegerField(_("available"))
+    available = models.PositiveIntegerField(_("available"), default=0)  # 🚀 ENTERPRISE: Default to 0, will be set to capacity on creation
     is_public = models.BooleanField(_("is public"), default=True)
     max_per_order = models.PositiveIntegerField(
         _("max per order"),
@@ -590,9 +649,40 @@ class TicketTier(BaseModel):
         verbose_name = _("ticket tier")
         verbose_name_plural = _("ticket tiers")
         ordering = ['order', 'price']
+        
+        # 🚀 ENTERPRISE: Database constraints for data integrity
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(available__gte=0),
+                name='%(app_label)s_%(class)s_available_non_negative'
+            ),
+            models.CheckConstraint(
+                check=models.Q(capacity__gte=0),
+                name='%(app_label)s_%(class)s_capacity_non_negative'
+            ),
+            models.CheckConstraint(
+                check=models.Q(max_per_order__gte=1),
+                name='%(app_label)s_%(class)s_max_per_order_positive'
+            ),
+            models.CheckConstraint(
+                check=models.Q(min_per_order__gte=1),
+                name='%(app_label)s_%(class)s_min_per_order_positive'
+            ),
+            models.CheckConstraint(
+                check=models.Q(max_per_order__gte=models.F('min_per_order')),
+                name='%(app_label)s_%(class)s_max_gte_min_per_order'
+            ),
+        ]
     
     def __str__(self):
         return f"{self.name} - {self.event.title}"
+    
+    def save(self, *args, **kwargs):
+        """🚀 ENTERPRISE: Auto-initialize available if not set."""
+        # If this is a new instance and available is still default (0), set it to capacity
+        if not self.pk and self.available == 0 and self.capacity:
+            self.available = self.capacity
+        super().save(*args, **kwargs)
     
     @property
     def benefits_list(self):
@@ -625,14 +715,22 @@ class TicketTier(BaseModel):
         """Return True if ticket is sold out."""
         return self.available <= 0
     
-    @property
-    def tickets_on_hold(self):
-        """🚀 ENTERPRISE: Return number of tickets currently on hold."""
+    def get_tickets_on_hold(self):
+        """🚀 ENTERPRISE: Return number of tickets currently on hold (use this in views).""" 
         from django.utils import timezone
         return self.holds.filter(
             released=False,
             expires_at__gt=timezone.now()
         ).aggregate(total=models.Sum('quantity'))['total'] or 0
+    
+    @property
+    def tickets_on_hold(self):
+        """🚀 ENTERPRISE: Return number of tickets currently on hold (cached property)."""
+        # ⚠️ WARNING: This property makes a database query every time it's accessed
+        # For better performance in views, use:
+        # - .prefetch_related('holds') in QuerySet
+        # - Or call .get_tickets_on_hold() method directly
+        return self.get_tickets_on_hold()
     
     @property
     def real_available(self):
@@ -657,13 +755,23 @@ class TicketTier(BaseModel):
     
     def get_availability_summary(self):
         """🚀 ENTERPRISE: Get complete availability summary for transparency."""
+        # 🛡️ ENTERPRISE: Safe calculation handling None values
+        sold = self.tickets_sold or 0
+        capacity = self.capacity
+        
+        # Calculate utilization rate safely
+        if capacity and capacity > 0 and sold >= 0:
+            utilization_rate = (sold / capacity * 100)
+        else:
+            utilization_rate = 0
+            
         return {
-            'total_capacity': self.capacity,
+            'total_capacity': capacity,
             'available': self.available,
-            'sold': self.tickets_sold,
+            'sold': sold,
             'on_hold': self.tickets_on_hold,
             'real_available': self.real_available,
-            'utilization_rate': (self.tickets_sold / self.capacity * 100) if self.capacity > 0 else 0
+            'utilization_rate': round(utilization_rate, 2)  # Round to 2 decimals for cleaner output
         }
 
 
@@ -1114,6 +1222,18 @@ class TicketHold(BaseModel):
             models.Index(fields=["ticket_tier", "expires_at", "released"]),
             models.Index(fields=["event", "expires_at", "released"]),
         ]
+        
+        # 🚀 ENTERPRISE: Database constraints for data integrity
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(quantity__gte=1),
+                name='%(app_label)s_%(class)s_quantity_positive'
+            ),
+            models.CheckConstraint(
+                check=models.Q(expires_at__gt=models.F('created_at')),
+                name='%(app_label)s_%(class)s_expires_after_creation'
+            ),
+        ]
 
     def __str__(self):
         return f"HOLD-{self.ticket_tier_id}-{self.quantity}@{self.expires_at.isoformat()}"
@@ -1123,14 +1243,28 @@ class TicketHold(BaseModel):
         return self.expires_at <= timezone.now()
 
     def release(self):
-        """Release the hold and return tickets to availability (idempotent)."""
+        """🚀 ENTERPRISE: Release the hold and return tickets to availability (idempotent)."""
         if self.released:
             return
-        # Return stock
-        self.ticket_tier.available = max(0, self.ticket_tier.available + self.quantity)
-        self.ticket_tier.save()
-        self.released = True
-        self.save()
+            
+        from django.db import transaction
+        from django.db.models import F
+        
+        # 🛡️ ENTERPRISE: Atomic operation to prevent race conditions
+        with transaction.atomic():
+            # Double-check pattern: verify again within transaction
+            if self.released:
+                return
+                
+            # 🚀 ATOMIC UPDATE: Use F() expression for safe concurrent updates
+            # This ensures the database handles the addition atomically
+            TicketTier.objects.filter(id=self.ticket_tier_id).update(
+                available=F('available') + self.quantity
+            )
+            
+            # Mark as released
+            self.released = True
+            self.save()
 
 class Coupon(BaseModel):
     """Coupon model for discounts."""
@@ -1195,8 +1329,8 @@ class Coupon(BaseModel):
     )
     start_date = models.DateTimeField(_("start date"), null=True, blank=True)
     end_date = models.DateTimeField(_("end date"), null=True, blank=True)
-    start_time = models.TimeField(_("start time"), null=True, blank=True)
-    end_time = models.TimeField(_("end time"), null=True, blank=True)
+    # 🚀 ENTERPRISE: start_time and end_time fields removed in migration 0023
+    # Use start_date and end_date (DateTimeField) for temporal constraints
     usage_limit = models.PositiveIntegerField(
         _("usage limit"),
         null=True,
@@ -1274,6 +1408,62 @@ class Coupon(BaseModel):
         
         return True
     
+    @property
+    def is_currently_valid(self):
+        """🚀 ENTERPRISE: Return True if coupon is currently valid for use."""
+        return self.is_active_property
+    
+    def get_analytics_data(self):
+        """🚀 ENTERPRISE: Return comprehensive analytics data."""
+        usage_percentage = 0
+        if self.usage_limit and self.usage_limit > 0:
+            usage_percentage = min(100, (self.usage_count / self.usage_limit) * 100)
+        
+        return {
+            'total_uses': self.usage_count,
+            'usage_limit': self.usage_limit,
+            'usage_percentage': round(usage_percentage, 1),
+            'remaining_uses': self.usage_limit - self.usage_count if self.usage_limit else None,
+            'is_expired': not self.is_currently_valid,
+            'days_until_expiry': self._days_until_expiry(),
+            'discount_type': self.discount_type,
+            'discount_value': float(self.discount_value)
+        }
+    
+    def _days_until_expiry(self):
+        """Helper to calculate days until expiry."""
+        if not self.end_date:
+            return None
+        
+        from django.utils import timezone
+        now = timezone.now()
+        if self.end_date <= now:
+            return 0  # Already expired
+        
+        delta = self.end_date - now
+        return delta.days
+    
+    def calculate_discount_amount(self, amount):
+        """🚀 ENTERPRISE: Calculate discount amount for a given purchase amount."""
+        if not self.is_currently_valid:
+            return 0
+        
+        # Check minimum purchase requirement
+        if self.min_purchase and amount < self.min_purchase:
+            return 0
+        
+        if self.discount_type == 'percentage':
+            discount = amount * (self.discount_value / 100)
+        else:  # fixed
+            discount = self.discount_value
+        
+        # Apply maximum discount limit
+        if self.max_discount:
+            discount = min(discount, self.max_discount)
+        
+        # Ensure discount doesn't exceed the purchase amount
+        return min(discount, amount)
+    
     def apply_to_multiple_events(self, event_ids):
         """Helper method to set multiple events for this coupon."""
         self.events_list = event_ids
@@ -1282,18 +1472,14 @@ class Coupon(BaseModel):
     def get_applicable_events(self):
         """
         Get list of applicable event IDs.
-        Returns None if applicable to all events, otherwise returns list of IDs.
+        Returns None if applicable to all events (GLOBAL), otherwise returns list of IDs (LOCAL).
+        
+        🚀 ENTERPRISE: Simplified logic after migration 0019 removed legacy 'event' field
         """
-        # If using the new events_list field
-        if self.events_list is not None:
-            return self.events_list
-        
-        # Legacy fallback
-        if self.event is not None:
-            return [str(self.event.id)]
-        
-        # Applies to all events
-        return None
+        # 🚀 ENTERPRISE: Use events_list field for Global vs Local logic
+        # events_list = None -> GLOBAL (applies to all organizer events)
+        # events_list = [event_id] -> LOCAL (applies to specific event)
+        return self.events_list
 
 
 class EventCommunication(BaseModel):

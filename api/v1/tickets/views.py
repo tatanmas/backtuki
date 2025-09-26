@@ -92,7 +92,7 @@ class TicketTierManagementViewSet(viewsets.ModelViewSet):
                 'holds_detail': list(holds_by_expiration.values()),
                 'capacity': ticket_tier.capacity,
                 'available': ticket_tier.available,
-                'sold': ticket_tier.capacity - ticket_tier.available,
+                'sold': ticket_tier.tickets_sold,  # 🚀 ENTERPRISE: Use real sold data
                 'real_available': max(0, ticket_tier.available - total_on_hold),
                 'last_updated': now.isoformat()
             })
@@ -180,7 +180,7 @@ class TicketTierManagementViewSet(viewsets.ModelViewSet):
                     'total_capacity': ticket_tier.capacity,
                     'available': ticket_tier.available,
                     'sold': tickets_sold,
-                    'utilization_rate': (tickets_sold / ticket_tier.capacity * 100) if ticket_tier.capacity > 0 else 0
+                    'utilization_rate': (tickets_sold / ticket_tier.capacity * 100) if ticket_tier.capacity and ticket_tier.capacity > 0 else 0
                 },
                 'last_updated': timezone.now().isoformat()
             })

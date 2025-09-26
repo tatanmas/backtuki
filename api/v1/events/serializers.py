@@ -97,20 +97,28 @@ class TicketCategorySerializer(serializers.ModelSerializer):
 
 class TicketTierSerializer(serializers.ModelSerializer):
     """
-    Serializer for ticket tier model.
+    🚀 ENTERPRISE: Serializer for ticket tier model with reservation data.
     """
     price = serializers.SerializerMethodField()
     benefits = serializers.SerializerMethodField()
     metadata = serializers.SerializerMethodField()
+    
+    # 🚀 ENTERPRISE: Add reservation-aware fields
+    tickets_sold = serializers.ReadOnlyField()
+    tickets_on_hold = serializers.ReadOnlyField()
+    real_available = serializers.ReadOnlyField()
+    availability_summary = serializers.SerializerMethodField()
     
     class Meta:
         model = TicketTier
         fields = [
             'id', 'name', 'type', 'description', 'price',
             'capacity', 'available', 'is_public', 'max_per_order',
-            'min_per_order', 'benefits', 'metadata', 'requires_approval'
+            'min_per_order', 'benefits', 'metadata', 'requires_approval',
+            # 🚀 ENTERPRISE: Add enterprise fields
+            'tickets_sold', 'tickets_on_hold', 'real_available', 'availability_summary'
         ]
-        read_only_fields = ['id', 'available']
+        read_only_fields = ['id', 'available', 'tickets_sold', 'tickets_on_hold', 'real_available']
 
     def get_price(self, obj) -> Dict[str, Union[float, str, List[Dict[str, Union[str, float]]]]]:
         """Return price information."""
@@ -171,80 +179,65 @@ class TicketTierSerializer(serializers.ModelSerializer):
         
         return metadata
 
+    def get_availability_summary(self, obj) -> Dict[str, Any]:
+        """🚀 ENTERPRISE: Return complete availability summary for transparency."""
+        return obj.get_availability_summary()
+
 
 class CouponSerializer(serializers.ModelSerializer):
     """
-    Serializer for coupon model.
+    🚀 ENTERPRISE: Simplified and optimized coupon serializer.
+    Clean field mapping with enterprise features.
     """
-    is_active = serializers.BooleanField(required=False, default=True)
-    events = serializers.SerializerMethodField()
+    # 🚀 ENTERPRISE: Unified field naming (use frontend names as primary)
+    type = serializers.CharField(source='discount_type', default='percentage')
+    value = serializers.DecimalField(source='discount_value', max_digits=10, decimal_places=2)
     maxUses = serializers.IntegerField(source='usage_limit', required=False, allow_null=True)
     usedCount = serializers.IntegerField(source='usage_count', read_only=True)
+    minPurchase = serializers.DecimalField(source='min_purchase', max_digits=10, decimal_places=2, required=False, allow_null=True)
+    maxDiscount = serializers.DecimalField(source='max_discount', max_digits=10, decimal_places=2, required=False, allow_null=True)
+    startDate = serializers.DateTimeField(source='start_date', required=False, allow_null=True)
+    endDate = serializers.DateTimeField(source='end_date', required=False, allow_null=True)
     
-    # 🚀 ENTERPRISE: Fields to distinguish global vs local coupons
+    # 🚀 ENTERPRISE: Enhanced fields
+    events = serializers.SerializerMethodField()
     is_global = serializers.SerializerMethodField()
     coupon_scope = serializers.SerializerMethodField()
     applicable_events_count = serializers.SerializerMethodField()
-    
-    # 🚀 ENTERPRISE FIX: Accept both frontend and backend field names
-    value = serializers.DecimalField(source='discount_value', max_digits=10, decimal_places=2, required=False)
-    discount_value = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, write_only=True)
-    
-    type = serializers.CharField(source='discount_type', required=False, default='percentage')
-    discount_type = serializers.CharField(required=False, default='percentage', write_only=True)
-    
-    minPurchase = serializers.DecimalField(source='min_purchase', max_digits=10, decimal_places=2, required=False, allow_null=True)
-    min_purchase = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True, write_only=True)
-    
-    maxDiscount = serializers.DecimalField(source='max_discount', max_digits=10, decimal_places=2, required=False, allow_null=True)
-    max_discount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True, write_only=True)
-    
-    startDate = serializers.DateTimeField(source='start_date', required=False, allow_null=True)
-    start_date = serializers.DateTimeField(required=False, allow_null=True, write_only=True)
-    
-    endDate = serializers.DateTimeField(source='end_date', required=False, allow_null=True)
-    end_date = serializers.DateTimeField(required=False, allow_null=True, write_only=True)
-    
-    startTime = serializers.TimeField(source='start_time', required=False, allow_null=True)
-    start_time = serializers.TimeField(required=False, allow_null=True, write_only=True)
-    
-    endTime = serializers.TimeField(source='end_time', required=False, allow_null=True)
-    end_time = serializers.TimeField(required=False, allow_null=True, write_only=True)
-    
-    usage_limit = serializers.IntegerField(required=False, allow_null=True, write_only=True)
+    is_currently_valid = serializers.SerializerMethodField()
+    analytics = serializers.SerializerMethodField()
+    discount_preview = serializers.SerializerMethodField()
     
     class Meta:
         model = Coupon
         fields = [
-            'id', 'code', 'description', 'type', 'value', 
-            'minPurchase', 'maxDiscount', 'startDate', 'endDate',
-            'startTime', 'endTime', 'maxUses', 'usedCount', 'status',
-            'is_active', 'events', 'ticket_tiers', 'ticket_categories',
-            # 🚀 ENTERPRISE: Global vs local coupon fields
-            'is_global', 'coupon_scope', 'applicable_events_count',
-            # 🚀 ENTERPRISE FIX: Include backend field names for compatibility
-            'discount_type', 'discount_value', 'min_purchase', 'max_discount',
-            'start_date', 'end_date', 'start_time', 'end_time', 'usage_limit'
+            # 🚀 ENTERPRISE: Core fields
+            'id', 'code', 'description', 'type', 'value', 'status', 'is_active',
+            # 🚀 ENTERPRISE: Limits and constraints  
+            'minPurchase', 'maxDiscount', 'maxUses', 'usedCount',
+            # 🚀 ENTERPRISE: Temporal constraints
+            'startDate', 'endDate',
+            # 🚀 ENTERPRISE: Event assignment
+            'events',
+            # 🚀 ENTERPRISE: Enhanced metadata
+            'is_global', 'coupon_scope', 'applicable_events_count', 
+            'is_currently_valid', 'analytics', 'discount_preview',
+            # 🚀 ENTERPRISE: Relations
+            'ticket_tiers', 'ticket_categories'
         ]
-        read_only_fields = ['id', 'usedCount']
+        read_only_fields = ['id', 'usedCount', 'is_currently_valid', 'analytics', 'discount_preview']
     
     def get_events(self, obj) -> Optional[List[str]]:
-        """
-        Return the applicable events as a list of event IDs or null.
-        """
+        """Return the applicable events as a list of event IDs or null."""
         return obj.get_applicable_events()
     
     def get_is_global(self, obj) -> bool:
-        """
-        🚀 ENTERPRISE: Return True if coupon is global (applies to all events).
-        """
-        return obj.events_list is None
+        """🚀 ENTERPRISE: Return True if coupon is global."""
+        return obj.is_global
     
     def get_coupon_scope(self, obj) -> str:
-        """
-        🚀 ENTERPRISE: Return human-readable scope description.
-        """
-        if obj.events_list is None:
+        """🚀 ENTERPRISE: Return human-readable scope description."""
+        if obj.is_global:
             return "🌍 Global - Aplica a todos los eventos"
         elif obj.events_list and len(obj.events_list) == 1:
             return "🎯 Evento específico"
@@ -254,25 +247,36 @@ class CouponSerializer(serializers.ModelSerializer):
             return "❓ Scope no definido"
     
     def get_applicable_events_count(self, obj) -> int:
-        """
-        🚀 ENTERPRISE: Return count of applicable events.
-        """
-        if obj.events_list is None:
+        """🚀 ENTERPRISE: Return count of applicable events."""
+        if obj.is_global:
             return -1  # -1 means "all events"
-        elif obj.events_list and len(obj.events_list) == 1:
-            return 1
-        elif obj.events_list and len(obj.events_list) > 1:
-            return len(obj.events_list)
-        else:
-            return 0
+        return len(obj.events_list) if obj.events_list else 0
+    
+    def get_is_currently_valid(self, obj) -> bool:
+        """🚀 ENTERPRISE: Return if coupon is currently valid for use."""
+        return obj.is_currently_valid
+    
+    def get_analytics(self, obj) -> dict:
+        """🚀 ENTERPRISE: Return comprehensive analytics."""
+        return obj.get_analytics_data()
+    
+    def get_discount_preview(self, obj) -> dict:
+        """🚀 ENTERPRISE: Return discount preview for common amounts."""
+        previews = {}
+        common_amounts = [10, 25, 50, 100, 250, 500]
+        
+        for amount in common_amounts:
+            try:
+                discount = obj.calculate_discount_amount(amount)
+                previews[f"${amount}"] = f"${discount:.2f}"
+            except:
+                previews[f"${amount}"] = "N/A"
+        
+        return previews
     
     def create(self, validated_data):
-        """
-        Handle creation with proper handling of events list.
-        """
-        events_data = self.initial_data.get('events')
-        
-        # Get organizer from the request using OrganizerUser
+        """🚀 ENTERPRISE: Simplified coupon creation."""
+        # Get organizer from context
         from apps.organizers.models import OrganizerUser
         try:
             organizer_user = OrganizerUser.objects.get(user=self.context['request'].user)
@@ -280,89 +284,27 @@ class CouponSerializer(serializers.ModelSerializer):
         except OrganizerUser.DoesNotExist:
             raise serializers.ValidationError({"detail": "El usuario no tiene un organizador asociado"})
         
-        # 🚀 ENTERPRISE FIX: Handle both frontend and backend field names
-        # Extract discount_type from either 'type' (frontend) or 'discount_type' (backend)
-        discount_type = validated_data.pop('type', validated_data.pop('discount_type', 'percentage'))
-        
-        # Extract discount_value from either 'value' (frontend) or 'discount_value' (backend)
-        discount_value = validated_data.pop('value', validated_data.pop('discount_value', 0))
-        
-        # Extract usage_limit from either 'maxUses' (frontend) or 'usage_limit' (backend)
-        usage_limit = validated_data.pop('maxUses', validated_data.pop('usage_limit', None))
-        
-        # Extract min_purchase from either 'minPurchase' (frontend) or 'min_purchase' (backend)
-        min_purchase = validated_data.pop('minPurchase', validated_data.pop('min_purchase', 0))
-        
-        # Extract max_discount from either 'maxDiscount' (frontend) or 'max_discount' (backend)
-        max_discount = validated_data.pop('maxDiscount', validated_data.pop('max_discount', None))
-        
-        # Extract start_date from either 'startDate' (frontend) or 'start_date' (backend)
-        start_date = validated_data.pop('startDate', validated_data.pop('start_date', None))
-        
-        # Extract end_date from either 'endDate' (frontend) or 'end_date' (backend)
-        end_date = validated_data.pop('endDate', validated_data.pop('end_date', None))
-        
-        # Extract start_time from either 'startTime' (frontend) or 'start_time' (backend)
-        start_time = validated_data.pop('startTime', validated_data.pop('start_time', None))
-        
-        # Extract end_time from either 'endTime' (frontend) or 'end_time' (backend)
-        end_time = validated_data.pop('endTime', validated_data.pop('end_time', None))
-        
-        # 🚀 ENTERPRISE: Handle events field correctly
-        # If events is null -> Global coupon (events_list = null)
-        # If events is array -> Local coupon (events_list = events array)
+        # Handle events field
+        events_data = self.initial_data.get('events')
         events_list = None if events_data is None else events_data
         
-        # Create the coupon with all fields
+        # Create coupon (field mapping handled by source in field definitions)
         coupon = Coupon.objects.create(
-            code=validated_data.get('code', ''),
-            description=validated_data.get('description', ''),
-            discount_type=discount_type,
-            discount_value=discount_value,
-            usage_limit=usage_limit,
-            min_purchase=min_purchase,
-            max_discount=max_discount,
-            start_date=start_date,
-            end_date=end_date,
-            start_time=start_time,
-            end_time=end_time,
-            events_list=events_list,  # 🚀 ENTERPRISE: Global (null) or Local (array)
-            organizer=organizer
+            organizer=organizer,
+            events_list=events_list,
+            **validated_data
         )
         
         return coupon
     
     def update(self, instance, validated_data):
-        """
-        Handle updates with proper handling of events list.
-        """
+        """🚀 ENTERPRISE: Simplified coupon update."""
+        # Handle events field
         events_data = self.initial_data.get('events')
+        if 'events' in self.initial_data:  # Only update if explicitly provided
+            instance.events_list = None if events_data is None else events_data
         
-        # Update events list
-        if events_data is not None:
-            instance.events_list = events_data
-        
-        # Handle nested attributes
-        if 'discount_type' in validated_data:
-            instance.discount_type = validated_data.pop('discount_type')
-        if 'discount_value' in validated_data:
-            instance.discount_value = validated_data.pop('discount_value')
-        if 'usage_limit' in validated_data:
-            instance.usage_limit = validated_data.pop('usage_limit')
-        if 'min_purchase' in validated_data:
-            instance.min_purchase = validated_data.pop('min_purchase', 0)
-        if 'max_discount' in validated_data:
-            instance.max_discount = validated_data.pop('max_discount')
-        if 'start_date' in validated_data:
-            instance.start_date = validated_data.pop('start_date')
-        if 'end_date' in validated_data:
-            instance.end_date = validated_data.pop('end_date')
-        if 'start_time' in validated_data:
-            instance.start_time = validated_data.pop('start_time')
-        if 'end_time' in validated_data:
-            instance.end_time = validated_data.pop('end_time')
-        
-        # Update remaining fields
+        # Update other fields (field mapping handled by source in field definitions)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         
@@ -615,11 +557,21 @@ class PublicEventSerializer(serializers.ModelSerializer):
     ticketsAvailable = serializers.SerializerMethodField()
     ticketsSold = serializers.SerializerMethodField()
     
+    # 🚀 ENTERPRISE: New availability fields
+    is_sales_active = serializers.ReadOnlyField()
+    is_available_for_purchase = serializers.ReadOnlyField()
+    has_available_tickets = serializers.ReadOnlyField()
+    is_upcoming = serializers.ReadOnlyField()
+    is_ongoing = serializers.ReadOnlyField()
+    
     class Meta:
         model = Event
         fields = [
             'id', 'title', 'image', 'price', 'rating', 'reviews', 
-            'location', 'date', 'time', 'ticketsAvailable', 'ticketsSold'
+            'location', 'date', 'time', 'ticketsAvailable', 'ticketsSold',
+            # 🚀 ENTERPRISE: Availability fields for advanced filtering
+            'is_sales_active', 'is_available_for_purchase', 'has_available_tickets',
+            'is_upcoming', 'is_ongoing'
         ]
         read_only_fields = ['id']
 

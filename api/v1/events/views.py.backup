@@ -341,27 +341,14 @@ class EventViewSet(viewsets.ModelViewSet):
 
                 if qty > existing_qty:
                     need = qty - existing_qty
-                    
-                    # 🚀 ENTERPRISE: Atomic reservation using UPDATE with WHERE clause
-                    # This prevents race conditions by doing check + reserve in one atomic operation
-                    from django.db.models import F
-                    
-                    updated_rows = TicketTier.objects.filter(
-                        id=tier_id,
-                        available__gte=need  # ✅ Check availability at DB level
-                    ).update(
-                        available=F('available') - need  # ✅ Atomic decrease
-                    )
-                    
-                    if updated_rows == 0:
-                        # ❌ Not enough tickets available or tier doesn't exist
-                        tier.refresh_from_db()  # Get fresh data for error message
+                    # 🚀 ENTERPRISE: Verificar disponibilidad real antes de crear holds
+                    if not tier.can_reserve(need):
                         return Response({
                             "detail": f"No hay suficientes tickets disponibles para {tier.name}. "
                                     f"Disponibles: {tier.real_available}, Solicitados: {need}"
                         }, status=status.HTTP_400_BAD_REQUEST)
                 
-                    # ✅ Success: tickets were atomically reserved, now create holds
+                    # 🚀 ENTERPRISE: Create one hold per unit to simplify partial release
                     for _ in range(need):
                         TicketHold.objects.create(
                             event=event,
@@ -370,6 +357,9 @@ class EventViewSet(viewsets.ModelViewSet):
                             quantity=1,
                             expires_at=expires_at,
                         )
+                    # 🚀 ENTERPRISE: Decrease availability now (atomic stock control)
+                    tier.available = F('available') - need
+                    tier.save(update_fields=['available'])
                 
                 elif qty < existing_qty:
                     to_release = existing_qty - qty
@@ -1719,11 +1709,8 @@ class TicketViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
-class CouponViewSet(viewsets.ModelViewSet):
-    """
-    API endpoint for coupons.
-    """
-    serializer_class = CouponSerializer
+# 🚀 ENTERPRISE: Import optimized coupon viewset
+from .views_coupon import CouponViewSet
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['is_active', 'status', 'discount_type']
     search_fields = ['code', 'description']
@@ -1740,36 +1727,75 @@ class CouponViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """
-        🚀 ENTERPRISE: Get coupons with optimized filtering and security.
+        Get coupons for the current organizer with STRICT event isolation.
+        🚀 ENTERPRISE: Multi-level filtering to prevent data leakage between events.
         """
         if not self.request.user.is_authenticated:
+            print(f"🔒 DEBUG - CouponViewSet.get_queryset: User not authenticated")
             return Coupon.objects.none()
         
         organizer = self.get_organizer()
         if not organizer:
+            print(f"🔒 DEBUG - CouponViewSet.get_queryset: No organizer found")
             return Coupon.objects.none()
         
-        # 🚀 ENTERPRISE: Event-aware filtering
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Organizer: {organizer.id} ({organizer.name})")
+        
+        # 🚨 CRITICAL: Event ID is MANDATORY for security
         event_id = self.request.query_params.get('event_id')
-        base_queryset = Coupon.objects.filter(organizer=organizer).select_related('organizer')
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Event ID from query: {event_id}")
         
         if not event_id:
-            # Return empty for security - event_id is required for list operations
+            print(f"🔒 DEBUG - CouponViewSet.get_queryset: No event_id provided, returning empty")
+            # 🚨 SECURITY: Without event_id, return empty to prevent data leakage
             return Coupon.objects.none()
         
-        # 🚨 SECURITY: Validate event ownership
-        if not Event.objects.filter(id=event_id, organizer=organizer).exists():
+        # 🚨 SECURITY: Additional validation - ensure event belongs to organizer
+        event = Event.objects.filter(id=event_id, organizer=organizer).first()
+        if not event:
+            print(f"🔒 DEBUG - CouponViewSet.get_queryset: Event {event_id} not found or not owned by organizer")
             return Coupon.objects.none()
         
-        # 🚀 ENTERPRISE: Optimized filtering (Global + Local for event)
-        return base_queryset.filter(
-            Q(events_list__isnull=True) |  # Global coupons
-            Q(events_list__contains=[event_id])  # Local coupons for this event
-        ).distinct().order_by('-created_at')
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Event validated: {event.id} ({event.title})")
+        
+        # 🚀 ENTERPRISE: Multi-level filtering for maximum security
+        base_queryset = Coupon.objects.filter(organizer=organizer)
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Base queryset (organizer only): {base_queryset.count()} coupons")
+        
+        # 🚀 ENTERPRISE: Simplified Global vs Local filtering
+        # Global coupons (null events_list = all events)
+        global_coupons = base_queryset.filter(events_list__isnull=True)
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Global coupons: {global_coupons.count()}")
+        
+        # Local coupons (events_list contains current event)
+        local_coupons = base_queryset.filter(events_list__contains=[event_id])
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Local coupons: {local_coupons.count()}")
+        
+        # Combine both types
+        final_queryset = base_queryset.filter(
+            Q(events_list__isnull=True) |  # Global
+            Q(events_list__contains=[event_id])  # Local
+        ).distinct()
+        
+        print(f"🔒 DEBUG - CouponViewSet.get_queryset: Final queryset: {final_queryset.count()} coupons")
+        
+        # Log each coupon for debugging
+        for coupon in final_queryset:
+            print(f"🔒 DEBUG - Coupon: {coupon.code} (ID: {coupon.id}) - {coupon}")
+            print(f"  - events_list: {coupon.events_list}")
+            print(f"  - organizer: {coupon.organizer_id}")
+            print(f"  - is_global: {coupon.is_global}")
+            print(f"  - is_local: {coupon.is_local}")
+            print(f"  - applicable_event_id: {coupon.applicable_event_id}")
+        
+        return final_queryset
     
     @action(detail=False, methods=['get'], url_path='organizer/all')
     def list_organizer_coupons(self, request):
-        """🚀 ENTERPRISE: Get all coupons for organizer dashboard."""
+        """
+        🚀 ENTERPRISE: Get all coupons for the current organizer across all events.
+        This endpoint is specifically for the organizer dashboard view.
+        """
         if not request.user.is_authenticated:
             return Response({'error': 'Authentication required'}, status=401)
         
@@ -1777,37 +1803,21 @@ class CouponViewSet(viewsets.ModelViewSet):
         if not organizer:
             return Response({'error': 'Organizer not found'}, status=404)
         
-        # 🚀 ENTERPRISE: Optimized query with prefetch
-        coupons = Coupon.objects.filter(organizer=organizer)\
-            .select_related('organizer')\
-            .prefetch_related('ticket_tiers', 'ticket_categories')\
-            .order_by('-created_at')
+        print(f"🌐 DEBUG - list_organizer_coupons: Organizer {organizer.id} requesting all coupons")
         
+        # Get all coupons for this organizer (both global and local)
+        coupons = Coupon.objects.filter(organizer=organizer).order_by('-created_at')
+        
+        print(f"🌐 DEBUG - list_organizer_coupons: Found {coupons.count()} coupons for organizer")
+        
+        # Serialize the coupons
         serializer = self.get_serializer(coupons, many=True)
         
         return Response({
             'count': coupons.count(),
             'results': serializer.data,
-            'analytics': self._get_organizer_coupon_analytics(coupons)
+            'message': f'Successfully retrieved {coupons.count()} coupons for organizer'
         })
-    
-    def _get_organizer_coupon_analytics(self, coupons):
-        """🚀 ENTERPRISE: Calculate comprehensive analytics for coupons."""
-        total_coupons = coupons.count()
-        active_coupons = coupons.filter(is_active=True).count()
-        global_coupons = coupons.filter(events_list__isnull=True).count()
-        used_coupons = coupons.filter(usage_count__gt=0).count()
-        
-        return {
-            'total_coupons': total_coupons,
-            'active_coupons': active_coupons,
-            'inactive_coupons': total_coupons - active_coupons,
-            'global_coupons': global_coupons,
-            'local_coupons': total_coupons - global_coupons,
-            'used_coupons': used_coupons,
-            'unused_coupons': total_coupons - used_coupons,
-            'total_usage_count': sum(c.usage_count for c in coupons),
-        }
     
     def get_object(self):
         """
@@ -1848,52 +1858,75 @@ class CouponViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['post'])
     def validate(self, request):
-        """🚀 ENTERPRISE: Validate coupon with comprehensive checks."""
+        """
+        Validate a coupon code.
+        """
         code = request.data.get('code')
         event_id = request.data.get('event_id')
-        order_total = request.data.get('order_total', 0)
         
         if not code or not event_id:
-            return Response({
-                "is_valid": False,
-                "detail": "Coupon code and event ID are required."
-            }, status=400)
+            return Response(
+                {"detail": "Coupon code and event ID are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
         try:
+            # Find coupon by code
             organizer = self.get_organizer()
             if not organizer:
                 return Response({
                     "is_valid": False,
                     "detail": "Usuario sin organizador asociado"
                 })
+                
+            coupon = Coupon.objects.get(code=code, organizer=organizer)
             
-            # 🚀 ENTERPRISE: Optimized query with related data
-            coupon = Coupon.objects.select_related('organizer').get(
-                code=code.upper(), 
-                organizer=organizer
-            )
-            
-            # 🚀 ENTERPRISE: Use model method for validation
-            can_use, message = coupon.can_be_used_for_order(order_total, event_id)
-            
-            response_data = {
-                "is_valid": can_use,
-                "detail": message
-            }
-            
-            if can_use:
-                response_data.update({
-                    "coupon": CouponSerializer(coupon, context={'request': request}).data,
-                    "discount_amount": coupon.calculate_discount_amount(order_total) if order_total else 0,
-                    "final_total": max(0, order_total - coupon.calculate_discount_amount(order_total)) if order_total else 0
+            # Check if coupon is active
+            if not coupon.is_active:
+                return Response({
+                    "is_valid": False,
+                    "detail": "Coupon is not active."
                 })
             
-            return Response(response_data)
+            # Check usage limits
+            if coupon.usage_limit and coupon.usage_count >= coupon.usage_limit:
+                return Response({
+                    "is_valid": False,
+                    "detail": "Coupon usage limit has been reached."
+                })
+            
+            # Check date validity
+            now = timezone.now()
+            if coupon.start_date and now < coupon.start_date:
+                return Response({
+                    "is_valid": False,
+                    "detail": "Coupon is not yet valid."
+                })
+            
+            if coupon.end_date and now > coupon.end_date:
+                return Response({
+                    "is_valid": False,
+                    "detail": "Coupon has expired."
+                })
+            
+            # Check event applicability
+            events_list = coupon.get_applicable_events()
+            if events_list is not None and str(event_id) not in events_list:
+                return Response({
+                    "is_valid": False,
+                    "detail": "Coupon is not valid for this event."
+                })
+            
+            # Return coupon details
+            return Response({
+                "is_valid": True,
+                "coupon": CouponSerializer(coupon).data
+            })
             
         except Coupon.DoesNotExist:
             return Response({
                 "is_valid": False,
-                "detail": "Cupón no encontrado."
+                "detail": "Coupon not found."
             })
     
     @action(detail=True, methods=['post'])
@@ -1912,103 +1945,55 @@ class CouponViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'])
     def analytics(self, request):
-        """🚀 ENTERPRISE: Enhanced analytics with performance metrics."""
+        """
+        Get analytics data for coupons.
+        """
+        # Get organizer properly
         organizer = self.get_organizer()
         if not organizer:
             return Response({
                 "detail": "Usuario sin organizador asociado"
-            }, status=400)
-        
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        # Get coupons for this organizer
         coupons = Coupon.objects.filter(organizer=organizer)
-        analytics = self._get_organizer_coupon_analytics(coupons)
         
-        # 🚀 ENTERPRISE: Add performance metrics
-        top_coupons = coupons.filter(usage_count__gt=0).order_by('-usage_count')[:5]
-        analytics['top_performing_coupons'] = [
-            {
-                'code': coupon.code,
-                'usage_count': coupon.usage_count,
-                'type': coupon.discount_type,
-                'value': float(coupon.discount_value)
-            }
-            for coupon in top_coupons
-        ]
+        # Calculate stats
+        total_coupons = coupons.count()
+        active_coupons = coupons.filter(is_active=True).count()
         
-        return Response(analytics)
-    
-    @action(detail=True, methods=['post'])
-    def apply_to_order(self, request, pk=None):
-        """🚀 ENTERPRISE: Apply coupon to order with atomic transaction."""
-        coupon = self.get_object()
-        order_total = request.data.get('order_total', 0)
-        event_id = request.data.get('event_id')
+        # Calculate redemptions
+        total_redemptions = coupons.aggregate(total=Sum('usage_count'))['total'] or 0
         
-        if not order_total or not event_id:
-            return Response({
-                "success": False,
-                "detail": "Order total and event ID are required."
-            }, status=400)
+        # Calculate redemption rate
+        total_possible = coupons.aggregate(
+            total=Sum(F('usage_limit'))
+        )['total'] or 0
         
-        try:
-            # Validate coupon can be used
-            can_use, message = coupon.can_be_used_for_order(order_total, event_id)
-            if not can_use:
-                return Response({
-                    "success": False,
-                    "detail": message
-                })
-            
-            # Calculate discount
-            discount_amount = coupon.calculate_discount_amount(order_total)
-            final_total = max(0, order_total - discount_amount)
-            
-            # Increment usage (atomic)
-            coupon.increment_usage()
-            
-            return Response({
-                "success": True,
-                "discount_amount": discount_amount,
-                "final_total": final_total,
-                "coupon": CouponSerializer(coupon, context={'request': request}).data
-            })
-            
-        except ValueError as e:
-            return Response({
-                "success": False,
-                "detail": str(e)
-            }, status=400)
-    
-    @action(detail=False, methods=['post'])
-    def bulk_create(self, request):
-        """🚀 ENTERPRISE: Bulk create coupons for campaigns."""
-        organizer = self.get_organizer()
-        if not organizer:
-            return Response({"detail": "Usuario sin organizador asociado"}, status=400)
+        redemption_rate = 0
+        if total_possible > 0:
+            redemption_rate = round((total_redemptions / total_possible) * 100)
         
-        coupons_data = request.data.get('coupons', [])
-        if not coupons_data:
-            return Response({"detail": "No coupon data provided"}, status=400)
+        # Calculate total savings (this is an estimate)
+        # For percentage coupons, we'll need order data to calculate actual savings
         
-        created_coupons = []
-        errors = []
+        # Get recent coupons
+        recent_coupons = coupons.order_by('-created_at')[:5]
         
-        for i, coupon_data in enumerate(coupons_data):
-            try:
-                serializer = self.get_serializer(data=coupon_data)
-                if serializer.is_valid():
-                    coupon = serializer.save(organizer=organizer)
-                    created_coupons.append(serializer.data)
-                else:
-                    errors.append({"index": i, "errors": serializer.errors})
-            except Exception as e:
-                errors.append({"index": i, "error": str(e)})
+        # Get most used coupons
+        most_used = coupons.order_by('-usage_count')[:5]
         
-        return Response({
-            "created_count": len(created_coupons),
-            "error_count": len(errors),
-            "created_coupons": created_coupons,
-            "errors": errors
-        })
+        # Compile analytics data
+        data = {
+            'total_coupons': total_coupons,
+            'active_coupons': active_coupons,
+            'total_redemptions': total_redemptions,
+            'redemption_rate': redemption_rate,
+            'recent_coupons': CouponSerializer(recent_coupons, many=True).data,
+            'most_used_coupons': CouponSerializer(most_used, many=True).data
+        }
+        
+        return Response(data)
 
 
 class EventCommunicationViewSet(viewsets.ModelViewSet):
