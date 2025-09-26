@@ -1625,3 +1625,69 @@ class TicketRequestSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'reviewed_by', 'reviewed_at', 'order', 'simple_booking',
                            'created_at', 'updated_at', 'requester_name', 'is_pending', 
                            'is_approved', 'is_rejected', 'target_name']
+
+
+class PublicEventCreateSerializer(serializers.ModelSerializer):
+    """
+    Serializer para creación de eventos sin autenticación.
+    Campos mínimos requeridos para el flujo público tipo Luma.
+    """
+    location = LocationSerializer(required=False)
+    
+    class Meta:
+        model = Event
+        fields = [
+            'title', 'description', 'short_description',
+            'start_date', 'end_date', 'location',
+            'type', 'visibility', 'pricing_mode',
+            'is_free', 'requires_approval', 'simple_capacity',
+            'requires_email_validation'
+        ]
+    
+    def validate(self, data):
+        """Validaciones básicas para eventos públicos."""
+        from django.utils import timezone
+        
+        # Validar fechas
+        if data.get('start_date') and data['start_date'] <= timezone.now():
+            raise serializers.ValidationError({
+                'start_date': 'La fecha de inicio debe ser futura'
+            })
+        
+        if (data.get('start_date') and data.get('end_date') and 
+            data['end_date'] <= data['start_date']):
+            raise serializers.ValidationError({
+                'end_date': 'La fecha de fin debe ser posterior al inicio'
+            })
+        
+        # Validar título
+        if not data.get('title') or len(data['title'].strip()) < 3:
+            raise serializers.ValidationError({
+                'title': 'El título debe tener al menos 3 caracteres'
+            })
+        
+        return data
+    
+    def create(self, validated_data):
+        """
+        Crear evento con organizador temporal.
+        El organizador se completará cuando se valide el email.
+        """
+        # Extraer datos de ubicación
+        location_data = validated_data.pop('location', None)
+        
+        # Crear ubicación si se proporciona
+        location = None
+        if location_data:
+            location = Location.objects.create(**location_data)
+        
+        # Establecer requires_email_validation por defecto para eventos públicos
+        validated_data['requires_email_validation'] = True
+        
+        # Crear evento con organizador temporal
+        event = Event.objects.create(
+            location=location,
+            **validated_data
+        )
+        
+        return event

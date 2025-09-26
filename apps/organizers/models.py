@@ -19,6 +19,7 @@ class Organizer(TimeStampedModel):
 
     STATUS_CHOICES = (
         ('pending', _('Pending')),
+        ('pending_validation', _('Pending Email Validation')),
         ('onboarding', _('Onboarding')),
         ('active', _('Active')),
         ('suspended', _('Suspended')),
@@ -72,6 +73,19 @@ class Organizer(TimeStampedModel):
     
     # Organizer identifier for legacy compatibility
     organizer_id = models.CharField(max_length=50, unique=True, db_index=True, null=True, blank=True)
+    
+    # ✅ NUEVOS CAMPOS PARA EVENTOS PÚBLICOS
+    is_temporary = models.BooleanField(
+        _("is temporary"),
+        default=False,
+        help_text=_("Si el organizador es temporal (antes de validar email)")
+    )
+    
+    email_validated = models.BooleanField(
+        _("email validated"),
+        default=False,
+        help_text=_("Si el email del organizador ha sido validado")
+    )
     
     class Meta:
         verbose_name = _("organizer")

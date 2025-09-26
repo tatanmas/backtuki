@@ -74,9 +74,16 @@ class EventViewSet(viewsets.ModelViewSet):
             # Handle anonymous users
             if not self.request.user.is_authenticated:
                 return None
-            organizer_user = OrganizerUser.objects.get(user=self.request.user)
-            return organizer_user.organizer
-        except OrganizerUser.DoesNotExist:
+            
+            # Buscar OrganizerUser, si hay múltiples tomar el más reciente
+            organizer_users = OrganizerUser.objects.filter(user=self.request.user)
+            if organizer_users.exists():
+                organizer_user = organizer_users.order_by('-created_at').first()
+                return organizer_user.organizer
+            else:
+                return None
+        except Exception as e:
+            print(f"[EventViewSet] Error getting organizer: {e}")
             return None
     
     def get_queryset(self):

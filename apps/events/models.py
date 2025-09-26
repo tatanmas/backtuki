@@ -170,6 +170,13 @@ class Event(BaseModel):
         default=0,
         help_text=_("Price for simple paid events")
     )
+    
+    # ✅ NUEVO CAMPO PARA EVENTOS PÚBLICOS
+    requires_email_validation = models.BooleanField(
+        _("requires email validation"),
+        default=False,
+        help_text=_("Si el evento requiere validación de email para publicarse")
+    )
     start_date = models.DateTimeField(_("start date"), null=True, blank=True)
     end_date = models.DateTimeField(_("end date"), null=True, blank=True)
     location = models.ForeignKey(
@@ -589,8 +596,8 @@ class TicketTier(BaseModel):
         default=0
     )
     currency = models.CharField(_("currency"), max_length=3, default='CLP')
-    capacity = models.PositiveIntegerField(_("capacity"))
-    available = models.PositiveIntegerField(_("available"), default=0)  # 🚀 ENTERPRISE: Default to 0, will be set to capacity on creation
+    capacity = models.PositiveIntegerField(_("capacity"), null=True, blank=True, help_text=_("Leave empty for unlimited capacity"))
+    available = models.PositiveIntegerField(_("available"), null=True, blank=True, help_text=_("Leave empty for unlimited availability"))  # 🚀 ENTERPRISE: Allow null for unlimited
     is_public = models.BooleanField(_("is public"), default=True)
     max_per_order = models.PositiveIntegerField(
         _("max per order"),
@@ -735,6 +742,8 @@ class TicketTier(BaseModel):
     @property
     def real_available(self):
         """🚀 ENTERPRISE: Return tickets available for immediate purchase (excluding holds)."""
+        if self.available is None:
+            return None  # Unlimited capacity
         return max(0, self.available - self.tickets_on_hold)
     
     @property

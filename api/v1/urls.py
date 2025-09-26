@@ -50,6 +50,7 @@ urlpatterns = [
     path('auth/', include('api.v1.auth.urls')),
     path('user/', include('api.v1.users.urls')),
     path('tickets/', include('api.v1.tickets.urls')),  # 🚀 ENTERPRISE: Ticket management endpoints
+    path('', include('api.v1.events.urls')),  # ✅ NUEVO: Incluir URLs de eventos (incluye endpoints públicos)
     # Onboarding URLs
     path('organizers/onboarding/start/', CurrentOnboardingView.as_view(), name='onboarding-start'),
     path('organizers/onboarding/step/', OnboardingStepView.as_view(), name='onboarding-step'),
