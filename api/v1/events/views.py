@@ -232,7 +232,7 @@ class EventViewSet(viewsets.ModelViewSet):
         serializer = PublicEventSerializer(queryset, many=True, context={'request': request})
         return Response(serializer.data)
     
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], permission_classes=[permissions.AllowAny])
     def book(self, request, pk=None):
         """🚀 ENTERPRISE: Book tickets for an event."""
         import logging
@@ -1846,9 +1846,9 @@ class CouponViewSet(viewsets.ModelViewSet):
             
         serializer.save(organizer=organizer)
     
-    @action(detail=False, methods=['post'])
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
     def validate(self, request):
-        """🚀 ENTERPRISE: Validate coupon with comprehensive checks."""
+        """🚀 ENTERPRISE: Validate coupon with comprehensive checks - PUBLIC ENDPOINT."""
         code = request.data.get('code')
         event_id = request.data.get('event_id')
         order_total = request.data.get('order_total', 0)
@@ -1856,36 +1856,61 @@ class CouponViewSet(viewsets.ModelViewSet):
         if not code or not event_id:
             return Response({
                 "is_valid": False,
-                "detail": "Coupon code and event ID are required."
+                "detail": "Código de cupón y ID de evento son requeridos."
             }, status=400)
         
         try:
-            organizer = self.get_organizer()
-            if not organizer:
+            # Clean code input
+            code = code.strip().upper()
+            # 🚀 ENTERPRISE: Convert to Decimal for precise calculations
+            from decimal import Decimal
+            order_total = Decimal(str(order_total)) if order_total else Decimal('0')
+            
+            # 🚀 ENTERPRISE: Get event to determine organizer (PUBLIC ACCESS)
+            try:
+                event = Event.objects.select_related('organizer').get(id=event_id)
+                event_organizer = event.organizer
+            except Event.DoesNotExist:
                 return Response({
                     "is_valid": False,
-                    "detail": "Usuario sin organizador asociado"
+                    "detail": "Evento no encontrado."
+                }, status=400)
+            
+            # 🚀 ENTERPRISE: Find coupon by code and event's organizer (PUBLIC ACCESS)
+            coupon_query = Coupon.objects.select_related('organizer')
+            
+            # Search in event's organizer coupons only
+            coupon = coupon_query.filter(
+                code=code,
+                organizer=event_organizer
+            ).first()
+            
+            if not coupon:
+                return Response({
+                    "is_valid": False,
+                    "detail": "Cupón no encontrado o no válido para este evento."
                 })
             
-            # 🚀 ENTERPRISE: Optimized query with related data
-            coupon = Coupon.objects.select_related('organizer').get(
-                code=code.upper(), 
-                organizer=organizer
-            )
-            
-            # 🚀 ENTERPRISE: Use model method for validation
+            # 🚀 ENTERPRISE: Use comprehensive model validation
             can_use, message = coupon.can_be_used_for_order(order_total, event_id)
             
             response_data = {
                 "is_valid": can_use,
-                "detail": message
+                "detail": message,
+                "coupon_code": coupon.code
             }
             
             if can_use:
+                discount_amount = coupon.calculate_discount_amount(order_total)
+                final_total = max(0, order_total - discount_amount)
+                
                 response_data.update({
                     "coupon": CouponSerializer(coupon, context={'request': request}).data,
-                    "discount_amount": coupon.calculate_discount_amount(order_total) if order_total else 0,
-                    "final_total": max(0, order_total - coupon.calculate_discount_amount(order_total)) if order_total else 0
+                    "discount_amount": float(discount_amount),
+                    "final_total": float(final_total),
+                    "original_total": float(order_total),
+                    "savings": float(discount_amount),
+                    "discount_percentage": round((discount_amount / order_total * 100), 2) if order_total > 0 else 0
                 })
             
             return Response(response_data)
@@ -1895,6 +1920,133 @@ class CouponViewSet(viewsets.ModelViewSet):
                 "is_valid": False,
                 "detail": "Cupón no encontrado."
             })
+        except Exception as e:
+            # Log error for debugging
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error validating coupon {code}: {e}")
+            
+            return Response({
+                "is_valid": False,
+                "detail": "Error interno al validar el cupón. Intente nuevamente."
+            }, status=500)
+    
+    @action(detail=False, methods=['post'])
+    def reserve(self, request):
+        """🚀 ENTERPRISE: Reserve coupon usage during checkout."""
+        code = request.data.get('code')
+        event_id = request.data.get('event_id')
+        order_id = request.data.get('order_id')
+        order_total = request.data.get('order_total', 0)
+        
+        if not all([code, event_id, order_id]):
+            return Response({
+                "success": False,
+                "detail": "Código de cupón, ID de evento y ID de orden son requeridos."
+            }, status=400)
+        
+        try:
+            # Find coupon
+            code = code.strip().upper()
+            order_total = float(order_total) if order_total else 0
+            
+            coupon = Coupon.objects.select_related('organizer').get(code=code)
+            
+            # Validate coupon
+            can_use, message = coupon.can_be_used_for_order(order_total, event_id)
+            if not can_use:
+                return Response({
+                    "success": False,
+                    "detail": message
+                })
+            
+            # Get or create order
+            from apps.events.models import Order
+            try:
+                order = Order.objects.get(id=order_id)
+            except Order.DoesNotExist:
+                return Response({
+                    "success": False,
+                    "detail": "Orden no encontrada."
+                }, status=404)
+            
+            # Reserve coupon usage
+            hold = coupon.reserve_usage_for_order(order)
+            
+            discount_amount = coupon.calculate_discount_amount(order_total)
+            final_total = max(0, order_total - discount_amount)
+            
+            return Response({
+                "success": True,
+                "detail": "Cupón reservado exitosamente",
+                "hold_id": hold.id,
+                "expires_at": hold.expires_at.isoformat(),
+                "discount_amount": float(discount_amount),
+                "final_total": float(final_total),
+                "coupon": CouponSerializer(coupon, context={'request': request}).data
+            })
+            
+        except Coupon.DoesNotExist:
+            return Response({
+                "success": False,
+                "detail": "Cupón no encontrado."
+            })
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error reserving coupon {code}: {e}")
+            
+            return Response({
+                "success": False,
+                "detail": f"Error al reservar cupón: {str(e)}"
+            }, status=500)
+    
+    @action(detail=False, methods=['post'])
+    def release(self, request):
+        """🚀 ENTERPRISE: Release coupon reservation."""
+        order_id = request.data.get('order_id')
+        
+        if not order_id:
+            return Response({
+                "success": False,
+                "detail": "ID de orden es requerido."
+            }, status=400)
+        
+        try:
+            from apps.events.models import Order, CouponHold
+            
+            # Get order
+            try:
+                order = Order.objects.get(id=order_id)
+            except Order.DoesNotExist:
+                return Response({
+                    "success": False,
+                    "detail": "Orden no encontrada."
+                }, status=404)
+            
+            # Release all coupon holds for this order
+            holds = CouponHold.objects.filter(order=order, released=False)
+            released_count = 0
+            
+            for hold in holds:
+                hold.release()
+                released_count += 1
+            
+            return Response({
+                "success": True,
+                "detail": f"Se liberaron {released_count} reservas de cupones",
+                "released_count": released_count
+            })
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error releasing coupon holds for order {order_id}: {e}")
+            
+            return Response({
+                "success": False,
+                "detail": f"Error al liberar reservas: {str(e)}"
+            }, status=500)
     
     @action(detail=True, methods=['post'])
     def toggle_active(self, request, pk=None):

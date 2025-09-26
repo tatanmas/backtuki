@@ -74,7 +74,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
             order__user=self.request.user
         ).select_related('payment_method', 'payment_method__provider', 'order')
     
-    @action(detail=False, methods=['post'])
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
     def create_payment(self, request):
         """
         🚀 ENTERPRISE: Create a new payment
@@ -106,8 +106,18 @@ class PaymentViewSet(viewsets.ModelViewSet):
                     user_owns_order = order.user == request.user
                     email_matches = request.user.email.lower() == order.email.lower()
                     
+                    # 🚀 ENTERPRISE: Check if user is organizer of the event
+                    from apps.organizers.models import OrganizerUser
+                    is_event_organizer = False
+                    try:
+                        organizer_user = OrganizerUser.objects.get(user=request.user)
+                        is_event_organizer = order.event.organizer == organizer_user.organizer
+                        if is_event_organizer:
+                            logger.info(f"🎯 ORGANIZER: User {request.user.id} is organizer of event {order.event.id}")
+                    except OrganizerUser.DoesNotExist:
+                        pass
                     
-                    if not (user_owns_order or email_matches):
+                    if not (user_owns_order or email_matches or is_event_organizer):
                         logger.error(f"🚨 SECURITY: User {request.user.id} ({request.user.email}) tried to pay for order {order.id} owned by {order.user_id} ({order.email})")
                         return Response({
                             'success': False,
@@ -120,10 +130,13 @@ class PaymentViewSet(viewsets.ModelViewSet):
                 # Log successful authorization
                 if request.user.is_authenticated:
                     user_owns_order = order.user == request.user
+                    email_matches = request.user.email.lower() == order.email.lower()
                     if user_owns_order:
                         logger.info(f"✅ PAYMENT AUTH: User {request.user.id} owns order {order.id}")
-                    else:
+                    elif email_matches:
                         logger.info(f"✅ PAYMENT AUTH: User {request.user.id} authorized by email match for order {order.id}")
+                    elif is_event_organizer:
+                        logger.info(f"✅ PAYMENT AUTH: User {request.user.id} authorized as event organizer for order {order.id}")
                 else:
                     logger.info(f"✅ PAYMENT AUTH: Anonymous user payment for order {order.id}")
                 

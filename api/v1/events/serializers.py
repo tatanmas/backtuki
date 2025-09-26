@@ -1228,6 +1228,8 @@ class BookingSerializer(serializers.Serializer):
     )
     customerInfo = serializers.DictField()
     reservationId = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    # 🚀 ENTERPRISE: Coupon support
+    couponCode = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     
     def validate(self, data):
         """Validate booking data."""
@@ -1266,6 +1268,32 @@ class BookingSerializer(serializers.Serializer):
         
         if not customer_info.get('email'):
             raise serializers.ValidationError({"customerInfo": "Customer email is required"})
+        
+        # 🚀 ENTERPRISE: Validate coupon if provided
+        coupon_code = data.get('couponCode')
+        if coupon_code:
+            coupon_code = coupon_code.strip().upper()
+            try:
+                from apps.events.models import Coupon
+                coupon = Coupon.objects.get(code=coupon_code)
+                
+                # For validation, we need to calculate approximate total
+                # This is just for basic validation - actual total will be calculated in create()
+                tickets_data = data.get('tickets') or []
+                estimated_total = sum(
+                    TicketTier.objects.get(id=t['tierId']).price * t['quantity'] 
+                    for t in tickets_data if t.get('tierId') and t.get('quantity')
+                ) if tickets_data else 0
+                
+                can_use, message = coupon.can_be_used_for_order(estimated_total, event_id)
+                if not can_use:
+                    raise serializers.ValidationError({"couponCode": f"Cupón inválido: {message}"})
+                
+                # Store validated coupon for use in create()
+                data['_validated_coupon'] = coupon
+                
+            except Coupon.DoesNotExist:
+                raise serializers.ValidationError({"couponCode": "Cupón no encontrado"})
         
         return data
     
@@ -1390,7 +1418,27 @@ class BookingSerializer(serializers.Serializer):
         order.service_fee = service_fee
         order.total = subtotal + service_fee
         
-        print(f"🚀 DEBUG - Order totals: subtotal={subtotal}, service_fee={service_fee}, total={order.total}")
+        # 🚀 ENTERPRISE: Apply coupon if provided
+        validated_coupon = validated_data.get('_validated_coupon')
+        if validated_coupon:
+            # Double-check coupon is still valid with final total
+            can_use, message = validated_coupon.can_be_used_for_order(order.total, event_id)
+            if can_use:
+                discount_amount = validated_coupon.calculate_discount_amount(order.total)
+                if discount_amount > 0:
+                    order.coupon = validated_coupon
+                    order.discount = discount_amount
+                    order.total = max(0, order.total - discount_amount)
+                    
+                    # Reserve coupon usage
+                    coupon_hold = validated_coupon.reserve_usage_for_order(order)
+                    print(f"🎫 COUPON: Applied {validated_coupon.code} - Discount: ${discount_amount} - Hold: {coupon_hold.id}")
+                else:
+                    print(f"⚠️ COUPON: {validated_coupon.code} generated no discount")
+            else:
+                print(f"❌ COUPON: {validated_coupon.code} invalid at final total: {message}")
+        
+        print(f"🚀 DEBUG - Order totals FINAL: subtotal={subtotal}, service_fee={service_fee}, discount={order.discount}, total={order.total}")
         print(f"🚀 DEBUG - Order status before: {order.status}")
         
         # 🚀 ENTERPRISE: Handle payment flow
@@ -1400,6 +1448,14 @@ class BookingSerializer(serializers.Serializer):
             order.status = 'paid'
             order.save()
             print(f"🚀 DEBUG - Order status after save: {order.status}")
+            
+            # 🚀 ENTERPRISE: Confirm coupon usage for free orders
+            if order.coupon:
+                try:
+                    order.coupon.confirm_usage_for_order(order)
+                    print(f"🎫 COUPON: Confirmed usage of {order.coupon.code} for order {order.id}")
+                except Exception as e:
+                    print(f"⚠️ COUPON: Error confirming usage: {e}")
             
             # 🚀 ENTERPRISE: Create tickets for free orders immediately
             from apps.events.models import Ticket
@@ -1425,6 +1481,9 @@ class BookingSerializer(serializers.Serializer):
                 'bookingId': str(order.id),
                 'status': order.status,
                 'totalAmount': float(order.total),
+                'originalAmount': float(subtotal + service_fee),
+                'discount': float(order.discount),
+                'coupon_applied': order.coupon.code if order.coupon else None,
                 'payment_required': False,
                 'message': 'Reserva confirmada exitosamente'
             }
@@ -1438,6 +1497,9 @@ class BookingSerializer(serializers.Serializer):
                 'bookingId': str(order.id),
                 'status': order.status,
                 'totalAmount': float(order.total),
+                'originalAmount': float(subtotal + service_fee),
+                'discount': float(order.discount),
+                'coupon_applied': order.coupon.code if order.coupon else None,
                 'payment_required': True,
                 'message': 'Orden creada exitosamente. Proceder al pago.',
                 'next_step': 'payment'

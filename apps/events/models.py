@@ -1266,6 +1266,78 @@ class TicketHold(BaseModel):
             self.released = True
             self.save()
 
+
+class CouponHold(BaseModel):
+    """
+    🚀 ENTERPRISE: Temporary hold to reserve coupon usage during checkout.
+    
+    Similar to TicketHold but for coupons. Prevents race conditions and 
+    double usage during concurrent checkout processes.
+    """
+    coupon = models.ForeignKey(
+        'Coupon',
+        on_delete=models.CASCADE,
+        related_name='holds',
+        verbose_name=_("coupon")
+    )
+    order = models.ForeignKey(
+        'Order',
+        on_delete=models.CASCADE,
+        related_name='coupon_holds',
+        verbose_name=_("order"),
+        null=True,
+        blank=True
+    )
+    expires_at = models.DateTimeField(_("expires at"))
+    released = models.BooleanField(_("released"), default=False)
+    confirmed = models.BooleanField(_("confirmed"), default=False)
+    
+    class Meta:
+        verbose_name = _("coupon hold")
+        verbose_name_plural = _("coupon holds")
+        indexes = [
+            models.Index(fields=["coupon", "expires_at", "released"]),
+            models.Index(fields=["order", "expires_at", "released"]),
+        ]
+        
+        # 🚀 ENTERPRISE: Database constraints for data integrity
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(expires_at__gt=models.F('created_at')),
+                name='%(app_label)s_%(class)s_expires_after_creation'
+            ),
+        ]
+
+    def __str__(self):
+        return f"COUPON-HOLD-{self.coupon.code}-{self.order_id}@{self.expires_at.isoformat()}"
+
+    @property
+    def is_expired(self):
+        """Check if hold has expired."""
+        return self.expires_at <= timezone.now()
+
+    def release(self):
+        """🚀 ENTERPRISE: Release the coupon hold (idempotent)."""
+        if not self.released:
+            self.released = True
+            self.save(update_fields=['released'])
+
+    def confirm(self):
+        """🚀 ENTERPRISE: Confirm the coupon hold and increment usage."""
+        if self.released:
+            raise ValueError("Cannot confirm released hold")
+        
+        if self.is_expired:
+            raise ValueError("Cannot confirm expired hold")
+        
+        # Increment coupon usage atomically
+        self.coupon.increment_usage()
+        
+        # Mark as confirmed
+        self.confirmed = True
+        self.save(update_fields=['confirmed'])
+
+
 class Coupon(BaseModel):
     """Coupon model for discounts."""
     
@@ -1463,6 +1535,158 @@ class Coupon(BaseModel):
         
         # Ensure discount doesn't exceed the purchase amount
         return min(discount, amount)
+    
+    def can_be_used_for_order(self, order_total, event_id):
+        """
+        🚀 ENTERPRISE: Comprehensive validation for coupon usage.
+        
+        Returns:
+            tuple: (can_use: bool, message: str)
+        """
+        # 1. Basic validity check
+        if not self.is_currently_valid:
+            if self.status != 'active':
+                return False, f"El cupón está {self.get_status_display().lower()}"
+            if not self.is_active:
+                return False, "El cupón está desactivado"
+            if self.usage_limit and self.usage_count >= self.usage_limit:
+                return False, "El cupón ha alcanzado su límite de uso"
+            
+            from django.utils import timezone
+            now = timezone.now()
+            if self.start_date and now < self.start_date:
+                return False, f"El cupón será válido desde {self.start_date.strftime('%d/%m/%Y %H:%M')}"
+            if self.end_date and now > self.end_date:
+                return False, f"El cupón expiró el {self.end_date.strftime('%d/%m/%Y %H:%M')}"
+        
+        # 2. Minimum purchase validation
+        if self.min_purchase and order_total < self.min_purchase:
+            return False, f"Compra mínima requerida: ${self.min_purchase}"
+        
+        # 3. Event applicability validation
+        if not self._is_applicable_to_event(event_id):
+            if self.is_global:
+                return False, "El cupón no aplica para este evento"
+            else:
+                return False, "El cupón es específico para otro evento"
+        
+        # 4. Usage limit validation (with tolerance for concurrent requests)
+        if self.usage_limit:
+            # Check with small buffer for race conditions
+            remaining_uses = self.usage_limit - self.usage_count
+            if remaining_uses <= 0:
+                return False, "El cupón ha alcanzado su límite de uso"
+        
+        # 5. Calculate discount to ensure it's meaningful
+        discount = self.calculate_discount_amount(order_total)
+        if discount <= 0:
+            return False, "El cupón no genera descuento para esta compra"
+        
+        return True, "Cupón válido"
+    
+    def _is_applicable_to_event(self, event_id):
+        """🚀 ENTERPRISE: Check if coupon applies to specific event."""
+        # Validate event_id is provided
+        if not event_id:
+            return False
+        
+        # Global coupons apply to all events of the organizer
+        if self.is_global:
+            # Verify event belongs to same organizer
+            try:
+                from apps.events.models import Event
+                event = Event.objects.get(id=event_id)
+                return event.organizer_id == self.organizer_id
+            except Event.DoesNotExist:
+                return False
+        
+        # Local coupons apply only to specific events
+        applicable_events = self.get_applicable_events()
+        if applicable_events is None:
+            return True  # Shouldn't happen, but safe fallback
+        
+        return str(event_id) in [str(eid) for eid in applicable_events]
+    
+    def increment_usage(self):
+        """🚀 ENTERPRISE: Atomic increment of usage count."""
+        from django.db.models import F
+        from django.db import transaction
+        
+        with transaction.atomic():
+            # Use atomic F() expression to prevent race conditions
+            updated_rows = Coupon.objects.filter(
+                id=self.id,
+                usage_count__lt=F('usage_limit') if self.usage_limit else True
+            ).update(
+                usage_count=F('usage_count') + 1
+            )
+            
+            if updated_rows == 0:
+                raise ValueError("No se pudo incrementar el uso del cupón (límite alcanzado o cupón no encontrado)")
+            
+            # Refresh instance to get updated values
+            self.refresh_from_db()
+    
+    def reserve_usage_for_order(self, order):
+        """🚀 ENTERPRISE: Reserve coupon usage during checkout."""
+        from apps.events.models import CouponHold
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        # Check if already reserved for this order
+        existing_hold = CouponHold.objects.filter(
+            coupon=self, 
+            order=order, 
+            released=False,
+            expires_at__gt=timezone.now()
+        ).first()
+        
+        if existing_hold:
+            return existing_hold
+        
+        # Create new hold
+        expires_at = timezone.now() + timedelta(minutes=15)  # 15 min expiry
+        hold = CouponHold.objects.create(
+            coupon=self,
+            order=order,
+            expires_at=expires_at
+        )
+        
+        return hold
+    
+    def release_usage_for_order(self, order):
+        """🚀 ENTERPRISE: Release coupon usage reservation."""
+        from apps.events.models import CouponHold
+        
+        holds = CouponHold.objects.filter(
+            coupon=self,
+            order=order,
+            released=False
+        )
+        
+        for hold in holds:
+            hold.release()
+    
+    def confirm_usage_for_order(self, order):
+        """🚀 ENTERPRISE: Confirm coupon usage after successful payment."""
+        from apps.events.models import CouponHold
+        
+        # Find active hold
+        hold = CouponHold.objects.filter(
+            coupon=self,
+            order=order,
+            released=False
+        ).first()
+        
+        if not hold:
+            raise ValueError("No hay reserva activa de cupón para esta orden")
+        
+        # Increment usage atomically
+        self.increment_usage()
+        
+        # Mark hold as used
+        hold.confirmed = True
+        hold.save()
     
     def apply_to_multiple_events(self, event_ids):
         """Helper method to set multiple events for this coupon."""

@@ -8,7 +8,7 @@ including automatic cleanup of expired ticket holds to prevent stock leakage.
 from celery import shared_task
 from django.utils import timezone
 from django.db import transaction
-from apps.events.models import TicketHold
+from apps.events.models import TicketHold, CouponHold
 import logging
 
 logger = logging.getLogger(__name__)
@@ -104,6 +104,117 @@ def cleanup_expired_ticket_holds(self):
         logger.error(error_msg)
         
         # Re-raise for Celery to mark task as failed
+        raise self.retry(exc=e, countdown=60, max_retries=3)
+
+
+@shared_task(bind=True, ignore_result=True)
+def cleanup_expired_coupon_holds(self):
+    """
+    🚀 ENTERPRISE TASK: Clean up expired coupon holds automatically.
+    
+    This task runs every 5 minutes to ensure that expired coupon holds are released
+    and coupons become available for use again. Critical for preventing coupon
+    usage deadlocks in high-volume scenarios.
+    
+    Returns:
+        dict: Statistics about the cleanup operation
+    """
+    now = timezone.now()
+    
+    try:
+        with transaction.atomic():
+            # Find all expired coupon holds that haven't been released or confirmed
+            expired_holds = CouponHold.objects.select_for_update().filter(
+                released=False,
+                confirmed=False,
+                expires_at__lte=now
+            ).exclude(
+                # Exclude holds where order has an active payment in progress
+                order__payments__status__in=['pending', 'processing', 'authorized']
+            )
+            
+            total_holds = expired_holds.count()
+            
+            if total_holds == 0:
+                logger.info('✅ COUPON CLEANUP: No expired coupon holds found. System is clean!')
+                return {
+                    'status': 'success',
+                    'expired_coupon_holds_found': 0,
+                    'coupon_holds_released': 0,
+                    'message': 'No expired coupon holds found'
+                }
+            
+            logger.info(f'🧹 COUPON CLEANUP: Found {total_holds} expired coupon holds to release')
+            
+            released_count = 0
+            errors = []
+            
+            # Process holds in batches for better performance
+            batch_size = 100
+            for i in range(0, total_holds, batch_size):
+                batch = expired_holds[i:i + batch_size]
+                
+                for hold in batch:
+                    try:
+                        hold.release()
+                        released_count += 1
+                        
+                        logger.debug(f'Released expired coupon hold {hold.id} for coupon {hold.coupon.code}')
+                        
+                    except Exception as e:
+                        error_msg = f'Error releasing coupon hold {hold.id}: {str(e)}'
+                        logger.error(error_msg)
+                        errors.append(error_msg)
+            
+            result = {
+                'status': 'success' if not errors else 'partial_success',
+                'expired_coupon_holds_found': total_holds,
+                'coupon_holds_released': released_count,
+                'errors': errors[:10],  # Limit error list
+                'total_errors': len(errors)
+            }
+            
+            if errors:
+                logger.warning(f'🚨 COUPON CLEANUP: Released {released_count}/{total_holds} coupon holds with {len(errors)} errors')
+            else:
+                logger.info(f'✅ COUPON CLEANUP: Successfully released {released_count} expired coupon holds')
+            
+            return result
+            
+    except Exception as e:
+        error_msg = f'Critical error in cleanup_expired_coupon_holds: {str(e)}'
+        logger.error(error_msg)
+        
+        # Re-raise for Celery to mark task as failed
+        raise self.retry(exc=e, countdown=60, max_retries=3)
+
+
+@shared_task(bind=True, ignore_result=True)
+def cleanup_all_expired_holds(self):
+    """
+    🚀 ENTERPRISE TASK: Master cleanup task for both ticket and coupon holds.
+    
+    This task calls both cleanup functions to ensure all expired holds are processed.
+    """
+    try:
+        # Clean up ticket holds
+        ticket_result = cleanup_expired_ticket_holds.delay()
+        
+        # Clean up coupon holds  
+        coupon_result = cleanup_expired_coupon_holds.delay()
+        
+        logger.info('🚀 ENTERPRISE: Master cleanup task completed - both ticket and coupon cleanup tasks queued')
+        
+        return {
+            'status': 'success',
+            'message': 'Master cleanup completed',
+            'ticket_cleanup_task_id': ticket_result.id,
+            'coupon_cleanup_task_id': coupon_result.id
+        }
+        
+    except Exception as e:
+        error_msg = f'Error in master cleanup task: {str(e)}'
+        logger.error(error_msg)
         raise self.retry(exc=e, countdown=60, max_retries=3)
 
 
