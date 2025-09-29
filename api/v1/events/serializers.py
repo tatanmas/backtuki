@@ -288,6 +288,9 @@ class CouponSerializer(serializers.ModelSerializer):
         events_data = self.initial_data.get('events')
         events_list = None if events_data is None else events_data
         
+        # Remove organizer from validated_data to avoid duplicate argument
+        validated_data.pop('organizer', None)
+        
         # Create coupon (field mapping handled by source in field definitions)
         coupon = Coupon.objects.create(
             organizer=organizer,
@@ -1092,6 +1095,10 @@ class EventUpdateSerializer(serializers.ModelSerializer):
     )
     additionalInfo = serializers.DictField(required=False)
     
+    # Forzar que las fechas se devuelvan en UTC
+    start_date = serializers.DateTimeField()
+    end_date = serializers.DateTimeField()
+    
     class Meta:
         model = Event
         fields = [
@@ -1634,6 +1641,10 @@ class PublicEventCreateSerializer(serializers.ModelSerializer):
     """
     location = LocationSerializer(required=False)
     
+    # Forzar que las fechas se devuelvan en UTC
+    start_date = serializers.DateTimeField()
+    end_date = serializers.DateTimeField()
+    
     class Meta:
         model = Event
         fields = [
@@ -1648,8 +1659,10 @@ class PublicEventCreateSerializer(serializers.ModelSerializer):
         """Validaciones básicas para eventos públicos."""
         from django.utils import timezone
         
-        # Validar fechas
-        if data.get('start_date') and data['start_date'] <= timezone.now():
+        # Validar fechas - comparar con UTC para evitar problemas de zona horaria
+        from django.utils import timezone
+        now_utc = timezone.now()
+        if data.get('start_date') and data['start_date'] <= now_utc:
             raise serializers.ValidationError({
                 'start_date': 'La fecha de inicio debe ser futura'
             })

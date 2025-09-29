@@ -258,6 +258,10 @@ def send_ticket_confirmation_email(self, order_id):
         sent_count = 0
         for ticket in all_tickets:
             try:
+                # Generate QR code for the ticket
+                from apps.events.services import QRCodeService
+                qr_code_base64 = QRCodeService.generate_qr_code(ticket.ticket_number)
+                
                 # Prepare context for email template
                 context = {
                     'attendee_name': ticket.attendee_name,
@@ -265,6 +269,7 @@ def send_ticket_confirmation_email(self, order_id):
                     'ticket': ticket,
                     'order': order,
                     'email': order.email,
+                    'qr_code': qr_code_base64,
                 }
                 
                 # Render email templates

@@ -20,6 +20,8 @@ class UserReservationSerializer(serializers.ModelSerializer):
     tickets = serializers.SerializerMethodField()
     purchaseDate = serializers.DateTimeField(source='created_at', read_only=True)
     attendees = serializers.SerializerMethodField()
+    paymentInfo = serializers.SerializerMethodField()
+    customerInfo = serializers.SerializerMethodField()
     
     class Meta:
         model = Order
@@ -27,7 +29,7 @@ class UserReservationSerializer(serializers.ModelSerializer):
             'id', 'orderId', 'eventId', 'eventTitle', 'eventImage',
             'eventDate', 'eventTime', 'location', 'status',
             'totalAmount', 'currency', 'ticketCount', 'tickets',
-            'purchaseDate', 'attendees'
+            'purchaseDate', 'attendees', 'paymentInfo', 'customerInfo'
         ]
     
     def get_eventImage(self, obj):
@@ -73,3 +75,19 @@ class UserReservationSerializer(serializers.ModelSerializer):
                 'email': obj.email
             })
         return attendees
+    
+    def get_paymentInfo(self, obj):
+        """Obtener información de pago"""
+        return {
+            'method': obj.payment_method or 'Método desconocido',
+            'provider': 'Transbank' if obj.payment_method else 'Desconocido',
+            'status': 'Pagado' if obj.status == 'paid' else 'Pendiente'
+        }
+    
+    def get_customerInfo(self, obj):
+        """Obtener información del cliente"""
+        return {
+            'name': f"{obj.first_name} {obj.last_name}".strip(),
+            'email': obj.email,
+            'phone': obj.phone or ''
+        }

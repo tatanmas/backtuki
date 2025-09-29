@@ -687,8 +687,13 @@ class TicketTier(BaseModel):
     def save(self, *args, **kwargs):
         """🚀 ENTERPRISE: Auto-initialize available if not set."""
         # If this is a new instance and available is still default (0), set it to capacity
-        if not self.pk and self.available == 0 and self.capacity:
-            self.available = self.capacity
+        if not self.pk and self.available == 0:
+            if self.capacity is not None:
+                # Limited capacity: set available to capacity
+                self.available = self.capacity
+            else:
+                # Unlimited capacity: set available to a large number
+                self.available = 9999999
         super().save(*args, **kwargs)
     
     @property

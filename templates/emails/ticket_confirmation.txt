@@ -20,6 +20,7 @@ INFORMACIÓN IMPORTANTE:
 {% if event.age_restriction %}• Restricción de edad: {{ event.age_restriction }}{% endif %}
 {% if event.dresscode %}• Código de vestimenta: {{ event.dresscode }}{% endif %}
 
+CÓDIGO QR: https://tuki.cl/tickets/{{ ticket.ticket_number }}
 Ver ticket completo: https://tuki.cl/tickets/{{ ticket.ticket_number }}
 
 ¿Tienes alguna pregunta?

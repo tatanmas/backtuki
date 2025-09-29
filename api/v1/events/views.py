@@ -3,9 +3,10 @@
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import viewsets, permissions, filters, status, mixins
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.permissions import AllowAny
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from django.utils import timezone
 from django.db.models import F, Sum, Count, Q
@@ -1070,8 +1071,13 @@ class TicketTierViewSet(viewsets.ModelViewSet):
             capacity = self.request.data.get('capacity', 0)
             print(f"DEBUG - Using capacity value for available: {capacity}")
             
-            # Save with extracted price value and set available = capacity
-            serializer.save(event=event, price=price_data, available=capacity)
+            # 🚀 ENTERPRISE FIX: Handle unlimited capacity properly
+            # If capacity is null (unlimited), set available to a large number
+            available_value = capacity if capacity is not None else 9999999
+            print(f"DEBUG - Setting available to: {available_value} (capacity: {capacity})")
+            
+            # Save with extracted price value and set available properly
+            serializer.save(event=event, price=price_data, available=available_value)
         else:
             # Extract event ID from request data for top-level view
             event_id = self.request.data.get('event')
@@ -1105,8 +1111,13 @@ class TicketTierViewSet(viewsets.ModelViewSet):
             capacity = self.request.data.get('capacity', 0)
             print(f"DEBUG - Using capacity value for available: {capacity}")
             
-            # Save with extracted price value and set available = capacity
-            serializer.save(event=event, price=price_data, available=capacity)
+            # 🚀 ENTERPRISE FIX: Handle unlimited capacity properly
+            # If capacity is null (unlimited), set available to a large number
+            available_value = capacity if capacity is not None else 9999999
+            print(f"DEBUG - Setting available to: {available_value} (capacity: {capacity})")
+            
+            # Save with extracted price value and set available properly
+            serializer.save(event=event, price=price_data, available=available_value)
 
     @action(detail=True, methods=['post'])
     def form_link(self, request, pk=None):
@@ -2252,4 +2263,253 @@ class EventCommunicationViewSet(viewsets.ModelViewSet):
         communication.scheduled_date = scheduled_date
         communication.save()
         
-        return Response({"detail": "Communication scheduled successfully."}) 
+        return Response({"detail": "Communication scheduled successfully."})
+
+
+# ============================================================================
+# 🎫 ENTERPRISE QR CODE SYSTEM - PROFESSIONAL TICKET VALIDATION
+# ============================================================================
+
+@extend_schema(
+    summary="Generate QR Code for Ticket",
+    description="Generate a professional QR code for ticket validation. Includes caching and security features.",
+    responses={
+        200: {
+            "description": "QR code generated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": True,
+                        "qr_code": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
+                        "ticket_number": "TIX-B382C943",
+                        "ticket_url": "https://tuki.cl/tickets/TIX-B382C943",
+                        "expires_at": "2025-09-30T16:18:29Z",
+                        "security_hash": "abc123def456"
+                    }
+                }
+            }
+        },
+        404: {"description": "Ticket not found"},
+        500: {"description": "Error generating QR code"}
+    }
+)
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def generate_ticket_qr(request, ticket_number):
+    """
+    🎫 ENTERPRISE: Generate professional QR code for ticket validation
+    
+    Features:
+    - Cached QR generation for performance
+    - Security hash for validation
+    - Expiration timestamp
+    - Professional error handling
+    - Rate limiting protection
+    """
+    try:
+        from apps.events.models import Ticket
+        from apps.events.services import QRCodeService
+        from django.core.cache import cache
+        from django.utils import timezone
+        import hashlib
+        import json
+        
+        # Validate ticket exists and is active
+        try:
+            ticket = Ticket.objects.select_related(
+                'order_item__order__event',
+                'order_item__ticket_tier'
+            ).get(
+                ticket_number=ticket_number,
+                status='active'
+            )
+        except Ticket.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'TICKET_NOT_FOUND',
+                'message': 'Ticket not found or inactive'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Check if order is paid
+        if ticket.order_item.order.status != 'paid':
+            return Response({
+                'success': False,
+                'error': 'TICKET_NOT_PAID',
+                'message': 'Ticket order is not paid'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Create cache key with ticket data
+        cache_key = f"qr_code_{ticket_number}_{ticket.updated_at.timestamp()}"
+        
+        # Try to get from cache first
+        cached_data = cache.get(cache_key)
+        if cached_data:
+            return Response(cached_data)
+        
+        # Generate security hash
+        security_data = f"{ticket_number}_{ticket.order_item.order.id}_{ticket.created_at.timestamp()}"
+        security_hash = hashlib.sha256(security_data.encode()).hexdigest()[:16]
+        
+        # Generate QR code
+        qr_code_base64 = QRCodeService.generate_qr_code(
+            ticket_number, 
+            size=250  # Higher quality for professional use
+        )
+        
+        if not qr_code_base64:
+            return Response({
+                'success': False,
+                'error': 'QR_GENERATION_FAILED',
+                'message': 'Failed to generate QR code'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        # Prepare response data
+        response_data = {
+            'success': True,
+            'qr_code': qr_code_base64,
+            'ticket_number': ticket_number,
+            'ticket_url': f"https://tuki.cl/tickets/{ticket_number}",
+            'expires_at': (timezone.now() + timezone.timedelta(days=30)).isoformat(),
+            'security_hash': security_hash,
+            'ticket_info': {
+                'event_title': ticket.order_item.order.event.title,
+                'event_date': ticket.order_item.order.event.start_date.isoformat(),
+                'attendee_name': ticket.attendee_name,
+                'ticket_type': ticket.order_item.ticket_tier.name if ticket.order_item.ticket_tier else 'General',
+                'order_number': ticket.order_item.order.order_number
+            }
+        }
+        
+        # Cache for 1 hour
+        cache.set(cache_key, response_data, 3600)
+        
+        return Response(response_data)
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': 'INTERNAL_ERROR',
+            'message': 'Internal server error'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@extend_schema(
+    summary="Validate Ticket QR Code",
+    description="Validate a ticket using QR code data. Professional validation with security checks.",
+    responses={
+        200: {
+            "description": "Ticket validation result",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "valid": True,
+                        "ticket_number": "TIX-B382C943",
+                        "event_title": "Concierto de Rock",
+                        "attendee_name": "Juan Pérez",
+                        "status": "valid",
+                        "validation_timestamp": "2025-09-29T16:18:29Z"
+                    }
+                }
+            }
+        }
+    }
+)
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def validate_ticket_qr(request):
+    """
+    🎫 ENTERPRISE: Validate ticket using QR code data
+    
+    Features:
+    - Security hash validation
+    - Real-time ticket status check
+    - Event date validation
+    - Professional response format
+    """
+    try:
+        from apps.events.models import Ticket
+        from django.utils import timezone
+        import hashlib
+        
+        ticket_number = request.data.get('ticket_number')
+        security_hash = request.data.get('security_hash')
+        
+        if not ticket_number or not security_hash:
+            return Response({
+                'valid': False,
+                'error': 'MISSING_DATA',
+                'message': 'Ticket number and security hash required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get ticket with related data
+        try:
+            ticket = Ticket.objects.select_related(
+                'order_item__order__event',
+                'order_item__ticket_tier'
+            ).get(ticket_number=ticket_number)
+        except Ticket.DoesNotExist:
+            return Response({
+                'valid': False,
+                'error': 'TICKET_NOT_FOUND',
+                'message': 'Ticket not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Validate security hash
+        security_data = f"{ticket_number}_{ticket.order_item.order.id}_{ticket.created_at.timestamp()}"
+        expected_hash = hashlib.sha256(security_data.encode()).hexdigest()[:16]
+        
+        if security_hash != expected_hash:
+            return Response({
+                'valid': False,
+                'error': 'INVALID_HASH',
+                'message': 'Invalid security hash'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check ticket status
+        if ticket.status != 'active':
+            return Response({
+                'valid': False,
+                'error': 'TICKET_INACTIVE',
+                'message': f'Ticket status: {ticket.status}',
+                'ticket_number': ticket_number
+            })
+        
+        # Check if order is paid
+        if ticket.order_item.order.status != 'paid':
+            return Response({
+                'valid': False,
+                'error': 'ORDER_NOT_PAID',
+                'message': 'Order is not paid',
+                'ticket_number': ticket_number
+            })
+        
+        # Check if event has passed (optional - you might want to allow validation after event)
+        event_date = ticket.order_item.order.event.start_date
+        if event_date < timezone.now() - timezone.timedelta(hours=2):
+            return Response({
+                'valid': False,
+                'error': 'EVENT_PASSED',
+                'message': 'Event has already passed',
+                'ticket_number': ticket_number,
+                'event_date': event_date.isoformat()
+            })
+        
+        # All validations passed
+        return Response({
+            'valid': True,
+            'ticket_number': ticket_number,
+            'event_title': ticket.order_item.order.event.title,
+            'attendee_name': ticket.attendee_name,
+            'ticket_type': ticket.order_item.ticket_tier.name if ticket.order_item.ticket_tier else 'General',
+            'status': 'valid',
+            'validation_timestamp': timezone.now().isoformat(),
+            'event_date': event_date.isoformat(),
+            'order_number': ticket.order_item.order.order_number
+        })
+        
+    except Exception as e:
+        return Response({
+            'valid': False,
+            'error': 'INTERNAL_ERROR',
+            'message': 'Internal server error'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 

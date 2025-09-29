@@ -5,6 +5,8 @@ from .views import (
     EventCategoryViewSet,
     TicketCategoryViewSet,
     TicketTierViewSet,
+    generate_ticket_qr,
+    validate_ticket_qr,
 )
 from .public_views import PublicEventViewSet
 
@@ -33,4 +35,8 @@ urlpatterns = [
     # Standalone ticket tier endpoints
     path('ticket-tiers/', TicketTierViewSet.as_view({'get': 'list', 'post': 'create'})),
     path('ticket-tiers/<str:pk>/', TicketTierViewSet.as_view({'get': 'retrieve', 'patch': 'partial_update', 'delete': 'destroy'})),
+    
+    # 🎫 ENTERPRISE QR CODE ENDPOINTS
+    path('tickets/<str:ticket_number>/qr/', generate_ticket_qr, name='generate-ticket-qr'),
+    path('tickets/validate-qr/', validate_ticket_qr, name='validate-ticket-qr'),
 ] 
