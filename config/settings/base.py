@@ -88,15 +88,21 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
-# Database
+# Database - ENTERPRISE CONFIGURATION
+# POSTGRESQL ONLY - NO SQLITE FALLBACK
+# This will be overridden in cloudrun.py for production
 DATABASES = {
     'default': {
-        'ENGINE': config('DB_ENGINE', default='django.db.backends.sqlite3'),
-        'NAME': config('DB_NAME', default=BASE_DIR / 'db.sqlite3'),
-        'USER': config('DB_USER', default=''),
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': config('DB_NAME', default='tuki_local'),
+        'USER': config('DB_USER', default='postgres'),
         'PASSWORD': config('DB_PASSWORD', default=''),
-        'HOST': config('DB_HOST', default=''),
-        'PORT': config('DB_PORT', default=''),
+        'HOST': config('DB_HOST', default='localhost'),
+        'PORT': config('DB_PORT', default='5432'),
+        'CONN_MAX_AGE': 0,
+        'OPTIONS': {
+            'sslmode': 'prefer',
+        },
     }
 }
 

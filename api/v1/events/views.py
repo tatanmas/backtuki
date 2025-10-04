@@ -754,9 +754,9 @@ class LocationViewSet(viewsets.ModelViewSet):
     """
     serializer_class = LocationSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['city', 'country']
-    search_fields = ['name', 'address', 'city', 'country']
-    ordering_fields = ['name', 'city', 'country']
+    filterset_fields = ['name']  # Removed city, country as they don't exist in simplified Location model
+    search_fields = ['name', 'address']  # Removed city, country
+    ordering_fields = ['name']  # Removed city, country
     ordering = ['name']
     
     def get_organizer(self):

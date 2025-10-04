@@ -15,6 +15,10 @@ class FormViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Return forms for the current organizer"""
         try:
+            # Handle anonymous users
+            if not self.request.user.is_authenticated:
+                return Form.objects.none()
+                
             # Get the user's organizer through OrganizerUser relationship
             organizer_user = OrganizerUser.objects.filter(user=self.request.user).first()
             

@@ -1,3 +1,70 @@
+## Cloud Run Deployment (Backend)
+
+Canonical docs: see `deploy/CONTEXT_CLOUD_RUN.md` for platform context and the authoritative deploy flow.
+
+1) Build and push the web image
+
+```bash
+gcloud builds submit --config cloudbuild-backend.yaml
+```
+
+2) Deploy to Cloud Run (ensure Cloud SQL and VPC connector)
+
+```bash
+gcloud run deploy tuki-backend \
+  --image us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-backend:v4-backend \
+  --region us-central1 \
+  --platform managed \
+  --allow-unauthenticated \
+  --port 8080 \
+  --max-instances 10 \
+  --concurrency 80 \
+  --memory 1Gi \
+  --cpu 2 \
+  --env-vars-file cloud-run-env.yaml \
+  --vpc-connector serverless-conn \
+  --vpc-egress private-ranges-only
+```
+
+3) Run migrations via Cloud Run Job
+
+```bash
+./scripts/deploy-migrations.sh
+```
+
+4) Create initial superuser (one-time)
+
+```bash
+gcloud run jobs create tuki-create-su \
+  --image us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-migrate:latest \
+  --region us-central1 \
+  --env-vars-file migrate-env.yaml \
+  --set-env-vars DJANGO_SUPERUSER_USERNAME=admin,DJANGO_SUPERUSER_EMAIL=admin@tuki.cl,DJANGO_SUPERUSER_PASSWORD='TukiAdmin2025!' \
+  --set-cloudsql-instances tukiprod:us-central1:tuki-db-prod \
+  -- \
+  python manage.py create_initial_superuser
+
+gcloud run jobs execute tuki-create-su --region us-central1 --wait
+```
+
+Alternative using Django's built-in command:
+```bash
+gcloud run jobs create tuki-create-su-native \
+  --image us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-migrate:latest \
+  --region us-central1 \
+  --env-vars-file migrate-env.yaml \
+  --set-env-vars DJANGO_SUPERUSER_USERNAME=admin,DJANGO_SUPERUSER_EMAIL=admin@tuki.cl,DJANGO_SUPERUSER_PASSWORD='TukiAdmin2025!' \
+  --set-cloudsql-instances tukiprod:us-central1:tuki-db-prod \
+  -- \
+  python manage.py createsuperuser --noinput
+
+gcloud run jobs execute tuki-create-su-native --region us-central1 --wait
+```
+
+5) Health check
+
+Endpoint: `/healthz` must return `200 ok`.
+
 # Tuki Platform Backend
 
 Tuki is a comprehensive platform for selling tickets, managing accommodations, and offering experiences, with a focus on multi-tenancy and scalability.

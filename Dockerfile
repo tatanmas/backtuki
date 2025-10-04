@@ -1,45 +1,46 @@
-# Use Python 3.11 slim image as base
-FROM python:3.11-slim as base
+# 🚀 ENTERPRISE DOCKERFILE - Inspirado en AuroraDev
+# Tuki Platform - Optimizado para Google Cloud Run
+FROM python:3.11-slim
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    DJANGO_SETTINGS_MODULE=config.settings.development
+    PORT=8080 \
+    DJANGO_SETTINGS_MODULE=config.settings.cloudrun
 
 # Create app directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (minimal set)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     gettext \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
 # Copy project files
 COPY . .
 
-# Create volume for static and media files
-VOLUME ["/app/static", "/app/media"]
+# Copy entrypoint and superuser creation scripts
+COPY entrypoint-fixed.sh /entrypoint.sh
+COPY create_superuser_simple.py ./create_superuser_simple.py
+RUN chmod +x /entrypoint.sh
+
+# Create static directory and set permissions
+RUN mkdir -p /app/staticfiles /app/media && \
+    useradd --create-home --shell /bin/bash app && \
+    chown -R app:app /app
+
+USER app
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8080
 
-# Default command
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
-
-# Production stage
-FROM base as production
-
-ENV DJANGO_SETTINGS_MODULE=config.settings.production
-
-# Add production-specific dependencies if needed
-# RUN pip install --no-cache-dir gunicorn
-
-# Production command
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"] 
+# Use entrypoint script (like AuroraDev)
+ENTRYPOINT ["/entrypoint.sh"]

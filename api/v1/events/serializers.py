@@ -579,22 +579,13 @@ class PublicEventSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
     def get_image(self, obj) -> str:
-        """Get the first event image or a default image."""
+        """Get the first event image or None if no image exists."""
         request = self.context.get('request')
         first_image = obj.images.first()
         if first_image and first_image.image:
             return request.build_absolute_uri(first_image.image.url)
-        # Return a default image based on event type
-        default_images = {
-            'concert': 'https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3',
-            'festival': 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6',
-            'theater': 'https://images.unsplash.com/photo-1555939594-58d7cb561ad1',
-            'sports': 'https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b',
-            'workshop': 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3',
-            'conference': 'https://images.unsplash.com/photo-1540575467063-178a50c2df87',
-            'party': 'https://images.unsplash.com/photo-1530103862676-de8c9debad1d',
-        }
-        return default_images.get(obj.type, 'https://images.unsplash.com/photo-1511795409834-ef04bbd61622')
+        # Return None so frontend can handle default image
+        return None
 
     def get_price(self, obj) -> int:
         """Get the minimum ticket price or 0 if free."""

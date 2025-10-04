@@ -7,11 +7,14 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
+from rest_framework.parsers import MultiPartParser, FormParser
 from django.db import transaction
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.utils.text import slugify
+from django.conf import settings
 import uuid
+import os
 
 from apps.otp.models import OTP, OTPPurpose
 from apps.otp.services import OTPService
@@ -51,8 +54,9 @@ class PublicEventViewSet(viewsets.ModelViewSet):
             
             try:
                 obj = Event.objects.get(**filter_kwargs)
-                # Verificar que el evento requiere validación de email
-                if obj.requires_email_validation and obj.organizer and obj.organizer.is_temporary:
+                # ✅ MEJORADO: Permitir acceso si requiere validación O si ya fue validado (para reenvío de tokens)
+                if (obj.requires_email_validation and obj.organizer and obj.organizer.is_temporary) or \
+                   (not obj.requires_email_validation and obj.organizer and not obj.organizer.is_temporary):
                     return obj
                 else:
                     from django.http import Http404
@@ -126,6 +130,35 @@ class PublicEventViewSet(viewsets.ModelViewSet):
                 'message': 'Email y código OTP son requeridos'
             }, status=status.HTTP_400_BAD_REQUEST)
         
+        # ✅ NUEVO: Verificar si el evento ya fue validado
+        if not event.requires_email_validation and event.organizer and not event.organizer.is_temporary:
+            print(f"[PublicEventValidation] ℹ️ Event already validated, returning existing token for: {email}")
+            
+            # Buscar el usuario existente
+            try:
+                user = User.objects.get(email__iexact=email)
+                
+                # Generar nuevo token de autenticación
+                from rest_framework_simplejwt.tokens import RefreshToken
+                refresh = RefreshToken.for_user(user)
+                access_token = str(refresh.access_token)
+                
+                return Response({
+                    'success': True,
+                    'message': 'Evento ya validado previamente. Aquí tienes tu token de acceso.',
+                    'event_id': str(event.id),
+                    'organizer_id': str(event.organizer.id),
+                    'user_id': str(user.id),
+                    'user_token': access_token,
+                    'is_new_user': False,
+                    'already_validated': True
+                })
+            except User.DoesNotExist:
+                return Response({
+                    'success': False,
+                    'message': 'Usuario no encontrado para este evento ya validado'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
         # Validar OTP
         result = OTPService.validate_code(
             email=email,
@@ -192,6 +225,9 @@ class PublicEventViewSet(viewsets.ModelViewSet):
                     }
                 )
                 
+                # ✅ ARREGLAR: Definir is_new_user para organizador existente
+                is_new_user = user_created
+                
                 if ou_created:
                     print(f"[PublicEventValidation] ✅ Created new OrganizerUser relationship")
                 else:
@@ -249,6 +285,9 @@ class PublicEventViewSet(viewsets.ModelViewSet):
                         'can_manage_settings': True
                     }
                 )
+                
+                # ✅ ARREGLAR: Definir is_new_user para organizador nuevo
+                is_new_user = user_created
             
             # Publicar evento
             event.status = 'published'
@@ -267,7 +306,7 @@ class PublicEventViewSet(viewsets.ModelViewSet):
             'organizer_id': str(organizer.id),
             'user_id': str(user.id),
             'user_token': access_token,
-            'is_new_user': created
+            'is_new_user': is_new_user
         })
     
     @action(detail=True, methods=['post'])
@@ -342,3 +381,85 @@ class PublicEventViewSet(viewsets.ModelViewSet):
                 'success': False,
                 'message': 'Evento no encontrado'
             }, status=status.HTTP_404_NOT_FOUND)
+    
+    @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser])
+    def upload(self, request):
+        """🚀 ENTERPRISE PUBLIC IMAGE UPLOAD - Upload an image file for public events."""
+        if 'file' not in request.FILES:
+            return Response({'detail': 'No file found'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        file_obj = request.FILES['file']
+        event_id = request.data.get('event_id')  # Optional event association
+        
+        # Generate a unique filename
+        filename = f"{uuid.uuid4().hex}.{file_obj.name.split('.')[-1]}"
+        
+        # Save file to media directory
+        file_path = os.path.join(settings.MEDIA_ROOT, 'event_images', filename)
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        try:
+            with open(file_path, 'wb+') as destination:
+                for chunk in file_obj.chunks():
+                    destination.write(chunk)
+            
+            # Return the URL for the uploaded file (relative path)
+            file_url = f"{settings.MEDIA_URL}event_images/{filename}"
+            
+            # If event_id is provided, create EventImage record for public events
+            if event_id:
+                try:
+                    event = Event.objects.get(id=event_id)
+                    
+                    # For public events, only check if it's a temporary organizer (no auth required)
+                    if not (event.organizer and event.organizer.is_temporary and event.requires_email_validation):
+                        # Clean up uploaded file if not a public event
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                        return Response({'detail': 'Only public events in draft can upload images without authentication'}, 
+                                      status=status.HTTP_403_FORBIDDEN)
+                    
+                    # Import EventImage here to avoid circular imports
+                    from apps.events.models import EventImage
+                    
+                    # Create EventImage record
+                    event_image = EventImage.objects.create(
+                        event=event,
+                        image=f"event_images/{filename}",  # Store relative path
+                        alt=request.data.get('alt', file_obj.name),
+                        type=request.data.get('type', 'image'),
+                        order=event.images.count()  # Set order as current count
+                    )
+                    
+                    print(f"[PUBLIC-UPLOAD] ✅ Created EventImage record: {event_image.id} for public event {event.id}")
+                    
+                    return Response({
+                        'url': file_url,
+                        'event_image_id': str(event_image.id),
+                        'filename': filename,
+                        'message': 'Image uploaded and associated with event successfully'
+                    })
+                    
+                except Event.DoesNotExist:
+                    # Clean up uploaded file if event not found
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    return Response({'detail': 'Event not found'}, status=status.HTTP_404_NOT_FOUND)
+                except Exception as e:
+                    # Clean up uploaded file on any error
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    print(f"[PUBLIC-UPLOAD] ❌ Error creating EventImage: {e}")
+                    return Response({'detail': 'Error associating image with event'}, 
+                                  status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            # Return just the file URL if no event association
+            return Response({
+                'url': file_url,
+                'filename': filename,
+                'message': 'Image uploaded successfully'
+            })
+            
+        except Exception as e:
+            print(f"[PUBLIC-UPLOAD] ❌ Error uploading file: {e}")
+            return Response({'detail': 'Error uploading file'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

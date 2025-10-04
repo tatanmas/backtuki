@@ -1,0 +1,20 @@
+DJANGO_SETTINGS_MODULE: config.settings.cloudrun
+DEBUG: "False"
+USE_GCP: "true"
+USE_REDIS: "false"
+GS_PROJECT_ID: tukiprod
+GS_BUCKET_NAME: tuki-media-prod-1759240560
+DB_NAME: tuki_production
+DB_USER: tuki_user
+DB_PASSWORD: TukiProd2025!
+DB_HOST: /cloudsql/tukiprod:us-central1:tuki-db-prod
+DB_PORT: "5432"
+REDIS_URL: redis://10.5.153.115:6379/0
+SECRET_KEY: tuki-super-secret-key-enterprise-2025-production
+ALLOWED_HOSTS: "tuki.live,www.tuki.live,api.tuki.live,prop.cl,*.run.app,34.149.134.127,*"
+CSRF_TRUSTED_ORIGINS: "https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://prop.cl,https://*.run.app"
+CORS_ALLOWED_ORIGINS: "https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://prop.cl"
+# Superuser configuration (like AuroraDev)
+DJANGO_SUPERUSER_USERNAME: "admin"
+DJANGO_SUPERUSER_EMAIL: "admin@tuki.cl"
+DJANGO_SUPERUSER_PASSWORD: "TukiAdmin2025!"

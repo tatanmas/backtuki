@@ -1,0 +1,34 @@
+# 🚀 ENTERPRISE CLOUD BUILD - Optimizado para Tuki Platform
+# Inspirado en AuroraDev pero adaptado para Google Cloud Run
+
+steps:
+  # Build the container image using the fixed Dockerfile
+  - name: 'gcr.io/cloud-builders/docker'
+    args: 
+      - 'build'
+      - '-f'
+      - 'Dockerfile.fixed'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-backend:v5-fixed'
+      - '.'
+    timeout: '1200s'
+
+  # Push the container image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: 
+      - 'push'
+      - 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-backend:v5-fixed'
+    timeout: '600s'
+
+# Images to be pushed to registry
+images:
+  - 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-backend:v5-fixed'
+
+# Build options for better performance
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+  diskSizeGb: '100'
+  
+# Timeout for the entire build
+timeout: '2400s'

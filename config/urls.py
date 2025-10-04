@@ -9,8 +9,12 @@ from drf_spectacular.views import (
     SpectacularRedocView,
     SpectacularSwaggerView,
 )
+from django.http import HttpResponse
 
 urlpatterns = [
+    # Health endpoint for Cloud Run (no DB/Redis access) - MUST BE FIRST
+    path('healthz/', lambda request: HttpResponse('ok', content_type='text/plain')),
+    
     # Django Admin
     path('admin/', admin.site.urls),
     
@@ -18,13 +22,13 @@ urlpatterns = [
     path('api/v1/', include('api.v1.public_urls')),
     path('api/v1/', include('api.v1.urls')),
     
-    # 🚀 ENTERPRISE Payment System
-    path('', include('payment_processor.urls')),
-    
     # API Documentation
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
+    
+    # 🚀 ENTERPRISE Payment System - LAST to avoid conflicts
+    path('', include('payment_processor.urls')),
 ]
 
 if settings.DEBUG:
