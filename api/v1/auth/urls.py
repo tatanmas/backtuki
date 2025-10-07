@@ -18,6 +18,9 @@ from .views import (
     LoginView,
     OTPLoginView,
     create_guest_user_from_purchase,
+    OrganizerOTPSendView,
+    OrganizerOTPValidateView,
+    OrganizerProfileSetupView,
 )
 
 urlpatterns = [
@@ -41,6 +44,11 @@ urlpatterns = [
     
     # Traditional Registration (with OTP)
     path('register/', RegistrationView.as_view(), name='register'),
+    
+    # Organizer OTP Authentication
+    path('organizer/otp/send/', OrganizerOTPSendView.as_view(), name='organizer_otp_send'),
+    path('organizer/otp/validate/', OrganizerOTPValidateView.as_view(), name='organizer_otp_validate'),
+    path('organizer/profile/setup/', OrganizerProfileSetupView.as_view(), name='organizer_profile_setup'),
     
     # Legacy endpoints
     path('password-reset/', PasswordResetView.as_view(), name='password_reset'),

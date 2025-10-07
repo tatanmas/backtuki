@@ -148,3 +148,48 @@ class GuestUserSerializer(serializers.Serializer):
     
     def validate_email(self, value):
         return value.lower().strip()
+
+
+class OrganizerOTPSerializer(serializers.Serializer):
+    """Serializer para OTP de organizadores"""
+    email = serializers.EmailField()
+    
+    def validate_email(self, value):
+        return value.lower().strip()
+
+
+class OrganizerOTPValidateSerializer(serializers.Serializer):
+    """Serializer para validar OTP de organizadores"""
+    email = serializers.EmailField()
+    code = serializers.CharField(min_length=6, max_length=6)
+    
+    def validate_email(self, value):
+        return value.lower().strip()
+    
+    def validate_code(self, value):
+        code = value.strip().replace(' ', '')
+        if not code.isdigit():
+            raise serializers.ValidationError("El código debe contener solo números")
+        return code
+
+
+class OrganizerProfileSetupSerializer(serializers.Serializer):
+    """Serializer para configuración inicial del perfil de organizador"""
+    organization_name = serializers.CharField(max_length=255, required=False)
+    contact_name = serializers.CharField(max_length=255, required=False)
+    contact_phone = serializers.CharField(max_length=30, required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True, required=False, min_length=6)
+    password_confirm = serializers.CharField(write_only=True, required=False)
+    
+    def validate(self, attrs):
+        """Validate passwords if provided."""
+        password = attrs.get('password')
+        password_confirm = attrs.get('password_confirm')
+        
+        if password and password_confirm:
+            if password != password_confirm:
+                raise serializers.ValidationError("Las contraseñas no coinciden")
+        elif password and not password_confirm:
+            raise serializers.ValidationError("Confirma tu contraseña")
+        
+        return attrs
