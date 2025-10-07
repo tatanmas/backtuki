@@ -35,6 +35,10 @@ env/
 venv/
 ENV/
 
+# Google Cloud credentials
+gcp-credentials.json
+*.json
+
 # IDE
 .idea/
 .vscode/
