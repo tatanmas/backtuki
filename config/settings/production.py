@@ -121,7 +121,8 @@ if 'USE_GCP' in os.environ:
     
     # Media files configuration
     GS_MEDIA_BUCKET_NAME = config('GS_MEDIA_BUCKET_NAME', default=GS_BUCKET_NAME)
-    GS_DEFAULT_ACL = 'publicRead'  # Images need to be publicly accessible
+    # 🚀 ENTERPRISE: No ACL needed - bucket has uniform bucket-level access enabled
+    GS_DEFAULT_ACL = None  # Use bucket-level permissions instead of object-level ACLs
     
     # Cache control for better performance (24 hours)
     GS_OBJECT_PARAMETERS = {

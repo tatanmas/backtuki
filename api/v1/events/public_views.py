@@ -261,6 +261,7 @@ class PublicEventViewSet(viewsets.ModelViewSet):
                 user, user_created = User.objects.get_or_create(
                     email=email,
                     defaults={
+                        'username': email,  # 🚀 FIX: Use email as username to avoid duplicates
                         'is_organizer': True,
                         'is_staff': True
                     }
@@ -394,17 +395,19 @@ class PublicEventViewSet(viewsets.ModelViewSet):
         # Generate a unique filename
         filename = f"{uuid.uuid4().hex}.{file_obj.name.split('.')[-1]}"
         
-        # Save file to media directory
-        file_path = os.path.join(settings.MEDIA_ROOT, 'event_images', filename)
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        # 🚀 ENTERPRISE: Use Django's configured storage backend (local in dev, GCS in prod)
+        from django.core.files.storage import default_storage
         
         try:
-            with open(file_path, 'wb+') as destination:
-                for chunk in file_obj.chunks():
-                    destination.write(chunk)
+            # Save file using Django's storage backend (automatically uses correct storage)
+            file_path = f"event_images/{filename}"
+            saved_path = default_storage.save(file_path, file_obj)
             
-            # Return the URL for the uploaded file (relative path)
-            file_url = f"{settings.MEDIA_URL}event_images/{filename}"
+            # Get the full URL for the uploaded file
+            file_url = default_storage.url(saved_path)
+            
+            print(f"[PUBLIC-UPLOAD] ✅ File uploaded to: {saved_path}")
+            print(f"[PUBLIC-UPLOAD] ✅ File URL: {file_url}")
             
             # If event_id is provided, create EventImage record for public events
             if event_id:
@@ -414,8 +417,10 @@ class PublicEventViewSet(viewsets.ModelViewSet):
                     # For public events, only check if it's a temporary organizer (no auth required)
                     if not (event.organizer and event.organizer.is_temporary and event.requires_email_validation):
                         # Clean up uploaded file if not a public event
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
+                        try:
+                            default_storage.delete(saved_path)
+                        except Exception as e:
+                            print(f"[PUBLIC-UPLOAD] ⚠️ Could not delete file {saved_path}: {e}")
                         return Response({'detail': 'Only public events in draft can upload images without authentication'}, 
                                       status=status.HTTP_403_FORBIDDEN)
                     
@@ -425,7 +430,7 @@ class PublicEventViewSet(viewsets.ModelViewSet):
                     # Create EventImage record
                     event_image = EventImage.objects.create(
                         event=event,
-                        image=f"event_images/{filename}",  # Store relative path
+                        image=saved_path,  # Store the path returned by storage backend
                         alt=request.data.get('alt', file_obj.name),
                         type=request.data.get('type', 'image'),
                         order=event.images.count()  # Set order as current count
@@ -442,13 +447,17 @@ class PublicEventViewSet(viewsets.ModelViewSet):
                     
                 except Event.DoesNotExist:
                     # Clean up uploaded file if event not found
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
+                    try:
+                        default_storage.delete(saved_path)
+                    except Exception as del_e:
+                        print(f"[PUBLIC-UPLOAD] ⚠️ Could not delete file {saved_path}: {del_e}")
                     return Response({'detail': 'Event not found'}, status=status.HTTP_404_NOT_FOUND)
                 except Exception as e:
                     # Clean up uploaded file on any error
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
+                    try:
+                        default_storage.delete(saved_path)
+                    except Exception as del_e:
+                        print(f"[PUBLIC-UPLOAD] ⚠️ Could not delete file {saved_path}: {del_e}")
                     print(f"[PUBLIC-UPLOAD] ❌ Error creating EventImage: {e}")
                     return Response({'detail': 'Error associating image with event'}, 
                                   status=status.HTTP_500_INTERNAL_SERVER_ERROR)

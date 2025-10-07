@@ -2,14 +2,16 @@
 # Inspirado en AuroraDev pero adaptado para Google Cloud Run
 
 steps:
-  # Build the container image using the fixed Dockerfile
+  # Build the container image using the Dockerfile (force rebuild without cache)
   - name: 'gcr.io/cloud-builders/docker'
     args: 
       - 'build'
+      - '--no-cache'
+      - '--pull'
       - '-f'
-      - 'Dockerfile.fixed'
+      - 'Dockerfile'
       - '-t'
-      - 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-backend:v5-fixed'
+      - 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-backend:v7-production'
       - '.'
     timeout: '1200s'
 
@@ -17,12 +19,12 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: 
       - 'push'
-      - 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-backend:v5-fixed'
+      - 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-backend:v7-production'
     timeout: '600s'
 
 # Images to be pushed to registry
 images:
-  - 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-backend:v5-fixed'
+  - 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-backend:v7-production'
 
 # Build options for better performance
 options:

@@ -17,7 +17,7 @@ from api.v1.events.views import (
     CouponViewSet,
     EventCommunicationViewSet,
 )
-from api.v1.forms.views import FormViewSet
+from api.v1.forms.views import FormViewSet, FormResponseViewSet
 
 from .auth.views import (
     EmailTokenObtainPairView,
@@ -43,6 +43,7 @@ router.register(r'tickets', TicketViewSet, basename='ticket')
 router.register(r'coupons', CouponViewSet, basename='coupon')
 router.register(r'event-communications', EventCommunicationViewSet, basename='event-communication')
 router.register(r'forms', FormViewSet, basename='form')
+router.register(r'form-responses', FormResponseViewSet, basename='form-response')
 
 # Wire up our API using automatic URL routing
 urlpatterns = [
@@ -50,6 +51,7 @@ urlpatterns = [
     path('auth/', include('api.v1.auth.urls')),
     path('user/', include('api.v1.users.urls')),
     path('tickets/', include('api.v1.tickets.urls')),  # 🚀 ENTERPRISE: Ticket management endpoints
+    path('validation/', include('api.v1.validation.urls')),  # 🚀 ENTERPRISE: Validation system endpoints
     path('', include('api.v1.events.urls')),  # ✅ NUEVO: Incluir URLs de eventos (incluye endpoints públicos)
     # Onboarding URLs
     path('organizers/onboarding/start/', CurrentOnboardingView.as_view(), name='onboarding-start'),

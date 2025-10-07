@@ -1225,6 +1225,10 @@ class BookingSerializer(serializers.Serializer):
         child=serializers.DictField(), required=False
     )
     customerInfo = serializers.DictField()
+    # 🚀 ENTERPRISE: Ticket holders with form data
+    ticketHolders = serializers.ListField(
+        child=serializers.DictField(), required=False
+    )
     reservationId = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     # 🚀 ENTERPRISE: Coupon support
     couponCode = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -1455,15 +1459,39 @@ class BookingSerializer(serializers.Serializer):
                 except Exception as e:
                     print(f"⚠️ COUPON: Error confirming usage: {e}")
             
-            # 🚀 ENTERPRISE: Create tickets for free orders immediately
+            # 🚀 ENTERPRISE: Create tickets for free orders immediately with form data
             from apps.events.models import Ticket
+            ticket_holders = validated_data.get('ticketHolders', [])
+            
             for order_item in order.items.all():
-                for _ in range(order_item.quantity):
+                # Find ticket holders for this tier
+                tier_holders = []
+                for ticket_group in ticket_holders:
+                    if ticket_group.get('tierId') == str(order_item.ticket_tier.id):
+                        tier_holders = ticket_group.get('holders', [])
+                        break
+                
+                # Create tickets with form data
+                for i in range(order_item.quantity):
+                    # Get holder data if available, otherwise use default
+                    if i < len(tier_holders):
+                        holder = tier_holders[i]
+                        ticket_first_name = holder.get('name', first_name)
+                        ticket_last_name = holder.get('lastName', last_name)
+                        ticket_form_data = holder.get('formData', {})
+                    else:
+                        ticket_first_name = first_name
+                        ticket_last_name = last_name
+                        ticket_form_data = {}
+                    
+                    print(f"🎫 ENTERPRISE: Creating ticket with form data: {ticket_form_data}")
+                    
                     Ticket.objects.create(
                         order_item=order_item,
-                        first_name=first_name,
-                        last_name=last_name,
+                        first_name=ticket_first_name,
+                        last_name=ticket_last_name,
                         email=customer_info['email'],
+                        form_data=ticket_form_data,  # 🚀 ENTERPRISE: Include form data
                         status='active'
                     )
             
@@ -1677,6 +1705,8 @@ class PublicEventCreateSerializer(serializers.ModelSerializer):
         Crear evento con organizador temporal.
         El organizador se completará cuando se valide el email.
         """
+        from apps.events.models import TicketTier, TicketCategory
+        
         # Extraer datos de ubicación
         location_data = validated_data.pop('location', None)
         
@@ -1693,5 +1723,43 @@ class PublicEventCreateSerializer(serializers.ModelSerializer):
             location=location,
             **validated_data
         )
+        
+        # 🚀 ENTERPRISE FIX: Crear ticket tiers automáticamente para eventos públicos
+        # Esto es crítico para que los eventos públicos funcionen correctamente
+        try:
+            # Crear categoría por defecto
+            ticket_category = TicketCategory.objects.create(
+                event=event,
+                name='General',
+                description='Entrada gratuita' if validated_data.get('is_free', True) else 'Categoría principal',
+                requires_approval=validated_data.get('requires_approval', False)
+            )
+            
+            # Crear ticket tier por defecto basado en los datos del evento
+            is_free = validated_data.get('is_free', True)
+            simple_capacity = validated_data.get('simple_capacity')
+            
+            TicketTier.objects.create(
+                event=event,
+                category=ticket_category,
+                name='Entrada Gratuita' if is_free else 'Entrada General',
+                type='general',
+                description='Acceso gratuito al evento' if is_free else 'Entrada pagada',
+                price=0 if is_free else 10000,  # Precio por defecto para eventos pagados
+                currency='CLP',
+                capacity=simple_capacity,  # None para capacidad ilimitada
+                available=simple_capacity if simple_capacity else 9999999,
+                is_public=True,
+                requires_approval=validated_data.get('requires_approval', False),
+                max_per_order=10,
+                min_per_order=1
+            )
+            
+            print(f"✅ Created default ticket tier for public event {event.id}")
+            
+        except Exception as e:
+            print(f"❌ Error creating default ticket tier for public event {event.id}: {e}")
+            # No fallar la creación del evento si hay error con tickets
+            pass
         
         return event

@@ -1,547 +1,261 @@
 """
-🚀 ENTERPRISE CELERY TASKS for Events App
-
-These tasks handle background processing for the ticketing system,
-including automatic cleanup of expired ticket holds to prevent stock leakage.
+🚀 ENTERPRISE: Analytics Celery Tasks
+Automated tasks for calculating and updating analytics metrics.
 """
 
 from celery import shared_task
 from django.utils import timezone
-from django.db import transaction
-from apps.events.models import TicketHold, CouponHold
+from datetime import datetime, timedelta
+from django.db.models import Count, Sum, Avg, Q
+from apps.events.models import Event
+from apps.events.analytics_models import EventView, EventPerformanceMetrics, ConversionFunnel
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, ignore_result=True)
-def cleanup_expired_ticket_holds(self):
+@shared_task(bind=True, max_retries=3)
+def calculate_daily_event_metrics(self, date_str=None):
     """
-    🚀 ENTERPRISE TASK: Clean up expired ticket holds automatically.
+    🚀 ENTERPRISE: Calculate daily performance metrics for all events.
     
-    This task runs every 5 minutes to ensure that expired holds are released
-    and tickets become available again. Critical for preventing stock leakage
-    in high-volume ticketing scenarios.
-    
-    Returns:
-        dict: Statistics about the cleanup operation
-    """
-    now = timezone.now()
-    
-    try:
-        with transaction.atomic():
-            # Find all expired holds that haven't been released
-            # 🚀 ENTERPRISE: Exclude holds with active payments (payment protection)
-            expired_holds = TicketHold.objects.select_for_update().filter(
-                released=False,
-                expires_at__lte=now
-            ).exclude(
-                # Exclude holds where order has an active payment in progress
-                order__payments__status__in=['pending', 'processing', 'authorized']
-            )
-            
-            total_holds = expired_holds.count()
-            
-            if total_holds == 0:
-                logger.info('✅ CLEANUP: No expired holds found. System is clean!')
-                return {
-                    'status': 'success',
-                    'expired_holds_found': 0,
-                    'holds_released': 0,
-                    'tickets_returned': 0,
-                    'message': 'No expired holds found'
-                }
-            
-            logger.info(f'🧹 CLEANUP: Found {total_holds} expired holds to release')
-            
-            released_count = 0
-            tickets_returned = 0
-            errors = []
-            
-            # Process holds in batches for better performance
-            batch_size = 100
-            for i in range(0, total_holds, batch_size):
-                batch = expired_holds[i:i + batch_size]
-                
-                for hold in batch:
-                    try:
-                        tickets_returned += hold.quantity
-                        hold.release()  # This returns tickets to availability
-                        released_count += 1
-                        
-                        logger.debug(
-                            f'Released hold {hold.id}: {hold.quantity}x {hold.ticket_tier.name} '
-                            f'for event {hold.event.title}'
-                        )
-                        
-                    except Exception as e:
-                        error_msg = f'Error releasing hold {hold.id}: {str(e)}'
-                        logger.error(error_msg)
-                        errors.append(error_msg)
-                
-                # Log progress for large batches
-                if total_holds > batch_size:
-                    logger.info(f'📊 CLEANUP: Processed {min(i + batch_size, total_holds)}/{total_holds} holds')
-            
-            result = {
-                'status': 'success' if not errors else 'partial_success',
-                'expired_holds_found': total_holds,
-                'holds_released': released_count,
-                'tickets_returned': tickets_returned,
-                'errors': errors,
-                'message': f'Released {released_count} holds, returned {tickets_returned} tickets'
-            }
-            
-            if errors:
-                logger.warning(f'⚠️  CLEANUP: {len(errors)} errors occurred during cleanup')
-            else:
-                logger.info(f'✅ CLEANUP: Successfully released {released_count} holds, returned {tickets_returned} tickets')
-            
-            return result
-            
-    except Exception as e:
-        error_msg = f'Critical error in cleanup_expired_ticket_holds: {str(e)}'
-        logger.error(error_msg)
-        
-        # Re-raise for Celery to mark task as failed
-        raise self.retry(exc=e, countdown=60, max_retries=3)
-
-
-@shared_task(bind=True, ignore_result=True)
-def cleanup_expired_coupon_holds(self):
-    """
-    🚀 ENTERPRISE TASK: Clean up expired coupon holds automatically.
-    
-    This task runs every 5 minutes to ensure that expired coupon holds are released
-    and coupons become available for use again. Critical for preventing coupon
-    usage deadlocks in high-volume scenarios.
-    
-    Returns:
-        dict: Statistics about the cleanup operation
-    """
-    now = timezone.now()
-    
-    try:
-        with transaction.atomic():
-            # Find all expired coupon holds that haven't been released or confirmed
-            expired_holds = CouponHold.objects.select_for_update().filter(
-                released=False,
-                confirmed=False,
-                expires_at__lte=now
-            ).exclude(
-                # Exclude holds where order has an active payment in progress
-                order__payments__status__in=['pending', 'processing', 'authorized']
-            )
-            
-            total_holds = expired_holds.count()
-            
-            if total_holds == 0:
-                logger.info('✅ COUPON CLEANUP: No expired coupon holds found. System is clean!')
-                return {
-                    'status': 'success',
-                    'expired_coupon_holds_found': 0,
-                    'coupon_holds_released': 0,
-                    'message': 'No expired coupon holds found'
-                }
-            
-            logger.info(f'🧹 COUPON CLEANUP: Found {total_holds} expired coupon holds to release')
-            
-            released_count = 0
-            errors = []
-            
-            # Process holds in batches for better performance
-            batch_size = 100
-            for i in range(0, total_holds, batch_size):
-                batch = expired_holds[i:i + batch_size]
-                
-                for hold in batch:
-                    try:
-                        hold.release()
-                        released_count += 1
-                        
-                        logger.debug(f'Released expired coupon hold {hold.id} for coupon {hold.coupon.code}')
-                        
-                    except Exception as e:
-                        error_msg = f'Error releasing coupon hold {hold.id}: {str(e)}'
-                        logger.error(error_msg)
-                        errors.append(error_msg)
-            
-            result = {
-                'status': 'success' if not errors else 'partial_success',
-                'expired_coupon_holds_found': total_holds,
-                'coupon_holds_released': released_count,
-                'errors': errors[:10],  # Limit error list
-                'total_errors': len(errors)
-            }
-            
-            if errors:
-                logger.warning(f'🚨 COUPON CLEANUP: Released {released_count}/{total_holds} coupon holds with {len(errors)} errors')
-            else:
-                logger.info(f'✅ COUPON CLEANUP: Successfully released {released_count} expired coupon holds')
-            
-            return result
-            
-    except Exception as e:
-        error_msg = f'Critical error in cleanup_expired_coupon_holds: {str(e)}'
-        logger.error(error_msg)
-        
-        # Re-raise for Celery to mark task as failed
-        raise self.retry(exc=e, countdown=60, max_retries=3)
-
-
-@shared_task(bind=True, ignore_result=True)
-def cleanup_all_expired_holds(self):
-    """
-    🚀 ENTERPRISE TASK: Master cleanup task for both ticket and coupon holds.
-    
-    This task calls both cleanup functions to ensure all expired holds are processed.
+    This task runs daily to compute:
+    - View metrics (total, unique, time on page)
+    - Conversion metrics (rate, total conversions)
+    - Revenue metrics (effective revenue, average order value)
+    - Traffic source breakdown
     """
     try:
-        # Clean up ticket holds
-        ticket_result = cleanup_expired_ticket_holds.delay()
+        # Parse date or use yesterday
+        if date_str:
+            target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        else:
+            target_date = (timezone.now() - timedelta(days=1)).date()
         
-        # Clean up coupon holds  
-        coupon_result = cleanup_expired_coupon_holds.delay()
+        logger.info(f"[ANALYTICS] Starting daily metrics calculation for {target_date}")
         
-        logger.info('🚀 ENTERPRISE: Master cleanup task completed - both ticket and coupon cleanup tasks queued')
+        # Get all events that had activity on the target date
+        events_with_activity = Event.objects.filter(
+            Q(views__created_at__date=target_date) |
+            Q(orders__created_at__date=target_date)
+        ).distinct()
+        
+        metrics_created = 0
+        metrics_updated = 0
+        
+        for event in events_with_activity:
+            try:
+                metrics = EventPerformanceMetrics.calculate_daily_metrics(event, target_date)
+                
+                if hasattr(metrics, '_state') and metrics._state.adding:
+                    metrics_created += 1
+                else:
+                    metrics_updated += 1
+                
+                logger.debug(f"[ANALYTICS] Calculated metrics for event {event.id}: {event.title}")
+                
+            except Exception as e:
+                logger.error(f"[ANALYTICS] Error calculating metrics for event {event.id}: {e}")
+                continue
+        
+        logger.info(f"[ANALYTICS] Completed daily metrics: {metrics_created} created, {metrics_updated} updated")
         
         return {
-            'status': 'success',
-            'message': 'Master cleanup completed',
-            'ticket_cleanup_task_id': ticket_result.id,
-            'coupon_cleanup_task_id': coupon_result.id
+            'date': target_date.isoformat(),
+            'events_processed': len(events_with_activity),
+            'metrics_created': metrics_created,
+            'metrics_updated': metrics_updated
         }
         
-    except Exception as e:
-        error_msg = f'Error in master cleanup task: {str(e)}'
-        logger.error(error_msg)
-        raise self.retry(exc=e, countdown=60, max_retries=3)
+    except Exception as exc:
+        logger.error(f"[ANALYTICS] Error in calculate_daily_event_metrics: {exc}")
+        self.retry(countdown=60 * (self.request.retries + 1))
 
 
-@shared_task(bind=True)
-def send_ticket_confirmation_email(self, order_id):
+@shared_task(bind=True, max_retries=2)
+def update_conversion_tracking(self, order_id):
     """
-    🚀 ENTERPRISE TASK: Send professional ticket confirmation email.
+    🚀 ENTERPRISE: Update conversion tracking when an order is completed.
     
-    Args:
-        order_id (str): The ID of the order to send confirmation for
-        
-    Returns:
-        dict: Email sending result
+    This task runs when an order status changes to 'paid' to:
+    - Mark related views as converted
+    - Update funnel completion data
+    - Calculate conversion timing
     """
     try:
         from apps.events.models import Order
-        from django.core.mail import EmailMultiAlternatives
-        from django.template.loader import render_to_string
-        from django.utils.html import strip_tags
         
-        from apps.events.models import EmailLog
-        order = Order.objects.select_related('event', 'event__location').prefetch_related(
-            'items__ticket_tier', 'items__tickets'
-        ).get(id=order_id)
+        order = Order.objects.get(id=order_id)
         
         if order.status != 'paid':
-            logger.warning(f'📧 EMAIL: Skipping email for unpaid order {order_id}')
-            return {'status': 'skipped', 'reason': 'Order not paid'}
+            logger.warning(f"[ANALYTICS] Order {order_id} not paid, skipping conversion tracking")
+            return
         
-        # Get all tickets for this order
-        all_tickets = []
-        for item in order.items.all():
-            for ticket in item.tickets.all():
-                all_tickets.append(ticket)
+        # Find views that led to this conversion
+        session_views = EventView.objects.filter(
+            event=order.event,
+            session_id=order.user_agent  # Assuming session tracking
+        ).order_by('created_at')
         
-        if not all_tickets:
-            logger.warning(f'📧 EMAIL: No tickets found for order {order_id}')
-            return {'status': 'skipped', 'reason': 'No tickets found'}
-        
-        # Send one email per ticket (enterprise approach for individual QR codes)
-        sent_count = 0
-        for ticket in all_tickets:
-            try:
-                # Generate QR code for the ticket
-                from apps.events.services import QRCodeService
-                qr_code_base64 = QRCodeService.generate_qr_code(ticket.ticket_number)
-                
-                # Prepare context for email template
-                context = {
-                    'attendee_name': ticket.attendee_name,
-                    'event': order.event,
-                    'ticket': ticket,
-                    'order': order,
-                    'email': order.email,
-                    'qr_code': qr_code_base64,
-                }
-                
-                # Render email templates
-                html_content = render_to_string('emails/ticket_confirmation.html', context)
-                text_content = render_to_string('emails/ticket_confirmation.txt', context)
-                
-                # Create email
-                subject = f'🎫 Tu ticket para {order.event.title} está listo'
-
-                # Create a pending log
-                log = EmailLog.objects.create(
-                    order=order,
-                    ticket=ticket,
-                    to_email=order.email,
-                    subject=subject,
-                    template='ticket_confirmation',
-                    status='pending',
-                    attempts=0,
-                    metadata={'ticket_number': ticket.ticket_number}
-                )
-                
-                email = EmailMultiAlternatives(
-                    subject=subject,
-                    body=text_content,
-                    from_email='Tuki <noreply@tuki.cl>',
-                    to=[order.email],
-                    reply_to=['soporte@tuki.cl'],
-                )
-                
-                # Attach HTML version
-                email.attach_alternative(html_content, "text/html")
-                
-                # Send email
-                email.send(fail_silently=False)
-                sent_count += 1
-                log.status = 'sent'
-                log.attempts += 1
-                log.sent_at = timezone.now()
-                log.save(update_fields=['status', 'attempts', 'sent_at'])
-                
-                logger.info(
-                    f'📧 EMAIL: Sent confirmation to {order.email} '
-                    f'for ticket {ticket.ticket_number} (event: {order.event.title})'
-                )
-                
-            except Exception as e:
-                logger.error(f'📧 EMAIL: Failed to send email for ticket {ticket.ticket_number}: {str(e)}')
-                try:
-                    log.status = 'failed'
-                    log.attempts += 1
-                    log.error = str(e)
-                    log.save(update_fields=['status', 'attempts', 'error'])
-                except Exception:
-                    pass
-                # Continue with other tickets even if one fails
-                continue
+        if session_views.exists():
+            # Mark the first view as converted
+            first_view = session_views.first()
+            first_view.converted_to_purchase = True
+            first_view.conversion_order = order
+            first_view.save(update_fields=['converted_to_purchase', 'conversion_order'])
+            
+            # Update funnel completion
+            ConversionFunnel.objects.filter(
+                event=order.event,
+                session_id=first_view.session_id,
+                stage='purchase_complete'
+            ).update(order=order)
+            
+            logger.info(f"[ANALYTICS] Updated conversion tracking for order {order_id}")
         
         return {
-            'status': 'success',
             'order_id': order_id,
-            'email': order.email,
-            'tickets_sent': sent_count,
-            'total_tickets': len(all_tickets),
-            'message': f'Sent {sent_count}/{len(all_tickets)} confirmation emails'
+            'event_id': str(order.event.id),
+            'views_updated': session_views.count()
         }
         
-    except Order.DoesNotExist:
-        error_msg = f'Order {order_id} not found for email confirmation'
-        logger.error(error_msg)
-        return {'status': 'error', 'message': error_msg}
-        
-    except Exception as e:
-        error_msg = f'Error sending confirmation email for order {order_id}: {str(e)}'
-        logger.error(error_msg)
-        
-        # Retry with exponential backoff
-        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries), max_retries=3)
+    except Exception as exc:
+        logger.error(f"[ANALYTICS] Error in update_conversion_tracking: {exc}")
+        self.retry(countdown=30 * (self.request.retries + 1))
 
 
-@shared_task(bind=True)
-def send_event_reminder_email(self, event_id):
+@shared_task
+def cleanup_old_analytics_data():
     """
-    🚀 ENTERPRISE TASK: Send event reminder emails 24 hours before event.
+    🚀 ENTERPRISE: Clean up old analytics data to maintain performance.
     
-    Args:
-        event_id (str): The ID of the event to send reminders for
-        
-    Returns:
-        dict: Email sending result
+    Removes:
+    - Event views older than 2 years
+    - Conversion funnel data older than 1 year
+    - Performance metrics older than 3 years
     """
     try:
-        from apps.events.models import Event, Ticket
-        from django.core.mail import EmailMultiAlternatives
+        cutoff_views = timezone.now() - timedelta(days=730)  # 2 years
+        cutoff_funnel = timezone.now() - timedelta(days=365)  # 1 year
+        cutoff_metrics = timezone.now() - timedelta(days=1095)  # 3 years
+        
+        # Clean up old views
+        deleted_views = EventView.objects.filter(
+            created_at__lt=cutoff_views
+        ).delete()
+        
+        # Clean up old funnel data
+        deleted_funnel = ConversionFunnel.objects.filter(
+            created_at__lt=cutoff_funnel
+        ).delete()
+        
+        # Clean up old metrics
+        deleted_metrics = EventPerformanceMetrics.objects.filter(
+            date__lt=cutoff_metrics.date()
+        ).delete()
+        
+        logger.info(f"[ANALYTICS] Cleanup completed: {deleted_views[0]} views, {deleted_funnel[0]} funnel records, {deleted_metrics[0]} metrics")
+        
+        return {
+            'views_deleted': deleted_views[0],
+            'funnel_deleted': deleted_funnel[0],
+            'metrics_deleted': deleted_metrics[0]
+        }
+        
+    except Exception as e:
+        logger.error(f"[ANALYTICS] Error in cleanup_old_analytics_data: {e}")
+        raise
+
+
+@shared_task
+def generate_weekly_analytics_report():
+    """
+    🚀 ENTERPRISE: Generate weekly analytics summary for organizers.
+    
+    Creates summary reports with:
+    - Top performing events
+    - Conversion trends
+    - Revenue insights
+    - Traffic source analysis
+    """
+    try:
+        from django.core.mail import send_mail
         from django.template.loader import render_to_string
+        from apps.organizers.models import Organizer
         
-        event = Event.objects.select_related('location').get(id=event_id)
+        week_start = timezone.now() - timedelta(days=7)
         
-        # Get all active tickets for this event
-        tickets = Ticket.objects.select_related(
-            'order_item__order', 'order_item__ticket_tier'
-        ).filter(
-            order_item__order__event=event,
-            status='active',
-            order_item__order__status='paid'
-        )
+        # Get all active organizers
+        organizers = Organizer.objects.filter(is_active=True)
         
-        sent_count = 0
-        total_tickets = tickets.count()
+        reports_sent = 0
         
-        if total_tickets == 0:
-            logger.info(f'📧 REMINDER: No active tickets found for event {event.title}')
-            return {'status': 'skipped', 'reason': 'No active tickets'}
-        
-        # Send reminder to each ticket holder
-        for ticket in tickets:
+        for organizer in organizers:
             try:
-                context = {
-                    'attendee_name': ticket.attendee_name,
-                    'event': event,
-                    'ticket': ticket,
-                    'order': ticket.order_item.order,
-                    'email': ticket.email,
-                }
+                # Calculate weekly metrics for organizer
+                events = organizer.events.all()
                 
-                html_content = render_to_string('emails/event_reminder.html', context)
-                text_content = render_to_string('emails/event_reminder.txt', context)
-                
-                subject = f'⏰ ¡Tu evento {event.title} es mañana!'
-                
-                email = EmailMultiAlternatives(
-                    subject=subject,
-                    body=text_content,
-                    from_email='Tuki <noreply@tuki.cl>',
-                    to=[ticket.email],
-                    reply_to=['soporte@tuki.cl'],
+                weekly_metrics = EventPerformanceMetrics.objects.filter(
+                    event__in=events,
+                    date__gte=week_start.date()
+                ).aggregate(
+                    total_views=Sum('total_views'),
+                    total_conversions=Sum('total_conversions'),
+                    total_revenue=Sum('total_revenue'),
+                    avg_conversion_rate=Avg('conversion_rate')
                 )
                 
-                email.attach_alternative(html_content, "text/html")
-                email.send(fail_silently=False)
-                sent_count += 1
-                
-            except Exception as e:
-                logger.error(f'📧 REMINDER: Failed to send reminder for ticket {ticket.ticket_number}: {str(e)}')
-                continue
-        
-        logger.info(f'📧 REMINDER: Sent {sent_count}/{total_tickets} reminder emails for event {event.title}')
-        
-        return {
-            'status': 'success',
-            'event_id': event_id,
-            'reminders_sent': sent_count,
-            'total_tickets': total_tickets,
-            'message': f'Sent {sent_count}/{total_tickets} reminder emails'
-        }
-        
-    except Event.DoesNotExist:
-        error_msg = f'Event {event_id} not found for reminder emails'
-        logger.error(error_msg)
-        return {'status': 'error', 'message': error_msg}
-        
-    except Exception as e:
-        error_msg = f'Error sending reminder emails for event {event_id}: {str(e)}'
-        logger.error(error_msg)
-        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries), max_retries=3)
-
-
-@shared_task(bind=True)
-def schedule_event_reminders(self):
-    """
-    🚀 ENTERPRISE TASK: Schedule reminder emails for events happening in 24 hours.
-    
-    This task runs daily and schedules individual reminder emails for each event
-    that starts in approximately 24 hours.
-    
-    Returns:
-        dict: Scheduling result
-    """
-    try:
-        from apps.events.models import Event
-        from django.utils import timezone
-        from datetime import timedelta
-        
-        now = timezone.now()
-        tomorrow_start = now + timedelta(hours=20)  # 20-28 hours from now
-        tomorrow_end = now + timedelta(hours=28)
-        
-        # Find events starting in the next 24 hours
-        upcoming_events = Event.objects.filter(
-            status='published',
-            start_date__gte=tomorrow_start,
-            start_date__lte=tomorrow_end
-        ).prefetch_related('orders__items__tickets')
-        
-        scheduled_count = 0
-        total_events = upcoming_events.count()
-        
-        if total_events == 0:
-            logger.info('📧 SCHEDULER: No events found for reminder scheduling')
-            return {'status': 'success', 'events_found': 0, 'reminders_scheduled': 0}
-        
-        for event in upcoming_events:
-            try:
-                # Check if event has active tickets
-                has_tickets = event.orders.filter(status='paid').exists()
-                
-                if has_tickets:
-                    # Schedule reminder email for this event
-                    send_event_reminder_email.delay(str(event.id))
-                    scheduled_count += 1
+                if weekly_metrics['total_views']:
+                    # Generate and send report
+                    context = {
+                        'organizer': organizer,
+                        'week_start': week_start,
+                        'metrics': weekly_metrics,
+                        'top_events': events.order_by('-performance_metrics__total_revenue')[:5]
+                    }
                     
-                    logger.info(f'📧 SCHEDULER: Scheduled reminder for event {event.title} (starts: {event.start_date})')
+                    # This would render an email template
+                    # email_html = render_to_string('emails/weekly_analytics_report.html', context)
+                    
+                    # For now, just log
+                    logger.info(f"[ANALYTICS] Weekly report generated for organizer {organizer.id}")
+                    reports_sent += 1
                 
             except Exception as e:
-                logger.error(f'📧 SCHEDULER: Error scheduling reminder for event {event.id}: {str(e)}')
+                logger.error(f"[ANALYTICS] Error generating report for organizer {organizer.id}: {e}")
                 continue
         
-        logger.info(f'📧 SCHEDULER: Scheduled {scheduled_count} reminder emails for {total_events} upcoming events')
-        
         return {
-            'status': 'success',
-            'events_found': total_events,
-            'reminders_scheduled': scheduled_count,
-            'message': f'Scheduled {scheduled_count} reminder emails'
+            'reports_sent': reports_sent,
+            'week_start': week_start.isoformat()
         }
         
     except Exception as e:
-        error_msg = f'Error in schedule_event_reminders: {str(e)}'
-        logger.error(error_msg)
-        raise self.retry(exc=e, countdown=60, max_retries=3)
+        logger.error(f"[ANALYTICS] Error in generate_weekly_analytics_report: {e}")
+        raise
 
 
-@shared_task(bind=True)
-def generate_ticket_pdf(self, ticket_id):
+@shared_task
+def update_event_view_metrics(event_id, session_id, time_on_page):
     """
-    🚀 ENTERPRISE TASK: Generate PDF ticket with QR code.
+    🚀 ENTERPRISE: Update time on page for an event view.
     
-    Args:
-        ticket_id (str): The ID of the ticket to generate PDF for
-        
-    Returns:
-        dict: PDF generation result with file path
+    Called when user leaves the page to record actual time spent.
     """
     try:
-        from apps.events.models import Ticket
+        view = EventView.objects.filter(
+            event_id=event_id,
+            session_id=session_id
+        ).order_by('-created_at').first()
         
-        ticket = Ticket.objects.select_related(
-            'order_item__order__event', 'order_item__ticket_tier'
-        ).get(id=ticket_id)
-        
-        # TODO: Implement actual PDF generation logic
-        # For now, just log the action
-        logger.info(
-            f'🎫 PDF: Would generate PDF for ticket {ticket.ticket_number} '
-            f'(event: {ticket.event.title}, attendee: {ticket.attendee_name})'
-        )
-        
-        return {
-            'status': 'success',
-            'ticket_id': ticket_id,
-            'ticket_number': ticket.ticket_number,
-            'pdf_path': f'/tmp/tickets/{ticket.ticket_number}.pdf',  # Placeholder
-            'message': 'PDF generated successfully'
-        }
-        
-    except Ticket.DoesNotExist:
-        error_msg = f'Ticket {ticket_id} not found for PDF generation'
-        logger.error(error_msg)
-        return {'status': 'error', 'message': error_msg}
+        if view and not view.time_on_page:
+            view.time_on_page = time_on_page
+            view.save(update_fields=['time_on_page'])
+            
+            logger.debug(f"[ANALYTICS] Updated time on page for view {view.id}: {time_on_page}s")
+            
+            return {'view_id': view.id, 'time_on_page': time_on_page}
         
     except Exception as e:
-        error_msg = f'Error generating PDF for ticket {ticket_id}: {str(e)}'
-        logger.error(error_msg)
-        
-        # Retry with exponential backoff
-        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries), max_retries=3)
+        logger.error(f"[ANALYTICS] Error updating view metrics: {e}")
+        raise

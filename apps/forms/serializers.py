@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Form, FormField, FieldOption, FieldValidation, ConditionalLogic
+from .models import Form, FormField, FieldOption, FieldValidation, ConditionalLogic, FormResponse, FormResponseFile
 
 class FieldOptionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -36,7 +36,7 @@ class FormSerializer(serializers.ModelSerializer):
         model = Form
         fields = ['id', 'name', 'description', 'organizer', 'created_by', 
                  'created_at', 'updated_at', 'status', 'fields']
-        read_only_fields = ['created_at', 'updated_at', 'created_by']
+        read_only_fields = ['created_at', 'updated_at', 'created_by', 'organizer']
     
     def create(self, validated_data):
         fields_data = validated_data.pop('fields', [])
@@ -65,6 +65,44 @@ class FormSerializer(serializers.ModelSerializer):
                 )
         
         return form
+
+
+# 🚀 ENTERPRISE: Form Response Serializers
+class FormResponseFileSerializer(serializers.ModelSerializer):
+    download_url = serializers.SerializerMethodField()
+    file_size_mb = serializers.ReadOnlyField()
+    
+    class Meta:
+        model = FormResponseFile
+        fields = [
+            'id', 'field', 'original_filename', 'file_size', 'file_size_mb',
+            'content_type', 'uploaded_at', 'download_url'
+        ]
+    
+    def get_download_url(self, obj):
+        return obj.get_download_url()
+
+
+class FormResponseSerializer(serializers.ModelSerializer):
+    files = FormResponseFileSerializer(many=True, read_only=True)
+    ticket_info = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = FormResponse
+        fields = [
+            'id', 'form', 'ticket', 'submitted_at', 'updated_at',
+            'response_data', 'files', 'ticket_info'
+        ]
+        read_only_fields = ['submitted_at', 'updated_at']
+    
+    def get_ticket_info(self, obj):
+        if obj.ticket:
+            return {
+                'ticket_number': obj.ticket.ticket_number,
+                'attendee_name': f"{obj.ticket.first_name} {obj.ticket.last_name}",
+                'email': obj.ticket.email
+            }
+        return None
     
     def update(self, instance, validated_data):
         fields_data = validated_data.pop('fields', [])

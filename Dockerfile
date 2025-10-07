@@ -27,9 +27,9 @@ RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 # Copy project files
 COPY . .
 
-# Copy entrypoint and superuser creation scripts
-COPY entrypoint-fixed.sh /entrypoint.sh
-COPY create_superuser_simple.py ./create_superuser_simple.py
+    # Copy entrypoint and superuser creation scripts
+    COPY entrypoint.sh /entrypoint.sh
+    COPY create_superuser_simple.py ./create_superuser_simple.py
 RUN chmod +x /entrypoint.sh
 
 # Create static directory and set permissions

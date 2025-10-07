@@ -47,8 +47,38 @@ CACHES = {
 # Static files
 STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.StaticFilesStorage'
 
-# Media files
-DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
+# 🚀 ENTERPRISE: Use Google Cloud Storage in development too for consistency
+# This ensures we test the same storage backend locally as in production
+USE_GCS_IN_DEV = config('USE_GCS_IN_DEV', default=False, cast=bool)
+
+if USE_GCS_IN_DEV:
+    # Use Google Cloud Storage
+    DEFAULT_FILE_STORAGE = 'storages.backends.gcloud.GoogleCloudStorage'
+    
+    # Google Cloud Storage configuration
+    GS_BUCKET_NAME = config('GS_BUCKET_NAME')
+    GS_PROJECT_ID = config('GS_PROJECT_ID')
+    
+    # 🚀 ENTERPRISE: Use Application Default Credentials (ADC)
+    # This will use gcloud auth application-default login credentials
+    GS_CREDENTIALS = None  # Use Application Default Credentials
+    
+    # 🚀 ENTERPRISE: No ACL needed - bucket has uniform bucket-level access enabled
+    GS_DEFAULT_ACL = None
+    
+    # Cache control for better performance
+    GS_OBJECT_PARAMETERS = {
+        'CacheControl': 'max-age=86400',
+    }
+    
+    # File overwrite behavior
+    GS_FILE_OVERWRITE = False
+    
+    # Media URL configuration
+    MEDIA_URL = f"https://storage.googleapis.com/{GS_BUCKET_NAME}/"
+else:
+    # Use local file storage
+    DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
 
 # CORS settings
 CORS_ALLOW_ALL_ORIGINS = True  # In development only

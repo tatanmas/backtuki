@@ -25,7 +25,7 @@ services:
       - "8000:8000"
     environment:
       - DEBUG=True
-      - DB_NAME=tuki_db
+      - DB_NAME=tuki_local
       - DB_USER=tuki_user
       - DB_PASSWORD=tuki_password
       - DB_HOST=db
@@ -34,6 +34,13 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - SECRET_KEY=local-dev-secret-key
+      - ALLOWED_HOSTS=localhost,127.0.0.1,192.168.1.156,0.0.0.0
+      - CSRF_TRUSTED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000,http://192.168.1.156:8000,https://192.168.1.156:3000
+      # 🚀 ENTERPRISE: Google Cloud Storage Configuration
+      - USE_GCS_IN_DEV=True
+      - GS_BUCKET_NAME=tuki-media-prod-1759240560
+      - GS_PROJECT_ID=tukiprod
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json
     depends_on:
       - db
       - redis
@@ -41,6 +48,8 @@ services:
       - .:/app
       - /app/staticfiles
       - /app/media
+      # 🚀 ENTERPRISE: Mount Google Cloud credentials
+      - ./gcp-credentials.json:/app/gcp-credentials.json:ro
 
   celery-worker:
     build:
@@ -49,7 +58,7 @@ services:
     command: celery -A config worker -l info
     environment:
       - DEBUG=True
-      - DB_NAME=tuki_db
+      - DB_NAME=tuki_local
       - DB_USER=tuki_user
       - DB_PASSWORD=tuki_password
       - DB_HOST=db
@@ -71,7 +80,7 @@ services:
     command: celery -A config beat -l info
     environment:
       - DEBUG=True
-      - DB_NAME=tuki_db
+      - DB_NAME=tuki_local
       - DB_USER=tuki_user
       - DB_PASSWORD=tuki_password
       - DB_HOST=db

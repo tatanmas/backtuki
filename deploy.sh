@@ -10,7 +10,7 @@ set -e
 PROJECT_ID="tukiprod"
 REGION="us-central1"
 SERVICE_NAME="tuki-backend"
-IMAGE_TAG="v5-fixed"
+IMAGE_TAG="v7-production"
 IMAGE_NAME="us-central1-docker.pkg.dev/${PROJECT_ID}/tuki-repo/tuki-backend:${IMAGE_TAG}"
 
 # Colors for output
@@ -43,7 +43,7 @@ echo ""
 
 # Step 1: Build and push image
 print_step "PASO 1: Building and pushing Docker image..."
-gcloud builds submit --config cloudbuild-fixed.yaml
+gcloud builds submit --config cloudbuild.yaml
 
 if [ $? -eq 0 ]; then
     print_success "Image built and pushed successfully!"
@@ -138,8 +138,8 @@ print_step "PASO 7: Configuring domain prop.cl..."
 echo "Ejecutando configuración de dominio..."
 
 # Run domain configuration script
-if [ -f "./setup-domain-fixed.sh" ]; then
-    ./setup-domain-fixed.sh
+if [ -f "./setup-domain.sh" ]; then
+    ./setup-domain.sh
     if [ $? -eq 0 ]; then
         print_success "Domain configuration completed!"
     else

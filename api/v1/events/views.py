@@ -408,6 +408,307 @@ class EventViewSet(viewsets.ModelViewSet):
         return Response([category.name for category in categories])
     
     @action(detail=False, methods=['get'])
+    def analytics(self, request):
+        """🚀 ENTERPRISE: Advanced analytics with REAL EFFECTIVE REVENUE calculation.
+        
+        Revenue calculation considers:
+        - Actual amounts paid (not base price x quantity)
+        - Coupon discounts applied
+        - Price changes over time
+        - Service fees and taxes
+        - Manual discounts
+        """
+        from django.db.models import Sum, Count, Avg, Q, F
+        from django.utils import timezone
+        from datetime import datetime, timedelta
+        from collections import defaultdict
+        
+        organizer = self.get_organizer()
+        if not organizer:
+            return Response(
+                {"detail": "Usuario sin organizador asociado"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get parameters
+        days = int(request.query_params.get('days', 30))
+        event_id = request.query_params.get('event_id')
+        start_date = timezone.now() - timedelta(days=days)
+        
+        # Base queryset for PAID orders only (effective sales)
+        orders_queryset = Order.objects.filter(
+            event__organizer=organizer,
+            status='paid',  # Only count actually paid orders
+            created_at__gte=start_date
+        ).select_related('event')
+        
+        if event_id:
+            orders_queryset = orders_queryset.filter(event_id=event_id)
+        
+        # 🚀 ENTERPRISE: EFFECTIVE REVENUE CALCULATION
+        # Sum the actual 'total' field from orders (what customers actually paid)
+        revenue_data = orders_queryset.aggregate(
+            total_revenue=Sum('total'),  # Effective revenue (after discounts, fees, etc.)
+            gross_revenue=Sum('subtotal'),  # Revenue before service fees
+            total_service_fees=Sum('service_fee'),
+            total_taxes=Sum('taxes'),
+            total_discount=Sum('discount'),
+            total_orders=Count('id')
+        )
+        
+        # Calculate total tickets sold (from order items)
+        tickets_data = OrderItem.objects.filter(
+            order__in=orders_queryset
+        ).aggregate(
+            total_tickets=Sum('quantity'),
+            avg_unit_price=Avg('unit_price')  # Average actual price paid per ticket
+        )
+        
+        total_revenue = float(revenue_data['total_revenue'] or 0)
+        total_tickets = tickets_data['total_tickets'] or 0
+        total_orders = revenue_data['total_orders'] or 0
+        
+        # Calculate effective average ticket price (what was actually paid)
+        effective_avg_price = 0
+        if total_tickets > 0:
+            effective_avg_price = total_revenue / total_tickets
+        
+        # 🚀 ENTERPRISE: Time series with effective revenue
+        chart_data = []
+        for i in range(days):
+            current_date = start_date + timedelta(days=i)
+            next_date = current_date + timedelta(days=1)
+            
+            daily_orders = orders_queryset.filter(
+                created_at__gte=current_date,
+                created_at__lt=next_date
+            )
+            
+            daily_stats = daily_orders.aggregate(
+                revenue=Sum('total'),  # Effective revenue
+                gross_revenue=Sum('subtotal'),
+                orders=Count('id')
+            )
+            
+            daily_tickets = OrderItem.objects.filter(
+                order__in=daily_orders
+            ).aggregate(tickets=Sum('quantity'))
+            
+            chart_data.append({
+                'date': current_date.strftime('%d/%m/%Y'),
+                'sales': daily_tickets['tickets'] or 0,
+                'revenue': float(daily_stats['revenue'] or 0),
+                'gross_revenue': float(daily_stats['gross_revenue'] or 0),
+                'orders': daily_stats['orders'] or 0
+            })
+        
+        # 🚀 ENTERPRISE: Ticket categories with effective revenue
+        category_data = []
+        if event_id:
+            # For specific event - group by ticket tiers
+            event = Event.objects.get(id=event_id)
+            for tier in event.ticket_tiers.all():
+                tier_items = OrderItem.objects.filter(
+                    ticket_tier=tier,
+                    order__status='paid',
+                    order__created_at__gte=start_date
+                ).aggregate(
+                    tickets=Sum('quantity'),
+                    effective_revenue=Sum(F('unit_price') * F('quantity')),  # Actual price paid
+                    service_fees=Sum(F('unit_service_fee') * F('quantity'))
+                )
+                
+                tickets_sold = tier_items['tickets'] or 0
+                if tickets_sold > 0:
+                    category_data.append({
+                        'name': tier.name,
+                        'value': tickets_sold,
+                        'effective_revenue': float(tier_items['effective_revenue'] or 0),
+                        'service_fees': float(tier_items['service_fees'] or 0),
+                        'base_price': float(tier.price),
+                        'fill': f"#{hash(tier.name) % 16777215:06x}"
+                    })
+        else:
+            # For all events - aggregate by tier names
+            tier_stats = defaultdict(lambda: {
+                'tickets': 0, 
+                'effective_revenue': 0, 
+                'service_fees': 0,
+                'orders': set()
+            })
+            
+            order_items = OrderItem.objects.filter(
+                order__event__organizer=organizer,
+                order__status='paid',
+                order__created_at__gte=start_date
+            ).select_related('ticket_tier', 'order')
+            
+            for item in order_items:
+                tier_name = item.ticket_tier.name
+                tier_stats[tier_name]['tickets'] += item.quantity
+                tier_stats[tier_name]['effective_revenue'] += float(item.unit_price * item.quantity)
+                tier_stats[tier_name]['service_fees'] += float(item.unit_service_fee * item.quantity)
+                tier_stats[tier_name]['orders'].add(item.order_id)
+            
+            for tier_name, stats in tier_stats.items():
+                if stats['tickets'] > 0:
+                    category_data.append({
+                        'name': tier_name,
+                        'value': stats['tickets'],
+                        'effective_revenue': stats['effective_revenue'],
+                        'service_fees': stats['service_fees'],
+                        'orders_count': len(stats['orders']),
+                        'fill': f"#{hash(tier_name) % 16777215:06x}"
+                    })
+        
+        # 🚀 ENTERPRISE: Enhanced device/channel analysis (placeholder for now)
+        # TODO: Implement real device tracking with user agent analysis
+        device_data = [
+            {'name': 'Mobile', 'value': int(total_orders * 0.6), 'fill': '#8884d8'},
+            {'name': 'Desktop', 'value': int(total_orders * 0.35), 'fill': '#83a6ed'},
+            {'name': 'Tablet', 'value': int(total_orders * 0.05), 'fill': '#8dd1e1'},
+        ]
+        
+        # TODO: Implement UTM tracking for real channel data
+        channel_data = [
+            {'name': 'Sitio Web', 'value': int(total_orders * 0.7), 'fill': '#8884d8'},
+            {'name': 'Redes Sociales', 'value': int(total_orders * 0.2), 'fill': '#83a6ed'},
+            {'name': 'Directo', 'value': int(total_orders * 0.1), 'fill': '#8dd1e1'},
+        ]
+        
+        return Response({
+            'kpis': {
+                'totalSales': total_tickets,
+                'totalRevenue': total_revenue,  # Effective revenue (what was actually paid)
+                'grossRevenue': float(revenue_data['gross_revenue'] or 0),
+                'totalServiceFees': float(revenue_data['total_service_fees'] or 0),
+                'totalDiscounts': float(revenue_data['total_discount'] or 0),
+                'averageTicketPrice': round(effective_avg_price, 2),  # Effective average
+                'totalOrders': total_orders,
+                'conversionRate': 0,  # Placeholder - needs view tracking implementation
+                'averageOrderValue': round(total_revenue / total_orders, 2) if total_orders > 0 else 0
+            },
+            'chartData': chart_data,
+            'categoryData': category_data,
+            'deviceData': device_data,
+            'channelData': channel_data,
+            'dateRange': {
+                'start': start_date.isoformat(),
+                'end': timezone.now().isoformat(),
+                'days': days
+            },
+            'metadata': {
+                'calculation_method': 'effective_revenue',
+                'includes_discounts': True,
+                'includes_service_fees': True,
+                'only_paid_orders': True
+            }
+        })
+
+    @action(detail=True, methods=['get'])
+    def conversion_metrics(self, request, pk=None):
+        """🚀 ENTERPRISE: Get conversion funnel metrics for a specific event."""
+        from apps.events.analytics_models import EventView, ConversionFunnel, EventPerformanceMetrics
+        from django.db.models import Count, Avg
+        from datetime import timedelta
+        
+        event = self.get_object()
+        days = int(request.query_params.get('days', 30))
+        start_date = timezone.now() - timedelta(days=days)
+        
+        # Get funnel stages count
+        funnel_data = ConversionFunnel.objects.filter(
+            event=event,
+            created_at__gte=start_date
+        ).values('stage').annotate(count=Count('id')).order_by('stage')
+        
+        # Get view metrics
+        views = EventView.objects.filter(
+            event=event,
+            created_at__gte=start_date
+        )
+        
+        total_views = views.count()
+        unique_views = views.values('session_id').distinct().count()
+        converted_views = views.filter(converted_to_purchase=True).count()
+        avg_time_on_page = views.aggregate(avg=Avg('time_on_page'))['avg'] or 0
+        
+        # Calculate conversion rate
+        conversion_rate = (converted_views / total_views * 100) if total_views > 0 else 0
+        
+        # Get traffic sources
+        traffic_sources = views.values('view_source').annotate(
+            count=Count('id'),
+            conversions=Count('id', filter=models.Q(converted_to_purchase=True))
+        ).order_by('-count')
+        
+        # Device breakdown
+        device_breakdown = views.values('device_type').annotate(
+            count=Count('id'),
+            conversions=Count('id', filter=models.Q(converted_to_purchase=True))
+        ).order_by('-count')
+        
+        return Response({
+            'event_id': str(event.id),
+            'event_title': event.title,
+            'date_range': {
+                'start': start_date.isoformat(),
+                'end': timezone.now().isoformat(),
+                'days': days
+            },
+            'funnel_stages': list(funnel_data),
+            'view_metrics': {
+                'total_views': total_views,
+                'unique_views': unique_views,
+                'converted_views': converted_views,
+                'conversion_rate': round(conversion_rate, 2),
+                'avg_time_on_page': round(avg_time_on_page, 2) if avg_time_on_page else 0
+            },
+            'traffic_sources': [
+                {
+                    'source': item['view_source'],
+                    'views': item['count'],
+                    'conversions': item['conversions'],
+                    'conversion_rate': round(item['conversions'] / item['count'] * 100, 2) if item['count'] > 0 else 0
+                }
+                for item in traffic_sources
+            ],
+            'device_breakdown': [
+                {
+                    'device': item['device_type'],
+                    'views': item['count'],
+                    'conversions': item['conversions'],
+                    'conversion_rate': round(item['conversions'] / item['count'] * 100, 2) if item['count'] > 0 else 0
+                }
+                for item in device_breakdown
+            ]
+        })
+
+    @action(detail=False, methods=['post'])
+    def track_view(self, request):
+        """🚀 ENTERPRISE: Track an event view for analytics."""
+        from apps.events.analytics_models import EventView
+        
+        event_id = request.data.get('event_id')
+        if not event_id:
+            return Response({'detail': 'event_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            event = Event.objects.get(id=event_id)
+            view = EventView.track_view(event, request)
+            
+            return Response({
+                'view_id': str(view.id) if view else None,
+                'event_id': str(event.id),
+                'tracked': view is not None
+            })
+            
+        except Event.DoesNotExist:
+            return Response({'detail': 'Event not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['get'])
     def organizer(self, request):
         """Get events for the current organizer with metrics."""
         organizer = self.get_organizer()
@@ -516,17 +817,19 @@ class EventViewSet(viewsets.ModelViewSet):
         # Generate a unique filename
         filename = f"{uuid.uuid4().hex}.{file_obj.name.split('.')[-1]}"
         
-        # Save file to media directory (enterprise implementation would use cloud storage)
-        file_path = os.path.join(settings.MEDIA_ROOT, 'event_images', filename)
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        # 🚀 ENTERPRISE: Use Django's configured storage backend (local in dev, GCS in prod)
+        from django.core.files.storage import default_storage
         
         try:
-            with open(file_path, 'wb+') as destination:
-                for chunk in file_obj.chunks():
-                    destination.write(chunk)
+            # Save file using Django's storage backend (automatically uses correct storage)
+            file_path = f"event_images/{filename}"
+            saved_path = default_storage.save(file_path, file_obj)
             
-            # Return the URL for the uploaded file (relative path)
-            file_url = f"{settings.MEDIA_URL}event_images/{filename}"
+            # Get the full URL for the uploaded file
+            file_url = default_storage.url(saved_path)
+            
+            print(f"[UPLOAD] ✅ File uploaded to: {saved_path}")
+            print(f"[UPLOAD] ✅ File URL: {file_url}")
             
             # If event_id is provided, create EventImage record
             if event_id:
@@ -537,14 +840,16 @@ class EventViewSet(viewsets.ModelViewSet):
                     organizer = self.get_organizer()
                     if not organizer or event.organizer != organizer:
                         # Clean up uploaded file if permission denied
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
+                        try:
+                            default_storage.delete(saved_path)
+                        except Exception as e:
+                            print(f"[UPLOAD] ⚠️ Could not delete file {saved_path}: {e}")
                         return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
                     
                     # Create EventImage record
                     event_image = EventImage.objects.create(
                         event=event,
-                        image=f"event_images/{filename}",  # Store relative path
+                        image=saved_path,  # Store the path returned by storage backend
                         alt=request.data.get('alt', file_obj.name),
                         type=request.data.get('type', 'image'),
                         order=event.images.count()  # Set order as current count
@@ -560,8 +865,10 @@ class EventViewSet(viewsets.ModelViewSet):
                 
                 except Event.DoesNotExist:
                     # Clean up uploaded file if event doesn't exist
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
+                    try:
+                        default_storage.delete(saved_path)
+                    except Exception as del_e:
+                        print(f"[UPLOAD] ⚠️ Could not delete file {saved_path}: {del_e}")
                     return Response({'detail': 'Event not found'}, status=status.HTTP_404_NOT_FOUND)
             
             # If no event_id provided, just return the uploaded file URL
@@ -572,9 +879,6 @@ class EventViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_201_CREATED)
             
         except Exception as e:
-            # Clean up file if something went wrong
-            if os.path.exists(file_path):
-                os.remove(file_path)
             print(f"[UPLOAD] ❌ Error during upload: {str(e)}")
             return Response({'detail': f'Error uploading file: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
@@ -584,9 +888,13 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         image = get_object_or_404(EventImage, id=image_id, event=event)
         
-        # Delete file from storage (real implementation would handle cloud storage)
-        if os.path.exists(image.image.path):
-            os.remove(image.image.path)
+        # Delete file from storage using Django's storage backend
+        try:
+            from django.core.files.storage import default_storage
+            default_storage.delete(image.image.name)
+            print(f"[DELETE-IMAGE] ✅ Deleted file: {image.image.name}")
+        except Exception as e:
+            print(f"[DELETE-IMAGE] ⚠️ Could not delete file {image.image.name}: {e}")
         
         image.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
