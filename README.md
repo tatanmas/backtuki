@@ -1,3 +1,18 @@
+# Tuki Backend
+
+## Setup
+
+### Google Cloud Credentials
+
+1. Copy the example credentials file:
+```bash
+cp gcp-credentials.json.example gcp-credentials.json
+```
+
+2. Replace the placeholder values in `gcp-credentials.json` with your actual Google Cloud service account credentials.
+
+**Important:** Never commit the actual `gcp-credentials.json` file to Git. It's already in `.gitignore`.
+
 ## Cloud Run Deployment (Backend)
 
 Canonical docs: see `deploy/CONTEXT_CLOUD_RUN.md` for platform context and the authoritative deploy flow.
