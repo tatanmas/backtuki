@@ -1,0 +1,250 @@
+{% extends "emails/base.html" %}
+{% load static %}
+
+{% block title %}Ticket - {{ event.title }} - {{ attendee_name }} - Tuki{% endblock %}
+
+{% block content %}
+<!-- Template 4: Ticket Style -->
+<div style="max-width: 600px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f5f5f5; padding: 20px;">
+
+    <!-- Header Ticket -->
+    <div style="background-color: #ffffff; border-radius: 12px 12px 0 0; padding: 24px; text-align: center; border-bottom: 2px dashed #d1d5db;">
+        <h1 style="font-size: 20px; font-weight: 700; color: #268078; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 1px;">
+            TICKET CONFIRMADO
+        </h1>
+        <p style="font-size: 14px; color: #6b7280; margin: 0;">
+            Orden: {{ order.order_number }} • {{ order.created_at|date:"d/m/Y H:i" }}
+        </p>
+    </div>
+
+    <!-- Cuerpo Principal del Ticket -->
+    <div style="background-color: #ffffff; padding: 32px; position: relative;">
+        
+        <!-- Perforaciones laterales simuladas -->
+        <div style="position: absolute; left: -10px; top: 0; bottom: 0; width: 20px; background-image: radial-gradient(circle, #f5f5f5 40%, transparent 40%); background-size: 20px 20px; background-repeat: repeat-y;"></div>
+        <div style="position: absolute; right: -10px; top: 0; bottom: 0; width: 20px; background-image: radial-gradient(circle, #f5f5f5 40%, transparent 40%); background-size: 20px 20px; background-repeat: repeat-y;"></div>
+        
+        <!-- Información del Evento -->
+        <div style="text-align: center; margin-bottom: 32px; padding: 0 20px;">
+            <h2 style="font-size: 24px; font-weight: 700; color: #1f2937; margin: 0 0 16px 0; line-height: 1.2;">
+                {{ event.title }}
+            </h2>
+            
+            <div style="background-color: #f8fafc; border-radius: 8px; padding: 20px; margin: 16px 0;">
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                        <td style="padding: 8px 0; font-size: 12px; color: #6b7280; font-weight: 600; text-transform: uppercase; width: 25%;">FECHA</td>
+                        <td style="padding: 8px 0; font-size: 14px; color: #1f2937; font-weight: 600;">{{ event.start_date|date:"l, j \d\e F \d\e Y" }}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; font-size: 12px; color: #6b7280; font-weight: 600; text-transform: uppercase;">HORA</td>
+                        <td style="padding: 8px 0; font-size: 14px; color: #1f2937; font-weight: 600;">{{ event.start_date|date:"H:i" }}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; font-size: 12px; color: #6b7280; font-weight: 600; text-transform: uppercase;">LUGAR</td>
+                        <td style="padding: 8px 0; font-size: 14px; color: #1f2937; font-weight: 600;">
+                            {{ event.location.name }}
+                            {% if event.location.address %}<br><span style="font-size: 12px; color: #6b7280;">{{ event.location.address }}</span>{% endif %}
+                        </td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <!-- Línea de separación con tijeras -->
+        <div style="text-align: center; margin: 32px 0; position: relative;">
+            <div style="border-top: 2px dashed #d1d5db; position: relative;">
+                <span style="background-color: #ffffff; padding: 0 16px; color: #9ca3af; font-size: 16px; position: absolute; left: 50%; top: -12px; transform: translateX(-50%);">✂</span>
+            </div>
+        </div>
+
+        <!-- Información del Comprador y Orden -->
+        <div style="margin-bottom: 32px;">
+            <h3 style="font-size: 16px; font-weight: 700; color: #1f2937; margin: 0 0 16px 0; text-transform: uppercase; letter-spacing: 0.5px;">
+                DETALLES DE LA COMPRA
+            </h3>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
+                <div>
+                    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                        <tr>
+                            <td style="padding: 4px 0; color: #6b7280; font-weight: 600;">COMPRADOR:</td>
+                            <td style="padding: 4px 0; color: #1f2937; font-weight: 600;">{{ order.buyer_name }}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px 0; color: #6b7280; font-weight: 600;">EMAIL:</td>
+                            <td style="padding: 4px 0; color: #1f2937;">{{ order.email }}</td>
+                        </tr>
+                        {% if order.phone %}
+                        <tr>
+                            <td style="padding: 4px 0; color: #6b7280; font-weight: 600;">TELÉFONO:</td>
+                            <td style="padding: 4px 0; color: #1f2937;">{{ order.phone }}</td>
+                        </tr>
+                        {% endif %}
+                    </table>
+                </div>
+                <div>
+                    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                        <tr>
+                            <td style="padding: 4px 0; color: #6b7280; font-weight: 600;">ORDEN #:</td>
+                            <td style="padding: 4px 0; color: #1f2937; font-weight: 600; font-family: monospace;">{{ order.order_number }}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px 0; color: #6b7280; font-weight: 600;">FECHA:</td>
+                            <td style="padding: 4px 0; color: #1f2937;">{{ order.created_at|date:"d/m/Y H:i" }}</td>
+                        </tr>
+                        {% if order.payment_method %}
+                        <tr>
+                            <td style="padding: 4px 0; color: #6b7280; font-weight: 600;">PAGO:</td>
+                            <td style="padding: 4px 0; color: #1f2937;">{{ order.payment_method }}</td>
+                        </tr>
+                        {% endif %}
+                    </table>
+                </div>
+            </div>
+
+            <!-- Tabla de Tickets Estilo Factura -->
+            <table style="width: 100%; border-collapse: collapse; border: 1px solid #e5e7eb; font-size: 13px;">
+                <thead>
+                    <tr style="background-color: #f9fafb;">
+                        <th style="padding: 12px 8px; text-align: left; font-weight: 700; color: #374151; border-bottom: 1px solid #e5e7eb;">DESCRIPCIÓN</th>
+                        <th style="padding: 12px 8px; text-align: center; font-weight: 700; color: #374151; border-bottom: 1px solid #e5e7eb;">CANT.</th>
+                        <th style="padding: 12px 8px; text-align: right; font-weight: 700; color: #374151; border-bottom: 1px solid #e5e7eb;">PRECIO</th>
+                        <th style="padding: 12px 8px; text-align: right; font-weight: 700; color: #374151; border-bottom: 1px solid #e5e7eb;">TOTAL</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in order.items.all %}
+                    <tr>
+                        <td style="padding: 12px 8px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">{{ item.ticket_tier.name }}</td>
+                        <td style="padding: 12px 8px; text-align: center; color: #1f2937; border-bottom: 1px solid #f3f4f6;">{{ item.quantity }}</td>
+                        <td style="padding: 12px 8px; text-align: right; color: #1f2937; border-bottom: 1px solid #f3f4f6;">
+                            {% if item.unit_price > 0 %}${{ item.unit_price|floatformat:0 }}{% else %}GRATIS{% endif %}
+                        </td>
+                        <td style="padding: 12px 8px; text-align: right; color: #1f2937; font-weight: 600; border-bottom: 1px solid #f3f4f6;">
+                            {% if item.subtotal > 0 %}${{ item.subtotal|floatformat:0 }}{% else %}GRATIS{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+                <tfoot>
+                    <tr style="background-color: #f9fafb;">
+                        <td colspan="3" style="padding: 12px 8px; text-align: right; font-weight: 700; color: #1f2937; border-top: 2px solid #e5e7eb;">TOTAL:</td>
+                        <td style="padding: 12px 8px; text-align: right; font-weight: 700; color: #268078; font-size: 16px; border-top: 2px solid #e5e7eb;">
+                            {% if order.total > 0 %}${{ order.total|floatformat:0 }} {{ order.currency }}{% else %}GRATUITO{% endif %}
+                        </td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+
+        <!-- Lista de Asistentes Estilo Ticket -->
+        <div style="margin-bottom: 32px;">
+            <h3 style="font-size: 16px; font-weight: 700; color: #1f2937; margin: 0 0 16px 0; text-transform: uppercase; letter-spacing: 0.5px;">
+                ASISTENTES REGISTRADOS
+            </h3>
+            
+            {% for item in order.items.all %}
+                {% for ticket in item.tickets.all %}
+                <div style="background-color: #f8fafc; border: 1px solid #e5e7eb; border-radius: 6px; padding: 16px; margin-bottom: 12px; position: relative;">
+                    <div style="position: absolute; right: 16px; top: 16px; background-color: #268078; color: white; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase;">
+                        {{ item.ticket_tier.name }}
+                    </div>
+                    <p style="font-size: 16px; font-weight: 700; color: #1f2937; margin: 0 0 4px 0;">
+                        {{ ticket.first_name }} {{ ticket.last_name }}
+                    </p>
+                    <p style="font-size: 13px; color: #6b7280; margin: 0 0 8px 0;">
+                        {{ ticket.email }}
+                    </p>
+                    <p style="font-size: 11px; color: #9ca3af; margin: 0; font-family: monospace;">
+                        TICKET: {{ ticket.ticket_number }}
+                    </p>
+                </div>
+                {% endfor %}
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Sección del QR Code (Talón del Ticket) -->
+    <div style="background-color: #ffffff; border-radius: 0 0 12px 12px; padding: 32px; text-align: center; border-top: 2px dashed #d1d5db; position: relative;">
+        
+        <!-- Perforaciones laterales simuladas -->
+        <div style="position: absolute; left: -10px; top: 0; bottom: 0; width: 20px; background-image: radial-gradient(circle, #f5f5f5 40%, transparent 40%); background-size: 20px 20px; background-repeat: repeat-y;"></div>
+        <div style="position: absolute; right: -10px; top: 0; bottom: 0; width: 20px; background-image: radial-gradient(circle, #f5f5f5 40%, transparent 40%); background-size: 20px 20px; background-repeat: repeat-y;"></div>
+        
+        <h3 style="font-size: 18px; font-weight: 700; color: #1f2937; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 1px;">
+            PASE DE ENTRADA
+        </h3>
+        <p style="font-size: 14px; color: #6b7280; margin: 0 0 24px 0;">
+            Presenta este código en el acceso al evento
+        </p>
+        
+        <div style="background-color: #f8fafc; border: 2px solid #268078; border-radius: 12px; padding: 24px; margin: 0 auto; max-width: 320px;">
+            <p style="font-size: 18px; font-weight: 700; color: #1f2937; margin: 0 0 8px 0;">
+                {{ attendee_name }}
+            </p>
+            <p style="font-size: 14px; color: #6b7280; margin: 0 0 20px 0;">
+                {{ ticket.order_item.ticket_tier.name }}
+            </p>
+            
+            <!-- QR Code -->
+            <div style="background-color: #ffffff; border-radius: 8px; padding: 16px; margin: 16px 0; border: 1px solid #e5e7eb;">
+                <img src="cid:qr_code" alt="QR Code de Entrada" style="width: 150px; height: 150px; display: block; margin: 0 auto;">
+            </div>
+            
+            <div style="background-color: #1f2937; color: white; padding: 8px 16px; border-radius: 20px; margin: 16px 0; display: inline-block;">
+                <p style="font-size: 11px; margin: 0; font-family: monospace; letter-spacing: 1px;">
+                    {{ ticket.ticket_number }}
+                </p>
+            </div>
+        </div>
+        
+        <!-- Instrucciones de Entrada -->
+        <div style="background-color: #fef3c7; border-radius: 8px; padding: 16px; margin: 24px 0; text-align: left;">
+            <h4 style="font-size: 14px; font-weight: 700; color: #92400e; margin: 0 0 8px 0;">
+                INSTRUCCIONES DE ENTRADA:
+            </h4>
+            <ul style="margin: 0; padding-left: 20px; color: #92400e; font-size: 12px; line-height: 1.5;">
+                <li>Presenta tu código QR en el punto de acceso</li>
+                <li>Llega 15 minutos antes del horario indicado</li>
+                <li>Porta un documento de identidad válido</li>
+                <li>Este ticket es personal e intransferible</li>
+            </ul>
+        </div>
+
+        <!-- Acciones -->
+        <div style="margin: 24px 0;">
+            <a href="{{ frontend_url }}/tickets/{{ ticket.ticket_number }}" style="display: inline-block; background-color: #268078; color: white; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: 600; font-size: 14px; margin: 0 8px 8px 0; text-transform: uppercase;">
+                Descargar PDF
+            </a>
+            <a href="{{ frontend_url }}/events/{{ event.id }}" style="display: inline-block; background-color: transparent; color: #268078; text-decoration: none; padding: 12px 24px; border: 1px solid #268078; border-radius: 6px; font-weight: 600; font-size: 14px; margin: 0 8px 8px 0; text-transform: uppercase;">
+                Ver Evento
+            </a>
+        </div>
+    </div>
+
+    <!-- Footer Promocional Tuki -->
+    <div style="background-color: #1f2937; border-radius: 8px; padding: 24px; text-align: center; margin-top: 24px;">
+        <p style="font-size: 14px; color: #ffffff; margin: 0 0 8px 0; font-weight: 600;">
+            Ticket generado por <span style="color: #4CBED7;">TUKI</span>
+        </p>
+        <p style="font-size: 12px; color: #d1d5db; margin: 0 0 16px 0;">
+            Plataforma profesional de gestión de eventos
+        </p>
+        <a href="https://tuki.cl/create-event" style="display: inline-block; background-color: #268078; color: white; text-decoration: none; padding: 8px 16px; border-radius: 4px; font-weight: 600; font-size: 12px; text-transform: uppercase;">
+            Crear mi Evento
+        </a>
+    </div>
+
+    <!-- Contacto -->
+    <div style="text-align: center; padding: 16px 0;">
+        <p style="font-size: 11px; color: #9ca3af; margin: 0;">
+            Soporte: 
+            <a href="mailto:{{ event.organizer.email|default:'info@tuki.cl' }}" style="color: #268078; text-decoration: none;">Organizador</a>
+            •
+            <a href="mailto:soporte@tuki.cl" style="color: #268078; text-decoration: none;">Tuki</a>
+        </p>
+    </div>
+
+</div>
+{% endblock %}

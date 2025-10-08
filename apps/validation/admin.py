@@ -182,3 +182,4 @@ class EventValidationStatsAdmin(admin.ModelAdmin):
         )
     checkin_rate_display.short_description = "Tasa de Check-in"
 
+

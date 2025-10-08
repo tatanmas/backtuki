@@ -1,0 +1,328 @@
+{% extends "emails/base.html" %}
+{% load static %}
+
+{% block title %}Confirmación de Compra - {{ event.title }} - Tuki{% endblock %}
+
+{% block content %}
+<!-- Template 1: Minimalista Profesional -->
+<div style="max-width: 600px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333333;">
+
+    <!-- Header Simple -->
+    <div style="text-align: center; padding: 40px 0 60px 0; border-bottom: 1px solid #e5e7eb;">
+        <h1 style="font-size: 24px; font-weight: 400; color: #1f2937; margin: 0 0 8px 0;">
+            Confirmación de Compra
+        </h1>
+        <p style="font-size: 16px; color: #6b7280; margin: 0;">
+            Hola {{ attendee_name }}, tu orden ha sido procesada exitosamente
+        </p>
+    </div>
+
+    <!-- Información del Evento con Imagen -->
+    <div style="padding: 40px 0; border-bottom: 1px solid #f3f4f6;">
+        <div style="display: flex; gap: 32px; align-items: flex-start;">
+            <!-- Imagen del Evento -->
+            <div style="flex-shrink: 0; width: 200px;">
+                {% if event.image %}
+                <img src="{{ event.image.url }}" alt="{{ event.title }}" style="width: 200px; height: 200px; object-fit: cover; border-radius: 8px; border: 1px solid #e5e7eb;">
+                {% else %}
+                <div style="width: 200px; height: 200px; background-color: #f3f4f6; border-radius: 8px; display: flex; align-items: center; justify-content: center; border: 1px solid #e5e7eb;">
+                    <span style="color: #9ca3af; font-size: 14px;">Sin imagen</span>
+                </div>
+                {% endif %}
+            </div>
+            
+            <!-- Información del Evento -->
+            <div style="flex: 1;">
+                <h2 style="font-size: 24px; font-weight: 600; color: #268078; margin: 0 0 16px 0;">
+                    {{ event.title }}
+                </h2>
+                
+                {% if event.description %}
+                <p style="font-size: 14px; color: #6b7280; margin: 0 0 20px 0; line-height: 1.5;">
+                    {{ event.description|striptags|truncatewords:25 }}
+                </p>
+                {% endif %}
+                
+                <table style="width: 100%; border-collapse: collapse; margin: 0;">
+                    <tr>
+                        <td style="padding: 8px 0; width: 25%; font-size: 14px; color: #6b7280; font-weight: 500;">Fecha:</td>
+                        <td style="padding: 8px 0; font-size: 14px; color: #1f2937; font-weight: 600;">{{ event.start_date|date:"l, j \d\e F \d\e Y" }}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; font-size: 14px; color: #6b7280; font-weight: 500;">Hora:</td>
+                        <td style="padding: 8px 0; font-size: 14px; color: #1f2937; font-weight: 600;">{{ event.start_date|date:"H:i" }}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; font-size: 14px; color: #6b7280; font-weight: 500;">Ubicación:</td>
+                        <td style="padding: 8px 0; font-size: 14px; color: #1f2937; font-weight: 600;">
+                            {{ event.location.name }}
+                            {% if event.location.address %}<br><span style="font-size: 13px; color: #6b7280;">{{ event.location.address }}</span>{% endif %}
+                        </td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Detalles de la Orden -->
+    <div style="padding: 40px 0; border-bottom: 1px solid #f3f4f6;">
+        <h3 style="font-size: 18px; font-weight: 600; color: #1f2937; margin: 0 0 24px 0;">
+            Detalles de tu Orden
+        </h3>
+        
+        <!-- Información de la Orden -->
+        <table style="width: 100%; border-collapse: collapse; margin: 0 0 32px 0;">
+            <tr>
+                <td style="padding: 8px 0; width: 40%; font-size: 14px; color: #6b7280;">Número de Orden:</td>
+                <td style="padding: 8px 0; font-size: 14px; color: #1f2937; font-weight: 600; font-family: monospace;">{{ order.order_number }}</td>
+            </tr>
+            <tr>
+                <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Fecha de Compra:</td>
+                <td style="padding: 8px 0; font-size: 14px; color: #1f2937;">{{ order.created_at|date:"j \d\e F, Y \a \l\a\s H:i" }}</td>
+            </tr>
+            <tr>
+                <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Comprador:</td>
+                <td style="padding: 8px 0; font-size: 14px; color: #1f2937;">{{ order.buyer_name }}</td>
+            </tr>
+            <tr>
+                <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Email:</td>
+                <td style="padding: 8px 0; font-size: 14px; color: #1f2937;">{{ order.email }}</td>
+            </tr>
+            {% if order.payment_method %}
+            <tr>
+                <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">Método de Pago:</td>
+                <td style="padding: 8px 0; font-size: 14px; color: #1f2937;">{{ order.payment_method }}</td>
+            </tr>
+            {% endif %}
+        </table>
+
+        <!-- Tabla Unificada: Asistentes y Tickets -->
+        <h4 style="font-size: 16px; font-weight: 600; color: #1f2937; margin: 0 0 16px 0;">
+            Tickets y Asistentes
+        </h4>
+        
+        <table style="width: 100%; border-collapse: collapse; border: 1px solid #e5e7eb;">
+            <thead>
+                <tr style="background-color: #f9fafb;">
+                    <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Asistente</th>
+                    <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Tipo de Entrada</th>
+                    <th style="padding: 12px; text-align: center; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Cantidad</th>
+                    <th style="padding: 12px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Precio</th>
+                    <th style="padding: 12px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Subtotal</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in order.items.all %}
+                    {% for ticket in item.tickets.all %}
+                    <tr>
+                        <td style="padding: 12px; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">
+                            <div>
+                                <p style="margin: 0; font-weight: 600;">{{ ticket.first_name }} {{ ticket.last_name }}</p>
+                                <p style="margin: 2px 0 0 0; font-size: 12px; color: #6b7280;">{{ ticket.email }}</p>
+                            </div>
+                        </td>
+                        <td style="padding: 12px; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">{{ item.ticket_tier.name }}</td>
+                        <td style="padding: 12px; text-align: center; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">1</td>
+                        <td style="padding: 12px; text-align: right; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">
+                            {% if item.unit_price > 0 %}
+                                ${{ item.unit_price|floatformat:0 }} {{ order.currency }}
+                            {% else %}
+                                Gratuito
+                            {% endif %}
+                        </td>
+                        <td style="padding: 12px; text-align: right; font-size: 14px; color: #1f2937; font-weight: 600; border-bottom: 1px solid #f3f4f6;">
+                            {% if item.unit_price > 0 %}
+                                ${{ item.unit_price|floatformat:0 }} {{ order.currency }}
+                            {% else %}
+                                Gratuito
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <!-- Resumen Financiero -->
+        <table style="width: 100%; border-collapse: collapse; margin: 24px 0 0 0;">
+            <tr>
+                <td style="padding: 8px 0; text-align: right; font-size: 14px; color: #6b7280;">Subtotal:</td>
+                <td style="padding: 8px 0 8px 16px; text-align: right; font-size: 14px; color: #1f2937; width: 120px;">
+                    ${{ order.subtotal|floatformat:0 }} {{ order.currency }}
+                </td>
+            </tr>
+            {% if order.service_fee > 0 %}
+            <tr>
+                <td style="padding: 8px 0; text-align: right; font-size: 14px; color: #6b7280;">Comisión de Servicio:</td>
+                <td style="padding: 8px 0 8px 16px; text-align: right; font-size: 14px; color: #1f2937;">
+                    ${{ order.service_fee|floatformat:0 }} {{ order.currency }}
+                </td>
+            </tr>
+            {% endif %}
+            {% if order.taxes > 0 %}
+            <tr>
+                <td style="padding: 8px 0; text-align: right; font-size: 14px; color: #6b7280;">Impuestos:</td>
+                <td style="padding: 8px 0 8px 16px; text-align: right; font-size: 14px; color: #1f2937;">
+                    ${{ order.taxes|floatformat:0 }} {{ order.currency }}
+                </td>
+            </tr>
+            {% endif %}
+            {% if order.discount > 0 %}
+            <tr>
+                <td style="padding: 8px 0; text-align: right; font-size: 14px; color: #10b981;">Descuento:</td>
+                <td style="padding: 8px 0 8px 16px; text-align: right; font-size: 14px; color: #10b981;">
+                    -${{ order.discount|floatformat:0 }} {{ order.currency }}
+                </td>
+            </tr>
+            {% endif %}
+            <tr style="border-top: 2px solid #e5e7eb;">
+                <td style="padding: 16px 0 8px 0; text-align: right; font-size: 16px; color: #1f2937; font-weight: 700;">TOTAL:</td>
+                <td style="padding: 16px 0 8px 16px; text-align: right; font-size: 18px; color: #268078; font-weight: 700;">
+                    {% if order.total > 0 %}
+                        ${{ order.total|floatformat:0 }} {{ order.currency }}
+                    {% else %}
+                        GRATUITO
+                    {% endif %}
+                </td>
+            </tr>
+        </table>
+    </div>
+
+
+    <!-- Ticket Individual Completo -->
+    <div style="padding: 40px 0; text-align: center;">
+        <h3 style="font-size: 18px; font-weight: 600; color: #1f2937; margin: 0 0 32px 0;">
+            Tu Ticket de Entrada
+        </h3>
+        
+        <div style="background: linear-gradient(135deg, #268078 0%, #572150 50%, #4CBED7 100%); border-radius: 12px; padding: 3px; margin: 0 auto; max-width: 500px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);">
+            <div style="background-color: #ffffff; border-radius: 9px; padding: 24px;">
+            
+            <!-- Header del Ticket con Logo -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb;">
+                <div style="text-align: left;">
+                    <img src="cid:logo_negro" alt="Tuki" style="height: 24px; width: auto;">
+                    <p style="font-size: 10px; color: #6b7280; margin: 4px 0 0 0; text-transform: uppercase;">Ticket</p>
+                </div>
+                <div style="text-align: right;">
+                    <p style="font-size: 10px; color: #6b7280; margin: 0; font-family: monospace;">{{ ticket.ticket_number }}</p>
+                    <p style="font-size: 10px; color: #6b7280; margin: 0;">{{ order.created_at|date:"d/m/Y" }}</p>
+                </div>
+            </div>
+            
+            <!-- Información del Evento en el Ticket -->
+            <div style="display: flex; gap: 16px; margin-bottom: 20px; text-align: left;">
+                <!-- Imagen del Evento (pequeña) -->
+                <div style="flex-shrink: 0; width: 80px;">
+                    {% if event.image %}
+                    <img src="{{ event.image.url }}" alt="{{ event.title }}" style="width: 80px; height: 80px; object-fit: cover; border-radius: 6px; border: 1px solid #e5e7eb;">
+                    {% else %}
+                    <div style="width: 80px; height: 80px; background-color: #f3f4f6; border-radius: 6px; display: flex; align-items: center; justify-content: center; border: 1px solid #e5e7eb;">
+                        <span style="color: #9ca3af; font-size: 10px;">IMG</span>
+                    </div>
+                    {% endif %}
+                </div>
+                
+                <!-- Info del Evento -->
+                <div style="flex: 1;">
+                    <h4 style="font-size: 14px; font-weight: 600; color: #1f2937; margin: 0 0 8px 0; line-height: 1.2;">
+                        {{ event.title }}
+                    </h4>
+                    <p style="font-size: 11px; color: #6b7280; margin: 0 0 4px 0;">
+                        {{ event.start_date|date:"l, j \d\e F \d\e Y" }} • {{ event.start_date|date:"H:i" }}
+                    </p>
+                    <p style="font-size: 11px; color: #6b7280; margin: 0;">
+                        {{ event.location.name }}
+                    </p>
+                </div>
+            </div>
+            
+            <!-- Información del Asistente -->
+            <div style="background-color: #f8fafc; border-radius: 8px; padding: 16px; margin-bottom: 20px; text-align: left;">
+                <p style="font-size: 16px; font-weight: 600; color: #1f2937; margin: 0 0 4px 0;">
+                    {{ attendee_name }}
+                </p>
+                <p style="font-size: 13px; color: #6b7280; margin: 0 0 4px 0;">
+                    {{ ticket.email }}
+                </p>
+                <p style="font-size: 12px; color: #268078; margin: 0; font-weight: 600;">
+                    {{ ticket.order_item.ticket_tier.name }}
+                </p>
+            </div>
+            
+            <!-- QR Code -->
+            <div style="background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 20px 0;">
+                <img src="cid:qr_code" alt="QR Code para {{ ticket.ticket_number }}" style="width: 140px; height: 140px; display: block; margin: 0 auto;">
+            </div>
+            
+            <!-- Instrucciones -->
+            <div style="text-align: center; margin-top: 16px;">
+                <p style="font-size: 12px; color: #6b7280; margin: 0; line-height: 1.4;">
+                    Presenta este código QR en la entrada del evento<br>
+                    Llega 15 minutos antes del inicio
+                </p>
+            </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Acciones -->
+    <div style="text-align: center; padding: 32px 0; border-bottom: 1px solid #f3f4f6;">
+        <a href="{{ frontend_url }}/tickets/{{ ticket.ticket_number }}" style="display: inline-block; background-color: #268078; color: white; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: 600; font-size: 14px; margin: 0 8px 8px 0;">
+            Ver Ticket Completo
+        </a>
+        <a href="{{ frontend_url }}/events/{{ event.id }}" style="display: inline-block; background-color: transparent; color: #268078; text-decoration: none; padding: 12px 24px; border: 1px solid #268078; border-radius: 6px; font-weight: 600; font-size: 14px; margin: 0 8px 8px 0;">
+            Detalles del Evento
+        </a>
+    </div>
+
+    <!-- Footer Promocional Tuki -->
+    <div style="text-align: center; padding: 40px 32px; background-color: #f8fafc; border-radius: 12px; margin-top: 32px; border: 1px solid #e5e7eb;">
+        <div style="margin-bottom: 20px;">
+            <img src="cid:isotipo_azul" alt="Tuki" style="height: 48px; width: auto; margin-bottom: 16px;">
+            <p style="font-size: 14px; color: #6b7280; margin: 0 0 16px 0;">
+                Este evento fue creado con Tuki
+            </p>
+        </div>
+        
+        <div style="background-color: #ffffff; border-radius: 8px; padding: 24px; margin: 16px 0; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);">
+            <p style="font-size: 16px; color: #1f2937; margin: 0 0 12px 0; font-weight: 600;">
+                ¿Organizas eventos?
+            </p>
+            <p style="font-size: 14px; color: #6b7280; margin: 0 0 20px 0; line-height: 1.5;">
+                Crea y vende tickets para tu evento en menos de 5 minutos.<br>
+                Sin costos de setup, comisiones competitivas.
+            </p>
+            <a href="https://tuki.cl/create-event" style="display: inline-block; background-color: #268078; color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">
+                Crear mi Evento
+            </a>
+        </div>
+        
+        <div style="margin-top: 20px;">
+            <p style="font-size: 12px; color: #9ca3af; margin: 0;">
+                Síguenos en 
+                <a href="https://instagram.com/tukitickets" style="color: #268078; text-decoration: none; font-weight: 500;">@tukitickets</a>
+                • WhatsApp: 
+                <a href="https://wa.me/56947627083" style="color: #268078; text-decoration: none; font-weight: 500;">+56 9 4762 7083</a>
+            </p>
+        </div>
+    </div>
+
+    <!-- Contacto -->
+    <div style="text-align: center; padding: 32px 0 0 0;">
+        <p style="font-size: 12px; color: #9ca3af; margin: 0 0 8px 0;">
+            ¿Tienes preguntas sobre el evento?
+        </p>
+        <p style="font-size: 12px; margin: 0;">
+            <a href="mailto:{{ event.organizer.email|default:'ventas@tuki.cl' }}" style="color: #268078; text-decoration: none; font-weight: 500;">
+                Contactar Organizador
+            </a>
+            •
+            <a href="mailto:ventas@tuki.cl" style="color: #268078; text-decoration: none; font-weight: 500;">
+                Soporte Tuki
+            </a>
+        </p>
+    </div>
+
+</div>
+{% endblock %}

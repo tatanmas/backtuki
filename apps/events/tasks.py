@@ -7,6 +7,12 @@ from celery import shared_task
 from django.utils import timezone
 from datetime import datetime, timedelta
 from django.db.models import Count, Sum, Avg, Q
+from django.core.mail import send_mail, EmailMultiAlternatives
+from django.template.loader import render_to_string
+from django.conf import settings
+from django.core.files.base import ContentFile
+import tempfile
+import os
 from apps.events.models import Event
 from apps.events.analytics_models import EventView, EventPerformanceMetrics, ConversionFunnel
 import logging
@@ -258,4 +264,230 @@ def update_event_view_metrics(event_id, session_id, time_on_page):
         
     except Exception as e:
         logger.error(f"[ANALYTICS] Error updating view metrics: {e}")
+        raise
+
+
+@shared_task(bind=True, max_retries=3)
+def send_ticket_confirmation_email(self, order_id):
+    """
+    🚀 ENTERPRISE: Send ticket confirmation email to customer.
+    
+    Sends a confirmation email with ticket details after successful booking.
+    """
+    try:
+        from apps.events.models import Order
+        
+        logger.info(f"📧 [EMAIL] Starting ticket confirmation email for order: {order_id}")
+        
+        # Get the order with related data
+        order = Order.objects.select_related(
+            'event', 'user', 'event__organizer'
+        ).prefetch_related('items__tickets').get(id=order_id)
+        
+        if order.status != 'paid':
+            logger.warning(f"📧 [EMAIL] Order {order_id} not paid (status: {order.status}), skipping email")
+            return {'status': 'skipped', 'reason': 'order_not_paid'}
+        
+        # Get all tickets from all order items
+        tickets = []
+        for item in order.items.all():
+            tickets.extend(item.tickets.all())
+        
+        if not tickets:
+            logger.warning(f"📧 [EMAIL] No tickets found for order {order_id}")
+            return {'status': 'skipped', 'reason': 'no_tickets'}
+        
+        # Send one email per ticket (professional ticketing approach)
+        emails_sent = 0
+        failed_emails = []
+        
+        for ticket in tickets:
+            qr_temp_file = None
+            try:
+                # Import QRCodeService
+                from apps.events.services import QRCodeService
+                import qrcode
+                from io import BytesIO
+                
+                # Generate QR code as file (not base64) for inline embedding
+                qr = qrcode.QRCode(
+                    version=1,
+                    error_correction=qrcode.constants.ERROR_CORRECT_H,
+                    box_size=10,
+                    border=4,
+                )
+                
+                # QR data with ticket URL
+                qr_data = f"{getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')}/tickets/{ticket.ticket_number}"
+                qr.add_data(qr_data)
+                qr.make(fit=True)
+                
+                # Create high-quality QR image
+                img = qr.make_image(fill_color="black", back_color="white")
+                
+                # Save to temporary file
+                qr_temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                img.save(qr_temp_file.name, format='PNG')
+                qr_temp_file.close()
+                
+                # Prepare email context for this specific ticket
+                context = {
+                    'order': order,
+                    'event': order.event,
+                    'user': order.user,
+                    'ticket': ticket,  # Single ticket (what template expects)
+                    'attendee_name': f"{ticket.first_name} {ticket.last_name}".strip(),
+                    'organizer': order.event.organizer,
+                    'total_amount': order.total,
+                    'booking_date': order.created_at,
+                    'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:8080'),
+                    'qr_code': 'cid:qr_code',  # Reference to inline image
+                    'qr_code_url': qr_data,
+                }
+                
+                # Render email templates (default to minimal_professional)
+                template_version = getattr(settings, 'EMAIL_TEMPLATE_VERSION', 'minimal_professional')
+                html_template = f'emails/confirmation/{template_version}.html'
+                
+                # Fallback to original template if version doesn't exist
+                try:
+                    html_message = render_to_string(html_template, context)
+                except:
+                    html_message = render_to_string('emails/ticket_confirmation.html', context)
+                
+                text_message = render_to_string('emails/ticket_confirmation.txt', context)
+                
+                # Create email with inline QR code
+                subject = f'Tu ticket para {order.event.title} - #{ticket.ticket_number}'
+                recipient_email = ticket.email
+                
+                # Use EmailMultiAlternatives for inline images
+                email = EmailMultiAlternatives(
+                    subject=subject,
+                    body=text_message,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    to=[recipient_email]
+                )
+                
+                # Attach HTML version
+                email.attach_alternative(html_message, "text/html")
+                
+                # Attach QR code as inline image with Content-ID
+                with open(qr_temp_file.name, 'rb') as qr_file:
+                    qr_content = qr_file.read()
+                
+                # Create MIMEImage for inline attachment
+                from email.mime.image import MIMEImage
+                qr_image = MIMEImage(qr_content)
+                qr_image.add_header('Content-ID', '<qr_code>')
+                qr_image.add_header('Content-Disposition', 'inline', filename=f'qr_code_{ticket.ticket_number}.png')
+                
+                # Attach logos as inline images
+                import os
+                
+                
+                # Logo negro para ticket
+                logo_negro_path = os.path.join(settings.BASE_DIR, 'static/images/logos/logo-negro.png')
+                if os.path.exists(logo_negro_path):
+                    with open(logo_negro_path, 'rb') as logo_file:
+                        logo_negro = MIMEImage(logo_file.read())
+                        logo_negro.add_header('Content-ID', '<logo_negro>')
+                        logo_negro.add_header('Content-Disposition', 'inline', filename='logo-negro.png')
+                        email.attach(logo_negro)
+                
+                # Isotipo azul para footer
+                isotipo_path = os.path.join(settings.BASE_DIR, 'static/images/logos/isotipo-azul.png')
+                if os.path.exists(isotipo_path):
+                    with open(isotipo_path, 'rb') as isotipo_file:
+                        isotipo_azul = MIMEImage(isotipo_file.read())
+                        isotipo_azul.add_header('Content-ID', '<isotipo_azul>')
+                        isotipo_azul.add_header('Content-Disposition', 'inline', filename='isotipo-azul.png')
+                        email.attach(isotipo_azul)
+                
+                # Attach QR code to email
+                email.attach(qr_image)
+                
+                # Send email
+                email.send(fail_silently=False)
+                
+                emails_sent += 1
+                logger.info(f"📧 [EMAIL] Ticket email with inline QR sent for ticket {ticket.ticket_number} to {recipient_email}")
+                
+            except Exception as e:
+                logger.error(f"📧 [EMAIL] Failed to send email for ticket {ticket.ticket_number}: {e}")
+                failed_emails.append({
+                    'ticket_number': ticket.ticket_number,
+                    'email': ticket.email,
+                    'error': str(e)
+                })
+                continue
+            finally:
+                # Clean up temporary file
+                if qr_temp_file and os.path.exists(qr_temp_file.name):
+                    try:
+                        os.unlink(qr_temp_file.name)
+                    except Exception as cleanup_error:
+                        logger.warning(f"📧 [EMAIL] Failed to cleanup temp QR file: {cleanup_error}")
+        
+        logger.info(f"📧 [EMAIL] Ticket confirmation emails completed for order: {order_id} - {emails_sent} sent, {len(failed_emails)} failed")
+        
+        return {
+            'status': 'sent' if emails_sent > 0 else 'failed',
+            'order_id': order_id,
+            'emails_sent': emails_sent,
+            'failed_emails': failed_emails,
+            'total_tickets': len(tickets)
+        }
+        
+    except Order.DoesNotExist:
+        logger.error(f"📧 [EMAIL] Order {order_id} not found")
+        return {'status': 'error', 'reason': 'order_not_found'}
+        
+    except Exception as exc:
+        logger.error(f"📧 [EMAIL] Error sending ticket confirmation email for order {order_id}: {exc}")
+        
+        # Retry with exponential backoff
+        if self.request.retries < self.max_retries:
+            countdown = 60 * (2 ** self.request.retries)  # 60s, 120s, 240s
+            logger.info(f"📧 [EMAIL] Retrying in {countdown}s (attempt {self.request.retries + 1}/{self.max_retries})")
+            self.retry(countdown=countdown)
+        else:
+            logger.error(f"📧 [EMAIL] Max retries reached for order {order_id}, giving up")
+            return {'status': 'failed', 'reason': str(exc)}
+
+
+@shared_task
+def cleanup_expired_ticket_holds():
+    """
+    🚀 ENTERPRISE: Clean up expired ticket holds.
+    
+    Removes expired ticket reservations to free up inventory.
+    This task runs every 5 minutes via Celery Beat.
+    """
+    try:
+        from apps.events.models import TicketHold
+        from django.utils import timezone
+        
+        # Get expired holds (older than 15 minutes)
+        expiry_time = timezone.now() - timezone.timedelta(minutes=15)
+        
+        expired_holds = TicketHold.objects.filter(
+            created_at__lt=expiry_time,
+            is_expired=False
+        )
+        
+        count = expired_holds.count()
+        
+        if count > 0:
+            # Mark as expired and release the holds
+            expired_holds.update(is_expired=True)
+            logger.info(f"🧹 [CLEANUP] Cleaned up {count} expired ticket holds")
+        
+        return {
+            'cleaned_holds': count,
+            'expiry_time': expiry_time.isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"🧹 [CLEANUP] Error in cleanup_expired_ticket_holds: {e}")
         raise

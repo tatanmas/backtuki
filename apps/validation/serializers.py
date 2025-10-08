@@ -202,3 +202,4 @@ class StartSessionRequestSerializer(serializers.Serializer):
     device_info = serializers.JSONField(required=False, default=dict)
     location = serializers.JSONField(required=False, default=dict)
 
+

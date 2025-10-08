@@ -1,0 +1,322 @@
+{% extends "emails/base.html" %}
+{% load static %}
+
+{% block title %}Factura y Confirmación - {{ event.title }} - Tuki{% endblock %}
+
+{% block content %}
+<!-- Template 2: Corporativo con Tablas -->
+<div style="max-width: 650px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #ffffff;">
+
+    <!-- Header Corporativo -->
+    <div style="background-color: #1f2937; padding: 32px; text-align: center;">
+        <h1 style="font-size: 24px; font-weight: 700; color: #ffffff; margin: 0 0 8px 0;">
+            CONFIRMACIÓN DE COMPRA
+        </h1>
+        <p style="font-size: 14px; color: #d1d5db; margin: 0; text-transform: uppercase; letter-spacing: 1px;">
+            Factura Electrónica
+        </p>
+    </div>
+
+    <!-- Información Principal -->
+    <div style="padding: 32px; background-color: #ffffff;">
+        
+        <!-- Datos de la Orden -->
+        <div style="border: 2px solid #e5e7eb; border-radius: 8px; padding: 24px; margin-bottom: 32px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
+                <div>
+                    <h3 style="font-size: 14px; font-weight: 700; color: #374151; margin: 0 0 8px 0; text-transform: uppercase;">
+                        Información de la Orden
+                    </h3>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr>
+                            <td style="padding: 4px 0; font-size: 13px; color: #6b7280; width: 40%;">Número:</td>
+                            <td style="padding: 4px 0; font-size: 13px; color: #1f2937; font-weight: 600; font-family: monospace;">{{ order.order_number }}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px 0; font-size: 13px; color: #6b7280;">Fecha:</td>
+                            <td style="padding: 4px 0; font-size: 13px; color: #1f2937;">{{ order.created_at|date:"d/m/Y H:i" }}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px 0; font-size: 13px; color: #6b7280;">Estado:</td>
+                            <td style="padding: 4px 0; font-size: 13px; color: #10b981; font-weight: 600; text-transform: uppercase;">{{ order.status }}</td>
+                        </tr>
+                    </table>
+                </div>
+                <div>
+                    <h3 style="font-size: 14px; font-weight: 700; color: #374151; margin: 0 0 8px 0; text-transform: uppercase;">
+                        Datos del Comprador
+                    </h3>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr>
+                            <td style="padding: 4px 0; font-size: 13px; color: #6b7280; width: 30%;">Nombre:</td>
+                            <td style="padding: 4px 0; font-size: 13px; color: #1f2937; font-weight: 600;">{{ order.buyer_name }}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px 0; font-size: 13px; color: #6b7280;">Email:</td>
+                            <td style="padding: 4px 0; font-size: 13px; color: #1f2937;">{{ order.email }}</td>
+                        </tr>
+                        {% if order.phone %}
+                        <tr>
+                            <td style="padding: 4px 0; font-size: 13px; color: #6b7280;">Teléfono:</td>
+                            <td style="padding: 4px 0; font-size: 13px; color: #1f2937;">{{ order.phone }}</td>
+                        </tr>
+                        {% endif %}
+                    </table>
+                </div>
+            </div>
+            
+            {% if order.payment_method %}
+            <div style="border-top: 1px solid #f3f4f6; padding-top: 16px;">
+                <h4 style="font-size: 14px; font-weight: 700; color: #374151; margin: 0 0 8px 0; text-transform: uppercase;">
+                    Método de Pago
+                </h4>
+                <p style="font-size: 14px; color: #1f2937; margin: 0; font-weight: 600;">
+                    {{ order.payment_method }}
+                </p>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Información del Evento -->
+        <div style="background-color: #f8fafc; border-left: 4px solid #268078; padding: 24px; margin-bottom: 32px;">
+            <h2 style="font-size: 20px; font-weight: 700; color: #268078; margin: 0 0 16px 0;">
+                {{ event.title }}
+            </h2>
+            <table style="width: 100%; border-collapse: collapse;">
+                <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #374151; font-weight: 600; width: 20%;">Fecha:</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #1f2937;">{{ event.start_date|date:"l, j \d\e F \d\e Y" }}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #374151; font-weight: 600;">Hora:</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #1f2937;">{{ event.start_date|date:"H:i" }}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #374151; font-weight: 600;">Ubicación:</td>
+                    <td style="padding: 8px 0; font-size: 14px; color: #1f2937;">
+                        {{ event.location.name }}
+                        {% if event.location.address %}<br><span style="color: #6b7280;">{{ event.location.address }}</span>{% endif %}
+                    </td>
+                </tr>
+            </table>
+        </div>
+
+        <!-- Tabla Detallada de Tickets -->
+        <div style="margin-bottom: 32px;">
+            <h3 style="font-size: 16px; font-weight: 700; color: #1f2937; margin: 0 0 16px 0; text-transform: uppercase; letter-spacing: 0.5px;">
+                Detalle de Tickets Comprados
+            </h3>
+            
+            <table style="width: 100%; border-collapse: collapse; border: 2px solid #e5e7eb;">
+                <thead>
+                    <tr style="background-color: #1f2937;">
+                        <th style="padding: 16px 12px; text-align: left; font-size: 12px; font-weight: 700; color: #ffffff; text-transform: uppercase; border-right: 1px solid #374151;">Tipo de Entrada</th>
+                        <th style="padding: 16px 12px; text-align: center; font-size: 12px; font-weight: 700; color: #ffffff; text-transform: uppercase; border-right: 1px solid #374151;">Cant.</th>
+                        <th style="padding: 16px 12px; text-align: right; font-size: 12px; font-weight: 700; color: #ffffff; text-transform: uppercase; border-right: 1px solid #374151;">Precio Unit.</th>
+                        <th style="padding: 16px 12px; text-align: right; font-size: 12px; font-weight: 700; color: #ffffff; text-transform: uppercase; border-right: 1px solid #374151;">Comisión</th>
+                        <th style="padding: 16px 12px; text-align: right; font-size: 12px; font-weight: 700; color: #ffffff; text-transform: uppercase;">Subtotal</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in order.items.all %}
+                    <tr style="border-bottom: 1px solid #f3f4f6;">
+                        <td style="padding: 16px 12px; font-size: 14px; color: #1f2937; font-weight: 600; border-right: 1px solid #f3f4f6;">
+                            {{ item.ticket_tier.name }}
+                            {% if item.ticket_tier.description %}
+                            <br><span style="font-size: 12px; color: #6b7280; font-weight: 400;">{{ item.ticket_tier.description }}</span>
+                            {% endif %}
+                        </td>
+                        <td style="padding: 16px 12px; text-align: center; font-size: 14px; color: #1f2937; font-weight: 600; border-right: 1px solid #f3f4f6;">{{ item.quantity }}</td>
+                        <td style="padding: 16px 12px; text-align: right; font-size: 14px; color: #1f2937; border-right: 1px solid #f3f4f6;">
+                            {% if item.unit_price > 0 %}
+                                ${{ item.unit_price|floatformat:0 }}
+                            {% else %}
+                                <span style="color: #10b981; font-weight: 600;">GRATIS</span>
+                            {% endif %}
+                        </td>
+                        <td style="padding: 16px 12px; text-align: right; font-size: 14px; color: #1f2937; border-right: 1px solid #f3f4f6;">
+                            {% if item.unit_service_fee > 0 %}
+                                ${{ item.unit_service_fee|floatformat:0 }}
+                            {% else %}
+                                $0
+                            {% endif %}
+                        </td>
+                        <td style="padding: 16px 12px; text-align: right; font-size: 14px; color: #1f2937; font-weight: 700;">
+                            {% if item.subtotal > 0 %}
+                                ${{ item.subtotal|floatformat:0 }}
+                            {% else %}
+                                <span style="color: #10b981; font-weight: 600;">GRATIS</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Resumen Financiero Detallado -->
+        <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 24px; margin-bottom: 32px;">
+            <h4 style="font-size: 16px; font-weight: 700; color: #1f2937; margin: 0 0 16px 0; text-transform: uppercase;">
+                Resumen Financiero
+            </h4>
+            
+            <table style="width: 100%; border-collapse: collapse;">
+                <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280; text-align: right; width: 70%;">Subtotal de Tickets:</td>
+                    <td style="padding: 8px 0 8px 16px; font-size: 14px; color: #1f2937; text-align: right; font-weight: 600; width: 30%;">
+                        ${{ order.subtotal|floatformat:0 }} {{ order.currency }}
+                    </td>
+                </tr>
+                {% if order.service_fee > 0 %}
+                <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280; text-align: right;">Comisiones de Servicio:</td>
+                    <td style="padding: 8px 0 8px 16px; font-size: 14px; color: #1f2937; text-align: right; font-weight: 600;">
+                        ${{ order.service_fee|floatformat:0 }} {{ order.currency }}
+                    </td>
+                </tr>
+                {% endif %}
+                {% if order.taxes > 0 %}
+                <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #6b7280; text-align: right;">Impuestos (IVA):</td>
+                    <td style="padding: 8px 0 8px 16px; font-size: 14px; color: #1f2937; text-align: right; font-weight: 600;">
+                        ${{ order.taxes|floatformat:0 }} {{ order.currency }}
+                    </td>
+                </tr>
+                {% endif %}
+                {% if order.discount > 0 %}
+                <tr>
+                    <td style="padding: 8px 0; font-size: 14px; color: #dc2626; text-align: right;">Descuentos Aplicados:</td>
+                    <td style="padding: 8px 0 8px 16px; font-size: 14px; color: #dc2626; text-align: right; font-weight: 600;">
+                        -${{ order.discount|floatformat:0 }} {{ order.currency }}
+                    </td>
+                </tr>
+                {% endif %}
+                <tr style="border-top: 2px solid #268078; background-color: #ffffff;">
+                    <td style="padding: 16px 0 8px 0; font-size: 18px; color: #1f2937; text-align: right; font-weight: 700;">TOTAL PAGADO:</td>
+                    <td style="padding: 16px 0 8px 16px; font-size: 20px; color: #268078; text-align: right; font-weight: 700;">
+                        {% if order.total > 0 %}
+                            ${{ order.total|floatformat:0 }} {{ order.currency }}
+                        {% else %}
+                            GRATUITO
+                        {% endif %}
+                    </td>
+                </tr>
+            </table>
+        </div>
+
+        <!-- Lista Completa de Asistentes -->
+        <div style="margin-bottom: 32px;">
+            <h3 style="font-size: 16px; font-weight: 700; color: #1f2937; margin: 0 0 16px 0; text-transform: uppercase;">
+                Asistentes Registrados
+            </h3>
+            
+            <table style="width: 100%; border-collapse: collapse; border: 1px solid #e5e7eb;">
+                <thead>
+                    <tr style="background-color: #f9fafb;">
+                        <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 700; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Nombre Completo</th>
+                        <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 700; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Email</th>
+                        <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 700; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Tipo de Entrada</th>
+                        <th style="padding: 12px; text-align: center; font-size: 12px; font-weight: 700; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Ticket #</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in order.items.all %}
+                        {% for ticket in item.tickets.all %}
+                        <tr style="border-bottom: 1px solid #f3f4f6;">
+                            <td style="padding: 12px; font-size: 14px; color: #1f2937; font-weight: 600;">{{ ticket.first_name }} {{ ticket.last_name }}</td>
+                            <td style="padding: 12px; font-size: 13px; color: #6b7280;">{{ ticket.email }}</td>
+                            <td style="padding: 12px; font-size: 13px; color: #1f2937;">{{ item.ticket_tier.name }}</td>
+                            <td style="padding: 12px; text-align: center; font-size: 11px; color: #6b7280; font-family: monospace;">{{ ticket.ticket_number }}</td>
+                        </tr>
+                        {% endfor %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Ticket Principal -->
+        <div style="border: 3px solid #268078; border-radius: 12px; padding: 32px; text-align: center; background-color: #ffffff; margin-bottom: 32px;">
+            <h3 style="font-size: 18px; font-weight: 700; color: #268078; margin: 0 0 8px 0; text-transform: uppercase;">
+                Ticket de Acceso
+            </h3>
+            <p style="font-size: 14px; color: #6b7280; margin: 0 0 24px 0;">
+                Presenta este código en la entrada del evento
+            </p>
+            
+            <div style="background-color: #f8fafc; border-radius: 8px; padding: 24px; margin: 24px 0; display: inline-block;">
+                <p style="font-size: 16px; font-weight: 700; color: #1f2937; margin: 0 0 8px 0;">
+                    {{ attendee_name }}
+                </p>
+                <p style="font-size: 13px; color: #6b7280; margin: 0 0 20px 0;">
+                    {{ ticket.order_item.ticket_tier.name }}
+                </p>
+                
+                <!-- QR Code -->
+                <div style="background-color: #ffffff; border: 2px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 16px 0;">
+                    <img src="cid:qr_code" alt="QR Code" style="width: 150px; height: 150px; display: block; margin: 0 auto;">
+                </div>
+                
+                <p style="font-size: 11px; color: #9ca3af; margin: 12px 0 0 0; font-family: monospace;">
+                    ID: {{ ticket.ticket_number }}
+                </p>
+            </div>
+        </div>
+
+        <!-- Instrucciones -->
+        <div style="background-color: #fef3c7; border-left: 4px solid #f59e0b; padding: 20px; margin-bottom: 32px;">
+            <h4 style="font-size: 14px; font-weight: 700; color: #92400e; margin: 0 0 12px 0;">
+                INSTRUCCIONES IMPORTANTES
+            </h4>
+            <ul style="margin: 0; padding-left: 20px; color: #92400e; font-size: 13px; line-height: 1.6;">
+                <li style="margin-bottom: 8px;">Presenta tu código QR o número de ticket en la entrada</li>
+                <li style="margin-bottom: 8px;">Llega 15 minutos antes del horario de inicio</li>
+                <li style="margin-bottom: 8px;">Lleva un documento de identidad válido</li>
+                <li style="margin-bottom: 8px;">Este ticket es personal e intransferible</li>
+            </ul>
+        </div>
+
+        <!-- Acciones -->
+        <div style="text-align: center; margin-bottom: 32px;">
+            <a href="{{ frontend_url }}/tickets/{{ ticket.ticket_number }}" style="display: inline-block; background-color: #268078; color: white; text-decoration: none; padding: 14px 28px; border-radius: 6px; font-weight: 700; font-size: 14px; margin: 0 8px 8px 0; text-transform: uppercase;">
+                Descargar Ticket PDF
+            </a>
+            <a href="{{ frontend_url }}/events/{{ event.id }}" style="display: inline-block; background-color: transparent; color: #268078; text-decoration: none; padding: 14px 28px; border: 2px solid #268078; border-radius: 6px; font-weight: 700; font-size: 14px; margin: 0 8px 8px 0; text-transform: uppercase;">
+                Ver Evento Completo
+            </a>
+        </div>
+    </div>
+
+    <!-- Footer Promocional Tuki -->
+    <div style="background-color: #1f2937; padding: 32px; text-align: center;">
+        <p style="font-size: 16px; color: #ffffff; margin: 0 0 8px 0; font-weight: 600;">
+            Este evento fue creado con <span style="color: #4CBED7;">Tuki</span>
+        </p>
+        <p style="font-size: 14px; color: #d1d5db; margin: 0 0 20px 0;">
+            La plataforma profesional para crear y gestionar eventos
+        </p>
+        <a href="https://tuki.cl/create-event" style="display: inline-block; background-color: #268078; color: white; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: 700; font-size: 14px; text-transform: uppercase;">
+            Crear mi Evento Ahora
+        </a>
+        <p style="font-size: 12px; color: #9ca3af; margin: 20px 0 0 0;">
+            Crea tu evento en menos de 5 minutos • Sin costos de setup
+        </p>
+    </div>
+
+    <!-- Contacto -->
+    <div style="padding: 24px; text-align: center; background-color: #f9fafb;">
+        <p style="font-size: 12px; color: #6b7280; margin: 0 0 8px 0;">
+            Soporte y Contacto
+        </p>
+        <p style="font-size: 12px; margin: 0;">
+            <a href="mailto:{{ event.organizer.email|default:'info@tuki.cl' }}" style="color: #268078; text-decoration: none; font-weight: 600;">
+                Organizador del Evento
+            </a>
+            •
+            <a href="mailto:soporte@tuki.cl" style="color: #268078; text-decoration: none; font-weight: 600;">
+                Soporte Técnico Tuki
+            </a>
+        </p>
+    </div>
+
+</div>
+{% endblock %}

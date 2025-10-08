@@ -78,7 +78,8 @@ class QRCodeService:
             # Redimensionar manteniendo calidad
             if size != 200:
                 # Use high-quality resampling
-                img = img.resize((size, size), resample=qrcode.image.pil.PILImage.LANCZOS)
+                from PIL import Image
+                img = img.resize((size, size), resample=Image.LANCZOS)
             
             # Convertir a base64 con optimización
             buffer = io.BytesIO()

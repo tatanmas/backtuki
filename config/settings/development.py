@@ -79,6 +79,10 @@ if USE_GCS_IN_DEV:
 else:
     # Use local file storage
     DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
+    
+    # Ensure media settings for local development
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = BASE_DIR / 'media'
 
 # CORS settings
 CORS_ALLOW_ALL_ORIGINS = True  # In development only

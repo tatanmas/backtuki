@@ -1,0 +1,250 @@
+{% extends "emails/base.html" %}
+{% load static %}
+
+{% block title %}Order Confirmation - {{ event.title }} - Tuki{% endblock %}
+
+{% block content %}
+<!-- Template 5: Professional Platform Style (Shotgun/Dice.fm inspired) -->
+<div style="max-width: 600px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #000000; color: #ffffff;">
+
+    <!-- Header Platform Style -->
+    <div style="background-color: #000000; padding: 32px 24px; text-align: center; border-bottom: 1px solid #333333;">
+        <h1 style="font-size: 22px; font-weight: 600; color: #ffffff; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 2px;">
+            ORDER CONFIRMED
+        </h1>
+        <p style="font-size: 14px; color: #cccccc; margin: 0; font-weight: 300;">
+            {{ order.order_number }} • {{ order.created_at|date:"d.m.Y" }}
+        </p>
+    </div>
+
+    <!-- Main Content -->
+    <div style="background-color: #000000; padding: 0;">
+        
+        <!-- Event Hero Section -->
+        <div style="background-color: #111111; padding: 32px 24px; border-bottom: 1px solid #333333;">
+            <div style="text-align: center; margin-bottom: 24px;">
+                <h2 style="font-size: 28px; font-weight: 700; color: #ffffff; margin: 0 0 12px 0; line-height: 1.2;">
+                    {{ event.title }}
+                </h2>
+                <div style="width: 60px; height: 2px; background-color: #268078; margin: 0 auto;"></div>
+            </div>
+            
+            <!-- Event Details Grid -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 24px; text-align: center; margin-top: 32px;">
+                <div>
+                    <p style="font-size: 11px; color: #888888; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">DATE</p>
+                    <p style="font-size: 16px; color: #ffffff; margin: 0; font-weight: 600;">
+                        {{ event.start_date|date:"D j M Y" }}
+                    </p>
+                </div>
+                <div>
+                    <p style="font-size: 11px; color: #888888; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">TIME</p>
+                    <p style="font-size: 16px; color: #ffffff; margin: 0; font-weight: 600;">
+                        {{ event.start_date|date:"H:i" }}
+                    </p>
+                </div>
+                <div>
+                    <p style="font-size: 11px; color: #888888; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">VENUE</p>
+                    <p style="font-size: 16px; color: #ffffff; margin: 0; font-weight: 600;">
+                        {{ event.location.name }}
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Order Summary -->
+        <div style="padding: 32px 24px; border-bottom: 1px solid #333333;">
+            <h3 style="font-size: 16px; font-weight: 600; color: #ffffff; margin: 0 0 24px 0; text-transform: uppercase; letter-spacing: 1px;">
+                ORDER SUMMARY
+            </h3>
+            
+            <!-- Customer Info -->
+            <div style="background-color: #111111; border-radius: 8px; padding: 20px; margin-bottom: 24px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; font-size: 14px;">
+                    <div>
+                        <p style="color: #888888; margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase;">Customer</p>
+                        <p style="color: #ffffff; margin: 0; font-weight: 600;">{{ order.buyer_name }}</p>
+                    </div>
+                    <div>
+                        <p style="color: #888888; margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase;">Email</p>
+                        <p style="color: #ffffff; margin: 0;">{{ order.email }}</p>
+                    </div>
+                    <div>
+                        <p style="color: #888888; margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase;">Order</p>
+                        <p style="color: #ffffff; margin: 0; font-family: monospace; font-size: 13px;">{{ order.order_number }}</p>
+                    </div>
+                    {% if order.payment_method %}
+                    <div>
+                        <p style="color: #888888; margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase;">Payment</p>
+                        <p style="color: #ffffff; margin: 0;">{{ order.payment_method }}</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Tickets Table -->
+            <div style="margin-bottom: 24px;">
+                <table style="width: 100%; border-collapse: collapse; background-color: #111111; border-radius: 8px; overflow: hidden;">
+                    <thead>
+                        <tr style="background-color: #222222;">
+                            <th style="padding: 16px 12px; text-align: left; font-size: 11px; font-weight: 600; color: #888888; text-transform: uppercase; letter-spacing: 1px;">TICKET TYPE</th>
+                            <th style="padding: 16px 12px; text-align: center; font-size: 11px; font-weight: 600; color: #888888; text-transform: uppercase; letter-spacing: 1px;">QTY</th>
+                            <th style="padding: 16px 12px; text-align: right; font-size: 11px; font-weight: 600; color: #888888; text-transform: uppercase; letter-spacing: 1px;">PRICE</th>
+                            <th style="padding: 16px 12px; text-align: right; font-size: 11px; font-weight: 600; color: #888888; text-transform: uppercase; letter-spacing: 1px;">TOTAL</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in order.items.all %}
+                        <tr style="border-top: 1px solid #333333;">
+                            <td style="padding: 16px 12px; font-size: 14px; color: #ffffff; font-weight: 500;">{{ item.ticket_tier.name }}</td>
+                            <td style="padding: 16px 12px; text-align: center; font-size: 14px; color: #ffffff;">{{ item.quantity }}</td>
+                            <td style="padding: 16px 12px; text-align: right; font-size: 14px; color: #ffffff;">
+                                {% if item.unit_price > 0 %}
+                                    ${{ item.unit_price|floatformat:0 }}
+                                {% else %}
+                                    FREE
+                                {% endif %}
+                            </td>
+                            <td style="padding: 16px 12px; text-align: right; font-size: 14px; color: #ffffff; font-weight: 600;">
+                                {% if item.subtotal > 0 %}
+                                    ${{ item.subtotal|floatformat:0 }}
+                                {% else %}
+                                    FREE
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                    <tfoot>
+                        <tr style="background-color: #222222; border-top: 2px solid #268078;">
+                            <td colspan="3" style="padding: 16px 12px; text-align: right; font-size: 16px; color: #ffffff; font-weight: 700; text-transform: uppercase;">TOTAL</td>
+                            <td style="padding: 16px 12px; text-align: right; font-size: 18px; color: #268078; font-weight: 700;">
+                                {% if order.total > 0 %}
+                                    ${{ order.total|floatformat:0 }}
+                                {% else %}
+                                    FREE
+                                {% endif %}
+                            </td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </div>
+
+        <!-- Attendees List -->
+        <div style="padding: 32px 24px; border-bottom: 1px solid #333333;">
+            <h3 style="font-size: 16px; font-weight: 600; color: #ffffff; margin: 0 0 20px 0; text-transform: uppercase; letter-spacing: 1px;">
+                ATTENDEES
+            </h3>
+            
+            {% for item in order.items.all %}
+                {% for ticket in item.tickets.all %}
+                <div style="background-color: #111111; border-left: 3px solid #268078; padding: 16px 20px; margin-bottom: 12px; border-radius: 0 6px 6px 0;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <p style="font-size: 16px; font-weight: 600; color: #ffffff; margin: 0 0 4px 0;">
+                                {{ ticket.first_name }} {{ ticket.last_name }}
+                            </p>
+                            <p style="font-size: 13px; color: #888888; margin: 0;">
+                                {{ ticket.email }}
+                            </p>
+                        </div>
+                        <div style="text-align: right;">
+                            <p style="font-size: 11px; color: #888888; margin: 0 0 2px 0; text-transform: uppercase;">{{ item.ticket_tier.name }}</p>
+                            <p style="font-size: 10px; color: #666666; margin: 0; font-family: monospace;">{{ ticket.ticket_number }}</p>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            {% endfor %}
+        </div>
+
+        <!-- Ticket Access -->
+        <div style="padding: 32px 24px; text-align: center; border-bottom: 1px solid #333333;">
+            <h3 style="font-size: 16px; font-weight: 600; color: #ffffff; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 1px;">
+                ENTRY PASS
+            </h3>
+            <p style="font-size: 13px; color: #888888; margin: 0 0 24px 0;">
+                Show this code at the venue entrance
+            </p>
+            
+            <div style="background-color: #111111; border: 2px solid #268078; border-radius: 12px; padding: 32px; margin: 0 auto; max-width: 320px;">
+                <p style="font-size: 18px; font-weight: 600; color: #ffffff; margin: 0 0 8px 0;">
+                    {{ attendee_name }}
+                </p>
+                <p style="font-size: 13px; color: #888888; margin: 0 0 24px 0; text-transform: uppercase;">
+                    {{ ticket.order_item.ticket_tier.name }}
+                </p>
+                
+                <!-- QR Code -->
+                <div style="background-color: #ffffff; border-radius: 8px; padding: 16px; margin: 20px 0;">
+                    <img src="cid:qr_code" alt="Entry QR Code" style="width: 140px; height: 140px; display: block; margin: 0 auto;">
+                </div>
+                
+                <div style="background-color: #000000; border: 1px solid #333333; padding: 8px 16px; border-radius: 20px; margin: 16px 0; display: inline-block;">
+                    <p style="font-size: 10px; margin: 0; font-family: monospace; color: #888888; letter-spacing: 1px;">
+                        {{ ticket.ticket_number }}
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Entry Instructions -->
+        <div style="padding: 24px; background-color: #111111; margin: 0 24px; border-radius: 8px; margin-bottom: 32px;">
+            <h4 style="font-size: 14px; font-weight: 600; color: #ffffff; margin: 0 0 12px 0; text-transform: uppercase;">
+                ENTRY REQUIREMENTS
+            </h4>
+            <ul style="margin: 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
+                <li style="margin-bottom: 6px;">Present QR code on mobile device or printed ticket</li>
+                <li style="margin-bottom: 6px;">Arrive 15 minutes before event start time</li>
+                <li style="margin-bottom: 6px;">Valid photo ID required for entry</li>
+                <li style="margin-bottom: 6px;">Ticket is non-transferable and non-refundable</li>
+            </ul>
+        </div>
+
+        <!-- Actions -->
+        <div style="text-align: center; padding: 0 24px 32px 24px;">
+            <a href="{{ frontend_url }}/tickets/{{ ticket.ticket_number }}" style="display: inline-block; background-color: #268078; color: #ffffff; text-decoration: none; padding: 14px 28px; border-radius: 6px; font-weight: 600; font-size: 13px; margin: 0 8px 12px 0; text-transform: uppercase; letter-spacing: 0.5px;">
+                VIEW TICKET
+            </a>
+            <a href="{{ frontend_url }}/events/{{ event.id }}" style="display: inline-block; background-color: transparent; color: #268078; text-decoration: none; padding: 14px 28px; border: 1px solid #268078; border-radius: 6px; font-weight: 600; font-size: 13px; margin: 0 8px 12px 0; text-transform: uppercase; letter-spacing: 0.5px;">
+                EVENT INFO
+            </a>
+        </div>
+    </div>
+
+    <!-- Footer Platform Style -->
+    <div style="background-color: #000000; border-top: 1px solid #333333; padding: 32px 24px; text-align: center;">
+        <div style="margin-bottom: 20px;">
+            <p style="font-size: 14px; color: #ffffff; margin: 0 0 6px 0; font-weight: 600;">
+                Powered by <span style="color: #268078;">TUKI</span>
+            </p>
+            <p style="font-size: 12px; color: #888888; margin: 0 0 16px 0;">
+                Professional event management platform
+            </p>
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+            <a href="https://tuki.cl/create-event" style="display: inline-block; background-color: #268078; color: #ffffff; text-decoration: none; padding: 10px 20px; border-radius: 4px; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
+                CREATE YOUR EVENT
+            </a>
+        </div>
+        
+        <p style="font-size: 11px; color: #666666; margin: 0; line-height: 1.4;">
+            Create professional events in minutes • No setup fees<br>
+            Join thousands of event organizers worldwide
+        </p>
+    </div>
+
+    <!-- Support -->
+    <div style="background-color: #111111; padding: 20px 24px; text-align: center;">
+        <p style="font-size: 11px; color: #888888; margin: 0;">
+            SUPPORT: 
+            <a href="mailto:{{ event.organizer.email|default:'info@tuki.cl' }}" style="color: #268078; text-decoration: none; font-weight: 500;">EVENT ORGANIZER</a>
+            •
+            <a href="mailto:soporte@tuki.cl" style="color: #268078; text-decoration: none; font-weight: 500;">TUKI SUPPORT</a>
+        </p>
+    </div>
+
+</div>
+{% endblock %}
