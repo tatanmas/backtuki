@@ -38,7 +38,8 @@ class PublicEventViewSet(viewsets.ModelViewSet):
         return Event.objects.filter(
             status='published', 
             visibility='public',
-            requires_email_validation=False
+            requires_email_validation=False,
+            deleted_at__isnull=True  # Exclude soft deleted events
         )
     
     def get_object(self):
@@ -54,6 +55,12 @@ class PublicEventViewSet(viewsets.ModelViewSet):
             
             try:
                 obj = Event.objects.get(**filter_kwargs)
+                
+                # Check if event is soft deleted
+                if obj.deleted_at is not None:
+                    from django.http import Http404
+                    raise Http404("Evento no encontrado")
+                
                 # ✅ MEJORADO: Permitir acceso si requiere validación O si ya fue validado (para reenvío de tokens)
                 if (obj.requires_email_validation and obj.organizer and obj.organizer.is_temporary) or \
                    (not obj.requires_email_validation and obj.organizer and not obj.organizer.is_temporary):

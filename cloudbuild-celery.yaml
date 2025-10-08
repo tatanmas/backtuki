@@ -1,0 +1,68 @@
+# 🚀 ENTERPRISE CELERY BUILD - Tuki Platform
+# Builds both Celery Worker and Beat images for Cloud Run
+
+steps:
+  # Build Celery Worker Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-f', 'Dockerfile.celery-worker',
+      '-t', 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-celery-worker:${_IMAGE_TAG}',
+      '-t', 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-celery-worker:latest',
+      '.'
+    ]
+    id: 'build-celery-worker'
+
+  # Build Celery Beat Image  
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build', 
+      '-f', 'Dockerfile.celery-beat',
+      '-t', 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-celery-beat:${_IMAGE_TAG}',
+      '-t', 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-celery-beat:latest',
+      '.'
+    ]
+    id: 'build-celery-beat'
+
+  # Push Celery Worker Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'push', 
+      'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-celery-worker:${_IMAGE_TAG}'
+    ]
+    waitFor: ['build-celery-worker']
+
+  # Push Celery Beat Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'push',
+      'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-celery-beat:${_IMAGE_TAG}'
+    ]
+    waitFor: ['build-celery-beat']
+
+  # Push Latest Tags
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'push',
+      'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-celery-worker:latest'
+    ]
+    waitFor: ['build-celery-worker']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'push',
+      'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-celery-beat:latest'
+    ]
+    waitFor: ['build-celery-beat']
+
+# Substitutions
+substitutions:
+  _IMAGE_TAG: 'v1-production'
+
+# Options
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+
+# Timeout
+timeout: 1200s

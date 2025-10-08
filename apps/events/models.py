@@ -237,6 +237,14 @@ class Event(BaseModel):
     cart_adds_count = models.PositiveIntegerField(_("cart adds count"), default=0)
     conversion_count = models.PositiveIntegerField(_("conversion count"), default=0)
     
+    # Soft delete
+    deleted_at = models.DateTimeField(
+        _("deleted at"),
+        null=True,
+        blank=True,
+        help_text=_("When the event was soft deleted")
+    )
+    
     class Meta:
         verbose_name = _("event")
         verbose_name_plural = _("events")
@@ -372,6 +380,37 @@ class Event(BaseModel):
                 raise ValidationError("Complex events cannot use is_free flag. Use ticket pricing instead.")
         
         super().clean()
+    
+    @property
+    def is_deleted(self):
+        """Return True if event is soft deleted."""
+        return self.deleted_at is not None
+    
+    @property
+    def total_revenue(self):
+        """Calculate total revenue from paid orders."""
+        from django.db.models import Sum
+        return self.orders.filter(status='paid').aggregate(
+            total=Sum('total')
+        )['total'] or 0
+    
+    def can_be_deleted(self):
+        """Check if event can be soft deleted (no revenue)."""
+        return self.total_revenue == 0
+    
+    def soft_delete(self):
+        """Perform soft delete if allowed."""
+        if not self.can_be_deleted():
+            raise ValueError("No se puede eliminar un evento que tiene ingresos")
+        
+        from django.utils import timezone
+        self.deleted_at = timezone.now()
+        self.save(update_fields=['deleted_at'])
+    
+    def restore(self):
+        """Restore soft deleted event."""
+        self.deleted_at = None
+        self.save(update_fields=['deleted_at'])
 
 
 class EventImage(BaseModel):

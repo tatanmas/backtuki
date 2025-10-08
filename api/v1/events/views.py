@@ -13,6 +13,7 @@ from django.db.models import F, Sum, Count, Q
 from django.utils.text import slugify
 from django.shortcuts import get_object_or_404
 from django.conf import settings
+from django.http import Http404
 import uuid
 import os
 from django.db import transaction
@@ -91,7 +92,11 @@ class EventViewSet(viewsets.ModelViewSet):
         """Return events based on user permissions."""
         # For public endpoints like book/reserve/retrieve, allow access to all published events
         if self.action in ['book', 'reserve', 'availability', 'retrieve']:
-            return Event.objects.filter(status='published', visibility='public')
+            return Event.objects.filter(
+                status='published', 
+                visibility='public',
+                deleted_at__isnull=True  # Exclude soft deleted events
+            )
             
         organizer = self.get_organizer()
         print(f"DEBUG - EventViewSet.get_queryset - User: {self.request.user.id if self.request.user.is_authenticated else 'Anonymous'}")
@@ -101,7 +106,11 @@ class EventViewSet(viewsets.ModelViewSet):
             print("DEBUG - EventViewSet.get_queryset - No organizer found, returning empty queryset")
             return Event.objects.none()
         
-        queryset = self.queryset.filter(organizer=organizer)
+        # For organizer dashboard, exclude soft deleted events by default
+        queryset = self.queryset.filter(
+            organizer=organizer,
+            deleted_at__isnull=True
+        )
         print(f"DEBUG - EventViewSet.get_queryset - Found {queryset.count()} events for organizer")
         
         return queryset
@@ -144,6 +153,12 @@ class EventViewSet(viewsets.ModelViewSet):
         
         try:
             instance = self.get_object()
+            
+            # Extra security for public access: ensure event is not soft deleted
+            if self.action in ['retrieve'] and hasattr(instance, 'is_deleted') and instance.is_deleted:
+                print(f"DEBUG - EventViewSet.retrieve - Event {event_id} is soft deleted")
+                raise Http404("Event not found")
+            
             print(f"DEBUG - EventViewSet.retrieve - Found event: {instance.title} (ID: {instance.id}, Status: {instance.status})")
             serializer = self.get_serializer(instance)
             return Response(serializer.data)
@@ -194,6 +209,11 @@ class EventViewSet(viewsets.ModelViewSet):
     def availability(self, request, pk=None):
         """Get ticket availability for an event."""
         event = self.get_object()
+        
+        # Ensure event is not soft deleted
+        if event.is_deleted:
+            return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+        
         serializer = self.get_serializer(event)
         return Response(serializer.data)
     
@@ -202,7 +222,8 @@ class EventViewSet(viewsets.ModelViewSet):
         """Get all public published events for the homepage."""
         queryset = Event.objects.filter(
             status='published',
-            visibility='public'
+            visibility='public',
+            deleted_at__isnull=True  # Exclude soft deleted events
         ).order_by('-featured', '-start_date')
         
         # Apply filters
@@ -250,10 +271,15 @@ class EventViewSet(viewsets.ModelViewSet):
         logger.info(f'📦 BOOKING: Attempting to book tickets for event {event.title} ({event.id})')
         logger.info(f'📦 BOOKING: Request data: {request.data}')
         
-        # Ensure event is published
+        # Ensure event is published and not deleted
         if event.status != 'published':
             logger.warning(f'📦 BOOKING: Event {event.id} not published (status: {event.status})')
             return Response({"detail": "Event not available for booking."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Extra security: ensure event is not soft deleted
+        if event.is_deleted:
+            logger.warning(f'📦 BOOKING: Event {event.id} is deleted')
+            return Response({"detail": "Event not available for booking."}, status=status.HTTP_404_NOT_FOUND)
         
         try:
             # Create a clean context without request.user to avoid AnonymousUser issues
@@ -280,8 +306,14 @@ class EventViewSet(viewsets.ModelViewSet):
     def reserve(self, request, pk=None):
         """🚀 ENTERPRISE: Reserve tickets with expiration to prevent overselling."""
         event = self.get_object()
+        
+        # Ensure event is published and not deleted
         if event.status != 'published':
             return Response({"detail": "Event not available for reservations."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Extra security: ensure event is not soft deleted
+        if event.is_deleted:
+            return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
 
         tickets = request.data.get('tickets', [])
         reservation_id = request.data.get('reservationId')
@@ -1041,6 +1073,32 @@ class EventViewSet(viewsets.ModelViewSet):
         print(f"ViewSet - After update: title={instance.title}, short_description={instance.short_description}")
         
         return Response(serializer.data)
+    
+    def destroy(self, request, *args, **kwargs):
+        """Soft delete an event if it has no revenue."""
+        event = self.get_object()
+        
+        try:
+            # Check if event can be deleted (no revenue)
+            if not event.can_be_deleted():
+                return Response(
+                    {"detail": "No se puede eliminar un evento que tiene ingresos"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Perform soft delete
+            event.soft_delete()
+            
+            return Response(
+                {"detail": "Evento eliminado correctamente"},
+                status=status.HTTP_200_OK
+            )
+            
+        except Exception as e:
+            return Response(
+                {"detail": f"Error al eliminar el evento: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 class EventCategoryViewSet(viewsets.ModelViewSet):

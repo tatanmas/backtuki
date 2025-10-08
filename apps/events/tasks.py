@@ -472,8 +472,8 @@ def cleanup_expired_ticket_holds():
         expiry_time = timezone.now() - timezone.timedelta(minutes=15)
         
         expired_holds = TicketHold.objects.filter(
-            created_at__lt=expiry_time,
-            is_expired=False
+            expires_at__lt=timezone.now(),
+            released=False
         )
         
         count = expired_holds.count()
