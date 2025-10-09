@@ -343,34 +343,23 @@ class TransbankWebPayPlusService(BasePaymentService):
                     duration_ms=duration_ms
                 )
                 
-                # Update order status if payment successful
-                if payment.status == 'completed':
-                    payment.order.status = 'paid'
-                    payment.order.save()
-                    
-                    # 🚀 ENTERPRISE: Create tickets after successful payment
-                    from apps.events.models import TicketHold, Ticket
-                    for order_item in payment.order.items.all():
-                        # Only create tickets if they don't exist yet
-                        if not order_item.tickets.exists():
-                            for _ in range(order_item.quantity):
-                                Ticket.objects.create(
-                                    order_item=order_item,
-                                    first_name=payment.order.first_name,
-                                    last_name=payment.order.last_name,
-                                    email=payment.order.email,
-                                    status='active'
-                                )
-                    
-                    # 🚀 ENTERPRISE: Clean up holds after successful payment
-                    TicketHold.objects.filter(order=payment.order).delete()
-                    
-                    # Trigger email sending
-                    from apps.events.tasks import send_ticket_confirmation_email
-                    send_ticket_confirmation_email.apply_async(
-                        args=[str(payment.order.id)], 
-                        queue='emails'
-                    )
+            # Update order status if payment successful
+            if payment.status == 'completed':
+                payment.order.status = 'paid'
+                payment.order.save()
+                
+                # ✅ CREAR TICKETS desde reservations almacenadas (ENTERPRISE PATTERN)
+                self._create_tickets_from_reservations(payment.order)
+                
+                # ✅ CLEANUP: Limpiar holds y reservations
+                self._cleanup_order_reservations(payment.order)
+                
+                # Trigger email sending
+                from apps.events.tasks import send_ticket_confirmation_email
+                send_ticket_confirmation_email.apply_async(
+                    args=[str(payment.order.id)], 
+                    queue='emails'
+                )
                 
                 return {
                     'success': True,
@@ -430,6 +419,58 @@ class TransbankWebPayPlusService(BasePaymentService):
         """Generate return URL for payment"""
         base_url = settings.FRONTEND_URL or "http://localhost:8080"
         return f"{base_url}/payment/return"
+
+    def _create_tickets_from_reservations(self, order):
+        """
+        🚀 ENTERPRISE: Create tickets from stored TicketHolderReservation data
+        """
+        from apps.events.models import TicketHolderReservation, Ticket
+        
+        print(f"🎫 ENTERPRISE - Creating tickets from reservations for PAID order {order.id}")
+        
+        # Get all reservations for this order
+        reservations = TicketHolderReservation.objects.filter(order=order).order_by('ticket_tier', 'holder_index')
+        
+        if not reservations.exists():
+            print(f"⚠️ ENTERPRISE - No reservations found for order {order.id}. This might be a free order.")
+            return
+        
+        print(f"🎫 ENTERPRISE - Found {reservations.count()} holder reservations")
+        
+        # Group reservations by order item
+        for order_item in order.items.all():
+            tier_reservations = reservations.filter(ticket_tier=order_item.ticket_tier)
+            print(f"🎫 ENTERPRISE - Processing {tier_reservations.count()} reservations for tier {order_item.ticket_tier.name}")
+            
+            for reservation in tier_reservations:
+                # Create ticket with stored holder data
+                created_ticket = Ticket.objects.create(
+                    order_item=order_item,
+                    first_name=reservation.first_name,
+                    last_name=reservation.last_name,
+                    email=reservation.email,
+                    form_data=reservation.form_data,
+                    status='active'
+                )
+                print(f"🎫 ENTERPRISE - Created ticket {created_ticket.ticket_number}: {created_ticket.first_name} {created_ticket.last_name}")
+
+    def _cleanup_order_reservations(self, order):
+        """
+        🚀 ENTERPRISE: Clean up holds and reservations after successful payment
+        """
+        from apps.events.models import TicketHold, TicketHolderReservation
+        
+        print(f"🧹 ENTERPRISE - Cleaning up reservations for order {order.id}")
+        
+        # Clean up ticket holds
+        holds_deleted = TicketHold.objects.filter(order=order).delete()
+        print(f"🧹 ENTERPRISE - Deleted {holds_deleted[0]} ticket holds")
+        
+        # Clean up holder reservations
+        reservations_deleted = TicketHolderReservation.objects.filter(order=order).delete()
+        print(f"🧹 ENTERPRISE - Deleted {reservations_deleted[0]} holder reservations")
+        
+        print(f"✅ ENTERPRISE - Cleanup completed for order {order.id}")
 
 
 class PaymentServiceFactory:

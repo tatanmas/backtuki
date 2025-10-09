@@ -13,7 +13,7 @@ from django.conf import settings
 from django.core.files.base import ContentFile
 import tempfile
 import os
-from apps.events.models import Event
+from apps.events.models import Event, TicketHolderReservation, TicketHold, Order
 from apps.events.analytics_models import EventView, EventPerformanceMetrics, ConversionFunnel
 import logging
 
@@ -490,4 +490,100 @@ def cleanup_expired_ticket_holds():
         
     except Exception as e:
         logger.error(f"🧹 [CLEANUP] Error in cleanup_expired_ticket_holds: {e}")
+        raise
+
+
+@shared_task(bind=True, max_retries=3)
+def cleanup_expired_ticket_holder_reservations(self, hours_old=24):
+    """
+    🚀 ENTERPRISE: Clean up expired ticket holder reservations
+    
+    This task removes TicketHolderReservation records for orders that:
+    - Are older than specified hours
+    - Have status 'pending' (never completed payment)
+    - Are not associated with successful payments
+    
+    Args:
+        hours_old (int): Hours after which to consider reservations expired (default: 24)
+    """
+    try:
+        expiry_time = timezone.now() - timedelta(hours=hours_old)
+        logger.info(f"🧹 [CLEANUP] Starting cleanup of ticket holder reservations older than {expiry_time}")
+        
+        # Find expired reservations for pending orders
+        expired_reservations = TicketHolderReservation.objects.filter(
+            created_at__lt=expiry_time,
+            order__status='pending'  # Only clean up unpaid orders
+        ).select_related('order')
+        
+        count = expired_reservations.count()
+        
+        if count > 0:
+            # Get order IDs for logging
+            order_ids = list(expired_reservations.values_list('order_id', flat=True).distinct())
+            
+            # Delete expired reservations
+            expired_reservations.delete()
+            
+            logger.info(f"🧹 [CLEANUP] Cleaned up {count} expired ticket holder reservations for {len(order_ids)} orders")
+            logger.info(f"🧹 [CLEANUP] Affected orders: {order_ids[:10]}{'...' if len(order_ids) > 10 else ''}")
+        
+        return {
+            'cleaned_reservations': count,
+            'expiry_time': expiry_time.isoformat(),
+            'affected_orders': len(set(expired_reservations.values_list('order_id', flat=True))) if count > 0 else 0
+        }
+        
+    except Exception as e:
+        logger.error(f"🧹 [CLEANUP] Error in cleanup_expired_ticket_holder_reservations: {e}")
+        raise
+
+
+@shared_task(bind=True, max_retries=3)
+def cleanup_abandoned_orders(self, hours_old=48):
+    """
+    🚀 ENTERPRISE: Clean up completely abandoned orders
+    
+    This task removes Order records that:
+    - Are older than specified hours
+    - Have status 'pending' (never completed payment)
+    - Have no associated tickets or successful payments
+    
+    Args:
+        hours_old (int): Hours after which to consider orders abandoned (default: 48)
+    """
+    try:
+        expiry_time = timezone.now() - timedelta(hours=hours_old)
+        logger.info(f"🧹 [CLEANUP] Starting cleanup of abandoned orders older than {expiry_time}")
+        
+        # Find abandoned orders
+        abandoned_orders = Order.objects.filter(
+            created_at__lt=expiry_time,
+            status='pending',
+            # Ensure no successful tickets were created
+            items__tickets__isnull=True
+        ).distinct()
+        
+        count = abandoned_orders.count()
+        
+        if count > 0:
+            order_ids = list(abandoned_orders.values_list('id', flat=True))
+            
+            # Clean up related data first
+            TicketHolderReservation.objects.filter(order__in=abandoned_orders).delete()
+            TicketHold.objects.filter(order__in=abandoned_orders).delete()
+            
+            # Delete the orders
+            abandoned_orders.delete()
+            
+            logger.info(f"🧹 [CLEANUP] Cleaned up {count} abandoned orders")
+            logger.info(f"🧹 [CLEANUP] Deleted order IDs: {order_ids[:10]}{'...' if len(order_ids) > 10 else ''}")
+        
+        return {
+            'cleaned_orders': count,
+            'expiry_time': expiry_time.isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"🧹 [CLEANUP] Error in cleanup_abandoned_orders: {e}")
         raise

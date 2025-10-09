@@ -127,6 +127,9 @@ class PaymentSerializer(serializers.ModelSerializer):
     order_id = serializers.UUIDField(source='order.id', read_only=True)
     order_total = serializers.DecimalField(source='order.total', max_digits=10, decimal_places=2, read_only=True)
     
+    # Event information for frontend
+    event_info = serializers.SerializerMethodField()
+    
     # Frontend-friendly field names
     paymentId = serializers.UUIDField(source='id', read_only=True)
     paymentStatus = serializers.CharField(source='status', read_only=True)
@@ -139,6 +142,58 @@ class PaymentSerializer(serializers.ModelSerializer):
     authorizedAt = serializers.DateTimeField(source='authorized_at', read_only=True)
     completedAt = serializers.DateTimeField(source='completed_at', read_only=True)
     
+    def get_event_info(self, obj):
+        """Get event information for the payment."""
+        try:
+            event = obj.order.event
+            
+            # Get event image
+            event_image = None
+            if event.images.exists():
+                first_image = event.images.first()
+                if first_image and first_image.image:
+                    event_image = first_image.image.url
+            
+            # Get location info
+            location_info = {
+                'name': 'Ubicación no disponible',
+                'address': ''
+            }
+            if event.location:
+                location_info = {
+                    'name': event.location.name,
+                    'address': event.location.address
+                }
+            
+            return {
+                'id': str(event.id),
+                'title': event.title,
+                'date': event.start_date.isoformat() if event.start_date else None,
+                'location': location_info,
+                'image': event_image,
+                'ticket_holders': self._get_ticket_holders(obj.order)
+            }
+        except Exception as e:
+            print(f"Error getting event info for payment {obj.id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def _get_ticket_holders(self, order):
+        """Get ticket holders information."""
+        holders = []
+        try:
+            for item in order.items.all():
+                for ticket in item.tickets.all():
+                    holders.append({
+                        'name': f"{ticket.first_name} {ticket.last_name}".strip(),
+                        'email': ticket.email,
+                        'tier_name': item.ticket_tier.name if item.ticket_tier else 'General'
+                    })
+        except Exception as e:
+            print(f"Error getting ticket holders: {e}")
+        return holders
+    
     class Meta:
         model = Payment
         fields = [
@@ -146,7 +201,7 @@ class PaymentSerializer(serializers.ModelSerializer):
             'amount', 'paymentAmount', 'currency', 'status', 'paymentStatus',
             'buy_order', 'buyOrder', 'external_id', 'externalId', 'token',
             'created_at', 'createdAt', 'authorized_at', 'authorizedAt', 
-            'completed_at', 'completedAt', 'metadata'
+            'completed_at', 'completedAt', 'metadata', 'event_info'
         ]
 
 

@@ -1626,7 +1626,7 @@ class BookingSerializer(serializers.Serializer):
         
         # 🚀 ENTERPRISE: Handle payment flow
         if order.total == 0:
-            # Free orders: mark as paid immediately and send confirmation
+            # ✅ EVENTOS GRATUITOS: Crear tickets inmediatamente
             print(f"🚀 DEBUG - Free order detected! Setting status to 'paid'")
             order.status = 'paid'
             order.save()
@@ -1640,41 +1640,8 @@ class BookingSerializer(serializers.Serializer):
                 except Exception as e:
                     print(f"⚠️ COUPON: Error confirming usage: {e}")
             
-            # 🚀 ENTERPRISE: Create tickets for free orders immediately with form data
-            from apps.events.models import Ticket
-            ticket_holders = validated_data.get('ticketHolders', [])
-            
-            for order_item in order.items.all():
-                # Find ticket holders for this tier
-                tier_holders = []
-                for ticket_group in ticket_holders:
-                    if ticket_group.get('tierId') == str(order_item.ticket_tier.id):
-                        tier_holders = ticket_group.get('holders', [])
-                        break
-                
-                # Create tickets with form data
-                for i in range(order_item.quantity):
-                    # Get holder data if available, otherwise use default
-                    if i < len(tier_holders):
-                        holder = tier_holders[i]
-                        ticket_first_name = holder.get('name', first_name)
-                        ticket_last_name = holder.get('lastName', last_name)
-                        ticket_form_data = holder.get('formData', {})
-                    else:
-                        ticket_first_name = first_name
-                        ticket_last_name = last_name
-                        ticket_form_data = {}
-                    
-                    print(f"🎫 ENTERPRISE: Creating ticket with form data: {ticket_form_data}")
-                    
-                    Ticket.objects.create(
-                        order_item=order_item,
-                        first_name=ticket_first_name,
-                        last_name=ticket_last_name,
-                        email=customer_info['email'],
-                        form_data=ticket_form_data,  # 🚀 ENTERPRISE: Include form data
-                        status='active'
-                    )
+            # ✅ CREAR TICKETS INMEDIATAMENTE para eventos gratuitos
+            self._create_tickets_from_holders(order, validated_data.get('ticketHolders', []), customer_info)
             
             # Send confirmation email for free orders
             try:
@@ -1695,8 +1662,9 @@ class BookingSerializer(serializers.Serializer):
                 'message': 'Reserva confirmada exitosamente'
             }
         else:
-            # Paid orders: keep as pending and require payment
-            print(f"🚀 DEBUG - Paid order detected! Keeping status as '{order.status}' - Payment required")
+            # ✅ EVENTOS PAGADOS: Almacenar holder data para creación posterior
+            print(f"🚀 DEBUG - Paid order detected! Storing holder reservations - Payment required")
+            self._store_ticket_holder_reservations(order, validated_data.get('ticketHolders', []))
             order.save()
             print(f"🚀 DEBUG - Order status after save: {order.status}")
             
@@ -1711,6 +1679,97 @@ class BookingSerializer(serializers.Serializer):
                 'message': 'Orden creada exitosamente. Proceder al pago.',
                 'next_step': 'payment'
             } 
+
+    def _create_tickets_from_holders(self, order, ticket_holders, customer_info):
+        """
+        🚀 ENTERPRISE: Create tickets immediately for free orders with proper holder data
+        """
+        from apps.events.models import Ticket
+        
+        print(f"🎫 ENTERPRISE - Creating tickets for FREE order {order.id}")
+        
+        for order_item in order.items.all():
+            # Find ticket holders for this tier
+            tier_holders = []
+            for ticket_group in ticket_holders:
+                if ticket_group.get('tierId') == str(order_item.ticket_tier.id):
+                    tier_holders = ticket_group.get('holders', [])
+                    break
+            
+            # Create tickets with form data
+            print(f"🎫 BOOKING DEBUG - Creating {order_item.quantity} tickets for tier {order_item.ticket_tier.name}")
+            print(f"🎫 BOOKING DEBUG - Available holders: {len(tier_holders)}")
+            
+            for i in range(order_item.quantity):
+                # Get holder data if available, otherwise use default
+                if i < len(tier_holders):
+                    holder = tier_holders[i]
+                    ticket_first_name = holder.get('name', customer_info.get('firstName', ''))
+                    ticket_last_name = holder.get('lastName', customer_info.get('lastName', ''))
+                    ticket_form_data = holder.get('formData', {})
+                    print(f"🎫 BOOKING DEBUG - Ticket {i+1}: Using holder data - {ticket_first_name} {ticket_last_name}")
+                else:
+                    ticket_first_name = customer_info.get('firstName', '')
+                    ticket_last_name = customer_info.get('lastName', '')
+                    ticket_form_data = {}
+                    print(f"🎫 BOOKING DEBUG - Ticket {i+1}: Using default data - {ticket_first_name} {ticket_last_name}")
+                
+                created_ticket = Ticket.objects.create(
+                    order_item=order_item,
+                    first_name=ticket_first_name,
+                    last_name=ticket_last_name,
+                    email=customer_info['email'],
+                    form_data=ticket_form_data,  # 🚀 ENTERPRISE: Include form data
+                    status='active'
+                )
+                print(f"🎫 BOOKING DEBUG - Created ticket {created_ticket.ticket_number}: {created_ticket.first_name} {created_ticket.last_name}")
+
+    def _store_ticket_holder_reservations(self, order, ticket_holders):
+        """
+        🚀 ENTERPRISE: Store ticket holder data for paid orders (to be used after payment)
+        """
+        from apps.events.models import TicketHolderReservation
+        
+        print(f"🎫 ENTERPRISE - Storing holder reservations for PAID order {order.id}")
+        
+        for order_item in order.items.all():
+            # Find ticket holders for this tier
+            tier_holders = []
+            for ticket_group in ticket_holders:
+                if ticket_group.get('tierId') == str(order_item.ticket_tier.id):
+                    tier_holders = ticket_group.get('holders', [])
+                    break
+            
+            print(f"🎫 RESERVATION DEBUG - Storing {order_item.quantity} holder reservations for tier {order_item.ticket_tier.name}")
+            print(f"🎫 RESERVATION DEBUG - Available holders: {len(tier_holders)}")
+            
+            for i in range(order_item.quantity):
+                # Get holder data if available, otherwise use order customer data
+                if i < len(tier_holders):
+                    holder = tier_holders[i]
+                    holder_first_name = holder.get('name', order.first_name)
+                    holder_last_name = holder.get('lastName', order.last_name)
+                    holder_email = holder.get('email', order.email)
+                    holder_form_data = holder.get('formData', {})
+                    print(f"🎫 RESERVATION DEBUG - Holder {i}: Using specific data - {holder_first_name} {holder_last_name}")
+                else:
+                    holder_first_name = order.first_name
+                    holder_last_name = order.last_name
+                    holder_email = order.email
+                    holder_form_data = {}
+                    print(f"🎫 RESERVATION DEBUG - Holder {i}: Using order data - {holder_first_name} {holder_last_name}")
+                
+                # Create holder reservation
+                reservation = TicketHolderReservation.objects.create(
+                    order=order,
+                    ticket_tier=order_item.ticket_tier,
+                    holder_index=i,
+                    first_name=holder_first_name,
+                    last_name=holder_last_name,
+                    email=holder_email,
+                    form_data=holder_form_data
+                )
+                print(f"🎫 RESERVATION DEBUG - Created reservation {reservation.id}: {reservation.first_name} {reservation.last_name}")
 
 
 class TicketTierCreateUpdateSerializer(serializers.ModelSerializer):

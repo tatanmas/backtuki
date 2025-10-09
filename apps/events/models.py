@@ -1358,6 +1358,49 @@ class TicketNote(BaseModel):
         return self.order_item.order.phone
 
 
+class TicketHolderReservation(BaseModel):
+    """
+    🚀 ENTERPRISE: Store ticket holder information during reservation period.
+    Based on industry best practices for ticketing systems.
+    """
+    order = models.ForeignKey(
+        'Order', 
+        on_delete=models.CASCADE, 
+        related_name='ticket_holder_reservations',
+        verbose_name=_("order")
+    )
+    ticket_tier = models.ForeignKey(
+        'TicketTier', 
+        on_delete=models.CASCADE,
+        verbose_name=_("ticket tier")
+    )
+    holder_index = models.PositiveIntegerField(
+        _("holder index"),
+        help_text=_("Index of this holder within the tier (0, 1, 2, etc.)")
+    )
+    first_name = models.CharField(_("first name"), max_length=100)
+    last_name = models.CharField(_("last name"), max_length=100)
+    email = models.EmailField(_("email"))
+    form_data = models.JSONField(
+        _("form data"),
+        default=dict, 
+        blank=True,
+        help_text=_("Additional form data collected for this ticket holder")
+    )
+    
+    class Meta:
+        unique_together = ['order', 'ticket_tier', 'holder_index']
+        indexes = [
+            models.Index(fields=['order', 'ticket_tier']),
+            models.Index(fields=['created_at']),
+        ]
+        verbose_name = _("Ticket Holder Reservation")
+        verbose_name_plural = _("Ticket Holder Reservations")
+        
+    def __str__(self):
+        return f"{self.first_name} {self.last_name} - {self.ticket_tier.name} (Order: {self.order.order_number})"
+
+
 class TicketHold(BaseModel):
     """Temporary hold to reserve tickets and prevent overselling during checkout."""
     event = models.ForeignKey(
