@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.postgres.fields import ArrayField
 from django.core.validators import MinValueValidator
 from django.utils import timezone
+from decimal import Decimal
 import uuid
 import json
 
@@ -169,6 +170,16 @@ class Event(BaseModel):
         decimal_places=2,
         default=0,
         help_text=_("Price for simple paid events")
+    )
+    
+    # Service fee configuration at event level
+    service_fee_rate = models.DecimalField(
+        _("service fee rate"),
+        max_digits=5,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text=_("Service fee rate for this event (e.g., 0.15 for 15%). If null, uses organizer's default.")
     )
     
     # ✅ NUEVO CAMPO PARA EVENTOS PÚBLICOS
@@ -595,16 +606,6 @@ class TicketCategory(BaseModel):
 class TicketTier(BaseModel):
     """Ticket tier model for different ticket types in an event."""
     
-    TYPE_CHOICES = (
-        ('general', _('General')),
-        ('vip', _('VIP')),
-        ('early-bird', _('Early Bird')),
-        ('group', _('Group')),
-        ('student', _('Student')),
-        ('child', _('Child')),
-        ('senior', _('Senior')),
-    )
-    
     event = models.ForeignKey(
         Event,
         on_delete=models.CASCADE,
@@ -622,17 +623,19 @@ class TicketTier(BaseModel):
     name = models.CharField(_("name"), max_length=100)
     type = models.CharField(
         _("type"),
-        max_length=20,
-        choices=TYPE_CHOICES,
-        default='general'
+        max_length=50,
+        blank=True,
+        help_text=_("Free text field for ticket type (e.g., 'VIP', 'Early Bird', 'General')")
     )
     description = models.TextField(_("description"), blank=True)
     price = models.DecimalField(_("price"), max_digits=10, decimal_places=2)
-    service_fee = models.DecimalField(
-        _("service fee"),
-        max_digits=10,
-        decimal_places=2,
-        default=0
+    service_fee_rate = models.DecimalField(
+        _("service fee rate"),
+        max_digits=5,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text=_("Service fee rate for this ticket (e.g., 0.15 for 15%). If null, uses event or organizer default.")
     )
     currency = models.CharField(_("currency"), max_length=3, default='CLP')
     capacity = models.PositiveIntegerField(_("capacity"), null=True, blank=True, help_text=_("Leave empty for unlimited capacity"))
@@ -691,10 +694,65 @@ class TicketTier(BaseModel):
         help_text=_("Whether this ticket type requires organizer approval before purchase/access")
     )
     
+    # Pay-What-You-Want (Donation) ticket configuration
+    is_pay_what_you_want = models.BooleanField(
+        _("is pay what you want"),
+        default=False,
+        help_text=_("If true, users can choose how much to pay for this ticket")
+    )
+    min_price = models.DecimalField(
+        _("minimum price"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_("Minimum price for pay-what-you-want tickets (optional)")
+    )
+    max_price = models.DecimalField(
+        _("maximum price"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_("Maximum price for pay-what-you-want tickets (optional)")
+    )
+    suggested_price = models.DecimalField(
+        _("suggested price"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_("Suggested price to show users for pay-what-you-want tickets (optional)")
+    )
+    
     class Meta:
         verbose_name = _("ticket tier")
         verbose_name_plural = _("ticket tiers")
         ordering = ['order', 'price']
+    
+    def clean(self):
+        """Validate ticket tier data."""
+        from django.core.exceptions import ValidationError
+        
+        # Validate Pay-What-You-Want fields
+        if self.is_pay_what_you_want:
+            if self.min_price is not None and self.max_price is not None:
+                if self.min_price > self.max_price:
+                    raise ValidationError({
+                        'min_price': _("Minimum price cannot be greater than maximum price.")
+                    })
+            
+            if self.suggested_price is not None:
+                if self.min_price is not None and self.suggested_price < self.min_price:
+                    raise ValidationError({
+                        'suggested_price': _("Suggested price cannot be less than minimum price.")
+                    })
+                if self.max_price is not None and self.suggested_price > self.max_price:
+                    raise ValidationError({
+                        'suggested_price': _("Suggested price cannot be greater than maximum price.")
+                    })
+        
+        super().clean()
         
         # 🚀 ENTERPRISE: Database constraints for data integrity
         constraints = [
@@ -741,6 +799,40 @@ class TicketTier(BaseModel):
         if not self.benefits:
             return []
         return [benefit.strip() for benefit in self.benefits.split(',')]
+    
+    def get_service_fee_rate(self):
+        """
+        Get the applicable service fee rate following hierarchy:
+        1. Ticket level (self.service_fee_rate)
+        2. Event level (self.event.service_fee_rate)
+        3. Organizer level (self.event.organizer.default_service_fee_rate)
+        4. Platform default (0.15 = 15%)
+        """
+        # 1. Check ticket level
+        if self.service_fee_rate is not None:
+            return self.service_fee_rate
+        
+        # 2. Check event level
+        if self.event.service_fee_rate is not None:
+            return self.event.service_fee_rate
+        
+        # 3. Check organizer level
+        if self.event.organizer.default_service_fee_rate is not None:
+            return self.event.organizer.default_service_fee_rate
+        
+        # 4. Platform default
+        return Decimal('0.15')  # 15%
+    
+    def get_service_fee_amount(self, base_price=None):
+        """Calculate service fee amount for a given base price."""
+        if base_price is None:
+            base_price = self.price
+        return base_price * self.get_service_fee_rate()
+    
+    @property
+    def service_fee(self):
+        """Return calculated service fee for backward compatibility."""
+        return self.get_service_fee_amount()
     
     @property
     def total_price(self):
@@ -1007,6 +1099,14 @@ class OrderItem(BaseModel):
         decimal_places=2,
         validators=[MinValueValidator(0)]
     )
+    custom_price = models.DecimalField(
+        _("custom price"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_("User-selected price for pay-what-you-want tickets")
+    )
     
     class Meta:
         verbose_name = _("order item")
@@ -1017,7 +1117,23 @@ class OrderItem(BaseModel):
     
     def save(self, *args, **kwargs):
         """Calculate subtotal before saving."""
-        self.subtotal = (self.unit_price + self.unit_service_fee) * self.quantity
+        if self.ticket_tier.is_pay_what_you_want and self.custom_price is not None:
+            # For PWYW tickets, custom_price is the total amount user chose to pay
+            # We need to separate it into organizer amount and platform fee
+            service_fee_rate = self.ticket_tier.get_service_fee_rate()
+            
+            # Calculate amounts: custom_price = organizer_amount + platform_fee
+            # organizer_amount = custom_price / (1 + service_fee_rate)
+            organizer_amount = self.custom_price / (Decimal('1') + service_fee_rate)
+            platform_fee = self.custom_price - organizer_amount
+            
+            self.unit_price = organizer_amount
+            self.unit_service_fee = platform_fee
+            self.subtotal = self.custom_price * self.quantity
+        else:
+            # Normal calculation
+            self.subtotal = (self.unit_price + self.unit_service_fee) * self.quantity
+        
         super().save(*args, **kwargs)
 
 
@@ -1267,6 +1383,15 @@ class TicketHold(BaseModel):
     quantity = models.PositiveIntegerField(_("quantity"))
     expires_at = models.DateTimeField(_("expires at"))
     released = models.BooleanField(_("released"), default=False)
+    # 🚀 ENTERPRISE: Support for Pay-What-You-Want custom pricing
+    custom_price = models.DecimalField(
+        _("custom price"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_("Custom price per ticket for Pay-What-You-Want tickets")
+    )
 
     class Meta:
         verbose_name = _("ticket hold")

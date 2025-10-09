@@ -95,12 +95,33 @@ print_success "Service deployment completed!"
 print_step "PASO 5: Database migrations..."
 print_success "Database migrations run automatically in entrypoint!"
 
-# Step 6: Service verification
-print_step "PASO 6: Service verification..."
+# Step 6: Setup Payment Methods (CRITICAL FOR PRODUCTION)
+print_step "PASO 6: Setting up payment methods..."
+print_step "Calling payment setup endpoint..."
+
+# Setup payment methods via API endpoint
+SETUP_RESPONSE=$(curl -s -X POST "${SERVICE_URL}/api/v1/admin/setup-payment-providers/" \
+  -H "Content-Type: application/json" \
+  -w "%{http_code}")
+
+HTTP_CODE="${SETUP_RESPONSE: -3}"
+RESPONSE_BODY="${SETUP_RESPONSE%???}"
+
+if [ "$HTTP_CODE" = "200" ]; then
+    print_success "Payment methods configured successfully!"
+    echo "Response: $RESPONSE_BODY"
+else
+    print_error "Failed to setup payment methods (HTTP: $HTTP_CODE)"
+    print_warning "Response: $RESPONSE_BODY"
+    print_warning "MANUAL SETUP REQUIRED: Run 'python manage.py setup_payment_providers' after deployment"
+fi
+
+# Step 7: Service verification
+print_step "PASO 7: Service verification..."
 print_success "Backend service deployed and ready!"
 
-# Step 7: Deploy Celery Services
-print_step "PASO 7: Deploying Celery services for email processing..."
+# Step 8: Deploy Celery Services
+print_step "PASO 8: Deploying Celery services for email processing..."
 
 if [ -f "./deploy-celery.sh" ]; then
     ./deploy-celery.sh
@@ -113,8 +134,8 @@ else
     print_warning "Celery deploy script not found, skipping Celery deployment"
 fi
 
-# Step 8: Configure domain prop.cl
-print_step "PASO 8: Configuring domain prop.cl..."
+# Step 9: Configure domain prop.cl
+print_step "PASO 9: Configuring domain prop.cl..."
 echo "Ejecutando configuración de dominio..."
 
 # Run domain configuration script
@@ -153,12 +174,13 @@ echo "=============="
 echo "1. ✅ Backend deployed and running"
 echo "2. ✅ Database migrated automatically"
 echo "3. ✅ Superuser created automatically"
-echo "4. ✅ Celery services deployed for email processing"
-echo "5. ✅ Domain configured (if script ran successfully)"
-echo "6. 🔄 Update frontend to use https://prop.cl as backend URL"
-echo "7. 🧪 Test all functionality thoroughly (especially email sending)"
-echo "8. 🔍 Monitor logs: gcloud run services logs read ${SERVICE_NAME} --region=${REGION}"
-echo "9. 📧 Monitor Celery: gcloud run services logs read tuki-celery-worker --region=${REGION}"
+echo "4. ✅ Payment methods configured (WebPay Plus)"
+echo "5. ✅ Celery services deployed for email processing"
+echo "6. ✅ Domain configured (if script ran successfully)"
+echo "7. 🔄 Update frontend to use https://prop.cl as backend URL"
+echo "8. 🧪 Test all functionality thoroughly (especially payments and email)"
+echo "9. 🔍 Monitor logs: gcloud run services logs read ${SERVICE_NAME} --region=${REGION}"
+echo "10. 📧 Monitor Celery: gcloud run services logs read tuki-celery-worker --region=${REGION}"
 echo ""
 print_success "Tuki Platform is now live and ready for production! 🚀"
 

@@ -57,6 +57,37 @@ class PaymentMethodsPublicView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class PaymentSetupView(APIView):
+    """
+    🚀 ENTERPRISE: Admin endpoint for payment setup
+    """
+    permission_classes = [permissions.AllowAny]  # For deployment automation
+    
+    def post(self, request):
+        """Setup payment providers and methods"""
+        try:
+            from django.core.management import call_command
+            from io import StringIO
+            
+            # Capture command output
+            out = StringIO()
+            call_command('setup_payment_providers', stdout=out)
+            output = out.getvalue()
+            
+            return Response({
+                'success': True,
+                'message': 'Payment providers setup completed',
+                'output': output
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"💥 PAYMENT SETUP ERROR: {str(e)}")
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 class PaymentViewSet(viewsets.ModelViewSet):
     """
     🚀 ENTERPRISE: Payment processing endpoints

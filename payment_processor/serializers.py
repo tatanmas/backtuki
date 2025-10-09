@@ -38,7 +38,9 @@ class CreatePaymentSerializer(serializers.Serializer):
     🚀 ENTERPRISE: Serializer for creating payments
     """
     order_id = serializers.UUIDField()
-    payment_method_id = serializers.UUIDField()
+    payment_method_id = serializers.UUIDField(required=False)
+    provider_type = serializers.CharField(required=False)
+    method_type = serializers.CharField(required=False)
     return_url = serializers.URLField(required=False)
     
     def validate_order_id(self, value):
@@ -59,17 +61,45 @@ class CreatePaymentSerializer(serializers.Serializer):
     
     def validate_payment_method_id(self, value):
         """Validate payment method exists and is active"""
-        try:
-            method = PaymentMethod.objects.get(id=value, is_active=True)
-        except PaymentMethod.DoesNotExist:
-            raise serializers.ValidationError("Payment method not found or inactive")
+        if value:  # Only validate if provided
+            try:
+                method = PaymentMethod.objects.get(id=value, is_active=True)
+            except PaymentMethod.DoesNotExist:
+                raise serializers.ValidationError("Payment method not found or inactive")
         
         return value
     
     def validate(self, attrs):
         """Cross-field validation"""
         order = Order.objects.get(id=attrs['order_id'])
-        method = PaymentMethod.objects.get(id=attrs['payment_method_id'])
+        
+        # 🚀 ENTERPRISE: Support both ID and type-based lookup
+        payment_method_id = attrs.get('payment_method_id')
+        provider_type = attrs.get('provider_type')
+        method_type = attrs.get('method_type')
+        
+        if payment_method_id:
+            # Traditional ID lookup
+            method = PaymentMethod.objects.get(id=payment_method_id)
+        elif provider_type and method_type:
+            # 🚀 NEW: Type-based lookup (ROBUST)
+            try:
+                method = PaymentMethod.objects.get(
+                    provider__provider_type=provider_type,
+                    method_type=method_type,
+                    is_active=True,
+                    provider__is_active=True
+                )
+                # Store the resolved ID for later use
+                attrs['payment_method_id'] = method.id
+            except PaymentMethod.DoesNotExist:
+                raise serializers.ValidationError(
+                    f"Payment method not found for provider_type='{provider_type}' and method_type='{method_type}'"
+                )
+        else:
+            raise serializers.ValidationError(
+                "Either payment_method_id or both provider_type and method_type must be provided"
+            )
         
         # Validate amount limits
         if order.total < method.provider.min_amount:

@@ -20,6 +20,8 @@ from apps.otp.models import OTP, OTPPurpose
 from apps.otp.services import OTPService
 from apps.organizers.models import Organizer, OrganizerUser
 from apps.events.models import Event, Location
+from apps.forms.models import Form
+from apps.forms.serializers import FormSerializer
 from .serializers import PublicEventCreateSerializer, EventDetailSerializer
 
 User = get_user_model()
@@ -479,3 +481,31 @@ class PublicEventViewSet(viewsets.ModelViewSet):
         except Exception as e:
             print(f"[PUBLIC-UPLOAD] ❌ Error uploading file: {e}")
             return Response({'detail': 'Error uploading file'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['get'])
+    def active_forms(self, request):
+        """
+        🚀 PUBLIC ENDPOINT: Get active forms for public ticket purchases.
+        No authentication required.
+        """
+        try:
+            # Get form ID from query params
+            form_id = request.query_params.get('form_id')
+            
+            if form_id:
+                # Get specific form by ID
+                try:
+                    form = Form.objects.get(id=form_id, status='active')
+                    serializer = FormSerializer(form)
+                    return Response(serializer.data)
+                except Form.DoesNotExist:
+                    return Response({'detail': 'Form not found'}, status=status.HTTP_404_NOT_FOUND)
+            else:
+                # Get all active forms (for backward compatibility)
+                active_forms = Form.objects.filter(status='active').order_by('-updated_at')
+                serializer = FormSerializer(active_forms, many=True)
+                return Response(serializer.data)
+                
+        except Exception as e:
+            print(f"[PUBLIC-FORMS] ❌ Error fetching active forms: {e}")
+            return Response({'detail': 'Error fetching forms'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

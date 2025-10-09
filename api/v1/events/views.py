@@ -318,6 +318,9 @@ class EventViewSet(viewsets.ModelViewSet):
         tickets = request.data.get('tickets', [])
         reservation_id = request.data.get('reservationId')
         hold_minutes = int(request.data.get('holdMinutes', 15))
+        
+        print(f"🔍 RESERVE DEBUG - Raw request data: {request.data}")
+        print(f"🔍 RESERVE DEBUG - Tickets array: {tickets}")
 
         if not isinstance(tickets, list) or not tickets:
             return Response({"detail": "Tickets payload is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -340,14 +343,28 @@ class EventViewSet(viewsets.ModelViewSet):
             if reservation_id:
                 try:
                     order = Order.objects.select_for_update().get(id=reservation_id, event=event)
+                    print(f"🔄 RESERVE DEBUG - Reusing existing reservation: {reservation_id}")
                 except Order.DoesNotExist:
-                    return Response({"detail": "Reservation not found."}, status=status.HTTP_404_NOT_FOUND)
+                    print(f"⚠️ RESERVE DEBUG - Reservation {reservation_id} not found, creating new one")
+                    order = Order.objects.create(
+                        event=event,
+                        email='',  # Will be collected during checkout
+                        first_name='Guest',
+                        last_name='User',
+                        phone='',
+                        subtotal=0,
+                        service_fee=0,
+                        total=0,
+                        currency=event.ticket_tiers.first().currency if event.ticket_tiers.exists() else 'CLP',
+                        status='pending'
+                    )
             else:
+                print(f"🆕 RESERVE DEBUG - Creating new reservation")
                 order = Order.objects.create(
                     event=event,
-                    email='tatan@tuki.cl',  # placeholder until email collection
+                    email='',  # Will be collected during checkout
                     first_name='Guest',
-                    last_name='Tuki',
+                    last_name='User',
                     phone='',
                     subtotal=0,
                     service_fee=0,
@@ -369,8 +386,11 @@ class EventViewSet(viewsets.ModelViewSet):
             for t in tickets:
                 tier_id = t.get('tierId')
                 qty = int(t.get('quantity', 0))
+                custom_price = t.get('customPrice')  # 🚀 NEW: Support for PWYW custom pricing
                 if not tier_id or qty < 0:
                     continue
+                
+                print(f"🎯 RESERVE DEBUG - Processing tier {tier_id}: qty={qty}, custom_price={custom_price}")
 
                 try:
                     tier = TicketTier.objects.select_for_update().get(id=tier_id, event=event)
@@ -403,13 +423,25 @@ class EventViewSet(viewsets.ModelViewSet):
                 
                     # ✅ Success: tickets were atomically reserved, now create holds
                     for _ in range(need):
-                        TicketHold.objects.create(
-                            event=event,
-                            ticket_tier=tier,
-                            order=order,
-                            quantity=1,
-                            expires_at=expires_at,
-                        )
+                        # 🚀 ENTERPRISE: Include custom_price for PWYW tickets
+                        hold_data = {
+                            'event': event,
+                            'ticket_tier': tier,
+                            'order': order,
+                            'quantity': 1,
+                            'expires_at': expires_at,
+                        }
+                        
+                        # Add custom_price if this is a PWYW ticket
+                        if tier.is_pay_what_you_want and custom_price is not None:
+                            from decimal import Decimal
+                            print(f"🔍 RESERVE DEBUG - PWYW tier {tier_id}: custom_price received = {custom_price} (type: {type(custom_price)})")
+                            custom_price_decimal = Decimal(str(custom_price))
+                            print(f"🔍 RESERVE DEBUG - Decimal conversion: {custom_price_decimal}")
+                            hold_data['custom_price'] = custom_price_decimal
+                        
+                        created_hold = TicketHold.objects.create(**hold_data)
+                        print(f"🔍 RESERVE DEBUG - Created hold: tier={created_hold.ticket_tier_id}, custom_price={created_hold.custom_price}")
                 
                 elif qty < existing_qty:
                     to_release = existing_qty - qty
@@ -1340,114 +1372,198 @@ class TicketTierViewSet(viewsets.ModelViewSet):
         print(f"DEBUG - TicketTierViewSet.get_queryset - No event filter, returning all tiers for organizer")
         return TicketTier.objects.filter(event__organizer=organizer)
     
+    def _transform_request_data(self, data):
+        """
+        🚀 ENTERPRISE: Transform camelCase keys to snake_case for Django models.
+        This ensures frontend camelCase fields are properly mapped to backend snake_case.
+        """
+        print(f"🔍 TRANSFORM DEBUG - Input data keys: {list(data.keys())}")
+        
+        # Field mapping from camelCase (frontend) to snake_case (Django)
+        field_mapping = {
+            'isPayWhatYouWant': 'is_pay_what_you_want',
+            'minPrice': 'min_price',
+            'maxPrice': 'max_price',
+            'suggestedPrice': 'suggested_price',
+            'maxPerOrder': 'max_per_order',
+            'minPerOrder': 'min_per_order',
+            'isPublic': 'is_public',
+            'requiresApproval': 'requires_approval',
+        }
+        
+        transformed = {}
+        
+        for key, value in data.items():
+            # Use mapping if exists, otherwise keep original key
+            new_key = field_mapping.get(key, key)
+            transformed[new_key] = value
+            
+            # Log PWYW field transformations specifically
+            if key in field_mapping:
+                print(f"✅ TRANSFORM - {key} → {new_key}: {value}")
+        
+        print(f"🔍 TRANSFORM DEBUG - Output data keys: {list(transformed.keys())}")
+        return transformed
+
     def update(self, request, *args, **kwargs):
-        """Override update to add detailed permission checks logging."""
-        print(f"DEBUG - TicketTierViewSet.update - Starting update for ID: {kwargs.get('pk')}")
-        print(f"DEBUG - User ID: {request.user.id}, Username: {request.user.username}")
+        """
+        🚀 ENTERPRISE: Robust update with proper field transformation and validation.
+        Handles camelCase to snake_case conversion and preserves all fields.
+        """
+        print(f"🚀 DEBUG - TicketTierViewSet.update - Starting update for ID: {kwargs.get('pk')}")
+        print(f"🔍 DEBUG - User ID: {request.user.id}, Username: {request.user.username}")
+        print(f"🔍 DEBUG - Raw request.data: {request.data}")
         
         # Get the organizer associated with the user
         try:
             organizer_user = OrganizerUser.objects.get(user=request.user)
             organizer = organizer_user.organizer
-            print(f"DEBUG - Found organizer: ID={organizer.id}")
+            print(f"✅ DEBUG - Found organizer: ID={organizer.id}")
             
             # Get the tier being updated
             instance = self.get_object()
-            print(f"DEBUG - Ticket tier belongs to event ID: {instance.event.id}")
-            print(f"DEBUG - Event organizer ID: {instance.event.organizer.id}")
+            print(f"🔍 DEBUG - Ticket tier belongs to event ID: {instance.event.id}")
+            print(f"🔍 DEBUG - Event organizer ID: {instance.event.organizer.id}")
             
             # Check if the organizer owns the event
             if instance.event.organizer != organizer:
-                print(f"DEBUG - PERMISSION DENIED: Ticket tier's event organizer ({instance.event.organizer.id}) does not match user's organizer ({organizer.id})")
+                print(f"❌ DEBUG - PERMISSION DENIED: Ticket tier's event organizer ({instance.event.organizer.id}) does not match user's organizer ({organizer.id})")
                 return Response(
                     {"detail": "You don't have permission to update this ticket tier as it belongs to another organizer."},
                     status=status.HTTP_403_FORBIDDEN
                 )
-                
-            # Extract price from data if it's a structured object
-            if 'price' in request.data and isinstance(request.data['price'], dict):
-                price_data = request.data['price'].get('basePrice', 0)
-                print(f"DEBUG - Extracted price from object: {price_data}")
-                
-                # Create new data with extracted price
-                modified_data = request.data.copy()
-                modified_data['price'] = price_data
-                
-                # Get serializer with modified data
-                serializer = self.get_serializer(instance, data=modified_data, partial=kwargs.get('partial', False))
-                serializer.is_valid(raise_exception=True)
-                self.perform_update(serializer)
-                
-                return Response(serializer.data)
             
-            # Default behavior if price is not a structured object
-            print(f"DEBUG - Permission check passed, proceeding with update")
-            return super().update(request, *args, **kwargs)
+            # 🚀 ENTERPRISE FIX: Transform camelCase to snake_case FIRST
+            transformed_data = self._transform_request_data(request.data.copy())
+            
+            # 🚀 ENTERPRISE FIX: Handle structured price object while preserving ALL other fields
+            if 'price' in transformed_data and isinstance(transformed_data['price'], dict):
+                price_obj = transformed_data['price']
+                base_price = price_obj.get('basePrice', 0)
+                print(f"💰 DEBUG - Extracting price from object: {base_price}")
+                
+                # Replace price object with extracted base price
+                transformed_data['price'] = base_price
+            
+            # Log PWYW fields specifically for debugging
+            pwyw_fields = ['is_pay_what_you_want', 'min_price', 'max_price', 'suggested_price']
+            for field in pwyw_fields:
+                if field in transformed_data:
+                    print(f"✅ PWYW DEBUG - {field}: {transformed_data[field]}")
+                else:
+                    print(f"⚠️ PWYW DEBUG - {field}: NOT FOUND")
+            
+            # 🚀 ENTERPRISE: Use transformed data with ALL fields preserved
+            serializer = self.get_serializer(
+                instance, 
+                data=transformed_data, 
+                partial=kwargs.get('partial', False)
+            )
+            
+            print(f"🔍 DEBUG - Serializer validation starting...")
+            serializer.is_valid(raise_exception=True)
+            print(f"✅ DEBUG - Serializer validation passed")
+            
+            # Perform the update
+            self.perform_update(serializer)
+            print(f"✅ DEBUG - Update completed successfully")
+            
+            # Log the final saved data
+            instance.refresh_from_db()
+            print(f"💾 DEBUG - Final saved PWYW status: {instance.is_pay_what_you_want}")
+            if instance.is_pay_what_you_want:
+                print(f"💾 DEBUG - Final saved min_price: {instance.min_price}")
+                print(f"💾 DEBUG - Final saved max_price: {instance.max_price}")
+                print(f"💾 DEBUG - Final saved suggested_price: {instance.suggested_price}")
+            
+            return Response(serializer.data)
             
         except OrganizerUser.DoesNotExist:
-            print(f"DEBUG - PERMISSION DENIED: User {request.user.id} is not associated with any organizer")
+            print(f"❌ DEBUG - PERMISSION DENIED: User {request.user.id} is not associated with any organizer")
             return Response(
                 {"detail": "You don't have permission to update this ticket tier as you are not associated with any organizer."},
                 status=status.HTTP_403_FORBIDDEN
             )
         except Exception as e:
-            print(f"DEBUG - Error during permission check: {str(e)}")
+            print(f"❌ DEBUG - Error during update: {str(e)}")
+            import traceback
+            print(f"❌ DEBUG - Full traceback: {traceback.format_exc()}")
             return Response(
-                {"detail": f"Error checking permissions: {str(e)}"},
-                status=status.HTTP_403_FORBIDDEN
+                {"detail": f"Error updating ticket tier: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
     def partial_update(self, request, *args, **kwargs):
-        """Override partial_update to add detailed permission checks logging."""
-        print(f"DEBUG - TicketTierViewSet.partial_update - Starting partial update for ID: {kwargs.get('pk')}")
+        """
+        🚀 ENTERPRISE: Robust partial update using the same transformation logic.
+        """
+        print(f"🚀 DEBUG - TicketTierViewSet.partial_update - Starting partial update for ID: {kwargs.get('pk')}")
         
-        # Handle structured price the same way as in update
-        if 'price' in request.data and isinstance(request.data['price'], dict):
-            # Set partial=True to ensure partial update
-            kwargs['partial'] = True
+        # Ensure partial=True for partial updates
+        kwargs['partial'] = True
         
+        # Use the same robust update logic
         return self.update(request, *args, **kwargs)
     
+    def create(self, request, *args, **kwargs):
+        """
+        🚀 ENTERPRISE: Robust create with proper field transformation.
+        """
+        print(f"🚀 DEBUG - TicketTierViewSet.create - Starting create")
+        print(f"🔍 DEBUG - Raw request.data: {request.data}")
+        
+        # Transform camelCase to snake_case
+        transformed_data = self._transform_request_data(request.data.copy())
+        
+        # Handle structured price object
+        if 'price' in transformed_data and isinstance(transformed_data['price'], dict):
+            price_obj = transformed_data['price']
+            base_price = price_obj.get('basePrice', 0)
+            print(f"💰 DEBUG - Extracting price from object: {base_price}")
+            transformed_data['price'] = base_price
+        
+        # Log PWYW fields for debugging
+        pwyw_fields = ['is_pay_what_you_want', 'min_price', 'max_price', 'suggested_price']
+        for field in pwyw_fields:
+            if field in transformed_data:
+                print(f"✅ PWYW CREATE DEBUG - {field}: {transformed_data[field]}")
+        
+        # Create new request with transformed data
+        request._full_data = transformed_data
+        
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
-        """Create a ticket tier, with event_id if provided in URL"""
+        """
+        🚀 ENTERPRISE: Create a ticket tier with proper event association and field handling.
+        """
         # Get the event from the URL if this is a nested view
         event_id = self.kwargs.get('event_id')
         if event_id:
-            print(f"DEBUG - TicketTierViewSet.perform_create - Creating ticket tier with event ID from URL: {event_id}")
+            print(f"🚀 DEBUG - TicketTierViewSet.perform_create - Creating ticket tier with event ID from URL: {event_id}")
             event = get_object_or_404(Event, id=event_id)
             
             # Check if the event belongs to the organizer
             organizer = self.get_organizer()
             if not organizer or event.organizer != organizer:
-                print(f"DEBUG - PERMISSION DENIED: Event organizer ({event.organizer.id}) does not match user's organizer ({organizer.id if organizer else 'None'})")
+                print(f"❌ DEBUG - PERMISSION DENIED: Event organizer ({event.organizer.id}) does not match user's organizer ({organizer.id if organizer else 'None'})")
                 raise PermissionDenied("You don't have permission to add ticket tiers to this event.")
             
-            # 🚀 ENTERPRISE FIX: Handle price properly regardless of format
-            price_data = self.request.data.get('price', 0)
-            if isinstance(price_data, dict):
-                price_data = price_data.get('basePrice', 0)
-                print(f"DEBUG - Extracted price from object: {price_data}")
-            elif price_data is None:
-                price_data = 0
-                print(f"DEBUG - Price was None, using default: {price_data}")
-            else:
-                print(f"DEBUG - Using direct price value: {price_data}")
-                
             # Get capacity to set available field
             capacity = self.request.data.get('capacity', 0)
-            print(f"DEBUG - Using capacity value for available: {capacity}")
+            print(f"🔍 DEBUG - Using capacity value for available: {capacity}")
             
             # 🚀 ENTERPRISE FIX: Handle unlimited capacity properly
             # If capacity is null (unlimited), set available to a large number
             available_value = capacity if capacity is not None else 9999999
-            print(f"DEBUG - Setting available to: {available_value} (capacity: {capacity})")
+            print(f"✅ DEBUG - Setting available to: {available_value} (capacity: {capacity})")
             
-            # Save with extracted price value and set available properly
-            serializer.save(event=event, price=price_data, available=available_value)
+            # Save with event association and proper available value
+            serializer.save(event=event, available=available_value)
         else:
             # Extract event ID from request data for top-level view
             event_id = self.request.data.get('event')
-            print(f"DEBUG - TicketTierViewSet.perform_create - Creating ticket tier with event ID from request data: {event_id}")
+            print(f"🚀 DEBUG - TicketTierViewSet.perform_create - Creating ticket tier with event ID from request data: {event_id}")
             
             if not event_id:
                 print(f"DEBUG - TicketTierViewSet.perform_create - FAIL: No event ID in request data")

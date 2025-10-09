@@ -115,6 +115,8 @@ class TicketTierSerializer(serializers.ModelSerializer):
             'id', 'name', 'type', 'description', 'price',
             'capacity', 'available', 'is_public', 'max_per_order',
             'min_per_order', 'benefits', 'metadata', 'requires_approval',
+            # ✅ Pay-What-You-Want fields
+            'is_pay_what_you_want', 'min_price', 'max_price', 'suggested_price',
             # 🚀 ENTERPRISE: Add enterprise fields
             'tickets_sold', 'tickets_on_hold', 'real_available', 'availability_summary'
         ]
@@ -127,9 +129,10 @@ class TicketTierSerializer(serializers.ModelSerializer):
             'currency': obj.currency,
         }
         
-        # Add service fee if present
-        if obj.service_fee:
-            price_data['serviceFee'] = float(obj.service_fee)
+        # Add service fee using the new hierarchy system
+        service_fee_amount = obj.get_service_fee_amount()
+        if service_fee_amount:
+            price_data['serviceFee'] = float(service_fee_amount)
         
         # Add original price and discount info if it's a discounted ticket
         if obj.original_price:
@@ -182,6 +185,94 @@ class TicketTierSerializer(serializers.ModelSerializer):
     def get_availability_summary(self, obj) -> Dict[str, Any]:
         """🚀 ENTERPRISE: Return complete availability summary for transparency."""
         return obj.get_availability_summary()
+    
+    def validate(self, data):
+        """
+        🚀 ENTERPRISE: Robust validation for Pay-What-You-Want tickets.
+        Ensures data integrity and business rules compliance.
+        """
+        print(f"🔍 SERIALIZER VALIDATION - Input data: {data}")
+        
+        # Validate Pay-What-You-Want fields
+        is_pwyw = data.get('is_pay_what_you_want', False)
+        min_price = data.get('min_price')
+        max_price = data.get('max_price')
+        suggested_price = data.get('suggested_price')
+        
+        print(f"✅ VALIDATION - PWYW: {is_pwyw}, min: {min_price}, max: {max_price}, suggested: {suggested_price}")
+        
+        if is_pwyw:
+            # Validate min_price <= max_price
+            if min_price is not None and max_price is not None:
+                if min_price > max_price:
+                    raise serializers.ValidationError({
+                        'min_price': 'Minimum price cannot be greater than maximum price.'
+                    })
+            
+            # Validate suggested_price is within bounds
+            if suggested_price is not None:
+                if min_price is not None and suggested_price < min_price:
+                    raise serializers.ValidationError({
+                        'suggested_price': 'Suggested price cannot be less than minimum price.'
+                    })
+                if max_price is not None and suggested_price > max_price:
+                    raise serializers.ValidationError({
+                        'suggested_price': 'Suggested price cannot be greater than maximum price.'
+                    })
+            
+            # For PWYW tickets, price should be 0 (users will set custom price)
+            if 'price' in data and data['price'] != 0:
+                print(f"⚠️ VALIDATION - Setting price to 0 for PWYW ticket (was: {data['price']})")
+                data['price'] = 0
+        
+        # Validate capacity and availability
+        capacity = data.get('capacity')
+        available = data.get('available')
+        
+        if capacity is not None and available is not None:
+            if available > capacity:
+                raise serializers.ValidationError({
+                    'available': 'Available tickets cannot exceed capacity.'
+                })
+        
+        # Validate order limits
+        min_per_order = data.get('min_per_order', 1)
+        max_per_order = data.get('max_per_order')
+        
+        if max_per_order is not None and min_per_order > max_per_order:
+            raise serializers.ValidationError({
+                'min_per_order': 'Minimum per order cannot be greater than maximum per order.'
+            })
+        
+        print(f"✅ VALIDATION - All validations passed")
+        return data
+    
+    def to_representation(self, instance):
+        """
+        🚀 ENTERPRISE: Convert snake_case fields to camelCase for frontend.
+        """
+        data = super().to_representation(instance)
+        
+        # Add PWYW fields in camelCase for frontend
+        data['isPayWhatYouWant'] = instance.is_pay_what_you_want
+        if instance.is_pay_what_you_want:
+            data['minPrice'] = instance.min_price
+            data['maxPrice'] = instance.max_price
+            data['suggestedPrice'] = instance.suggested_price
+        
+        # Convert other snake_case fields to camelCase
+        camel_case_mapping = {
+            'max_per_order': 'maxPerOrder',
+            'min_per_order': 'minPerOrder',
+            'is_public': 'isPublic',
+            'requires_approval': 'requiresApproval',
+        }
+        
+        for snake_key, camel_key in camel_case_mapping.items():
+            if snake_key in data:
+                data[camel_key] = data[snake_key]
+        
+        return data
 
 
 class CouponSerializer(serializers.ModelSerializer):
@@ -1252,10 +1343,39 @@ class BookingSerializer(serializers.Serializer):
             for ticket_data in tickets_data:
                 tier_id = ticket_data.get('tierId')
                 quantity = ticket_data.get('quantity', 0)
+                custom_price = ticket_data.get('customPrice')  # ✅ NEW: Support for PWYW
+                
                 try:
                     tier = TicketTier.objects.get(id=tier_id, event=event)
                 except TicketTier.DoesNotExist:
                     raise serializers.ValidationError({"tickets": f"Ticket tier with ID {tier_id} does not exist"})
+                
+                # ✅ NEW: Validate Pay-What-You-Want tickets
+                if tier.is_pay_what_you_want:
+                    if custom_price is None:
+                        raise serializers.ValidationError({
+                            "tickets": f"customPrice is required for pay-what-you-want ticket {tier.name}"
+                        })
+                    if custom_price < 0:
+                        raise serializers.ValidationError({
+                            "tickets": f"customPrice cannot be negative for ticket {tier.name}"
+                        })
+                    if tier.min_price and custom_price < tier.min_price:
+                        raise serializers.ValidationError({
+                            "tickets": f"Price for {tier.name} cannot be less than ${tier.min_price}"
+                        })
+                    if tier.max_price and custom_price > tier.max_price:
+                        raise serializers.ValidationError({
+                            "tickets": f"Price for {tier.name} cannot be more than ${tier.max_price}"
+                        })
+                else:
+                    # Regular tickets should not have custom price
+                    if custom_price is not None:
+                        raise serializers.ValidationError({
+                            "tickets": f"customPrice is not allowed for regular ticket {tier.name}"
+                        })
+                
+                # Standard validations
                 if tier.available < quantity:
                     raise serializers.ValidationError({"tickets": f"Not enough tickets available for {tier.name}"})
                 if quantity < tier.min_per_order:
@@ -1373,14 +1493,36 @@ class BookingSerializer(serializers.Serializer):
 
         if reservation_id:
             # 🚀 ENTERPRISE: Use holds; do not change availability here (it was adjusted at reserve time)
+            print(f"🔍 BOOKING DEBUG - Looking for reservation: {reservation_id}")
             holds = TicketHold.objects.select_for_update().filter(order_id=reservation_id, released=False, event=event, expires_at__gt=timezone.now())
+            print(f"🔍 BOOKING DEBUG - Found {holds.count()} active holds")
+            
             if not holds.exists():
+                # Debug: check if holds exist but are expired
+                all_holds = TicketHold.objects.filter(order_id=reservation_id, event=event)
+                print(f"🔍 BOOKING DEBUG - Total holds for reservation: {all_holds.count()}")
+                for h in all_holds:
+                    print(f"🔍 HOLD: tier={h.ticket_tier_id}, qty={h.quantity}, custom_price={h.custom_price}, expires={h.expires_at}, released={h.released}")
                 raise serializers.ValidationError({"detail": "Reservation has expired or is invalid."})
-            # aggregate by tier
+            
+            # 🚀 ENTERPRISE: Aggregate by tier, preserving custom_price for PWYW tickets
             by_tier = {}
             for h in holds:
-                by_tier[h.ticket_tier_id] = by_tier.get(h.ticket_tier_id, 0) + h.quantity
-            items_source = [{ 'tierId': tier_id, 'quantity': qty } for tier_id, qty in by_tier.items()]
+                tier_id = h.ticket_tier_id
+                if tier_id not in by_tier:
+                    by_tier[tier_id] = {
+                        'quantity': 0,
+                        'custom_price': h.custom_price  # Preserve custom price from hold
+                    }
+                by_tier[tier_id]['quantity'] += h.quantity
+            
+            # Build items_source with custom_price when available
+            items_source = []
+            for tier_id, data in by_tier.items():
+                item = {'tierId': tier_id, 'quantity': data['quantity']}
+                if data['custom_price'] is not None:
+                    item['customPrice'] = float(data['custom_price'])
+                items_source.append(item)
         else:
             items_source = validated_data.get('tickets', [])
 
@@ -1388,20 +1530,59 @@ class BookingSerializer(serializers.Serializer):
         for ticket_data in items_source:
             tier_id = ticket_data['tierId']
             quantity = int(ticket_data['quantity'])
+            custom_price = ticket_data.get('customPrice')  # ✅ NEW: Support for PWYW
             tier = TicketTier.objects.get(id=tier_id)
-            item_subtotal = tier.price * quantity
-            item_service_fee = tier.service_fee * quantity
+            
+            print(f"🎯 BOOKING DEBUG - Processing tier {tier_id}: quantity={quantity}, custom_price={custom_price}, is_pwyw={tier.is_pay_what_you_want}")
+            
+            # ✅ NEW: Handle Pay-What-You-Want tickets
+            if tier.is_pay_what_you_want and custom_price is not None:
+                # For PWYW tickets, custom_price is the total amount user chose to pay per ticket
+                # We need to separate it into organizer amount and platform fee
+                service_fee_rate = tier.get_service_fee_rate()
+                
+                # Calculate amounts: custom_price = organizer_amount + platform_fee
+                from decimal import Decimal, ROUND_HALF_UP
+                custom_price_decimal = Decimal(str(custom_price))
+                print(f"🔍 PWYW CALC - custom_price_decimal: {custom_price_decimal}, service_fee_rate: {service_fee_rate}")
+                
+                # Use proper rounding for CLP (no decimals)
+                organizer_amount = (custom_price_decimal / (Decimal('1') + service_fee_rate)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+                platform_fee = custom_price_decimal - organizer_amount
+                
+                print(f"🔍 PWYW CALC - organizer_amount: {organizer_amount}, platform_fee: {platform_fee}")
+                
+                item_subtotal = organizer_amount * quantity
+                item_service_fee = platform_fee * quantity
+                
+                from apps.events.models import OrderItem
+                order_item = OrderItem.objects.create(
+                    order=order,
+                    ticket_tier=tier,
+                    quantity=quantity,
+                    unit_price=organizer_amount,
+                    unit_service_fee=platform_fee,
+                    custom_price=custom_price_decimal,  # ✅ NEW: Store custom price
+                    subtotal=custom_price_decimal * quantity  # Total amount user chose to pay
+                )
+            else:
+                # Regular ticket pricing
+                service_fee_amount = tier.get_service_fee_amount()
+                item_subtotal = tier.price * quantity
+                item_service_fee = service_fee_amount * quantity
+                
+                from apps.events.models import OrderItem
+                order_item = OrderItem.objects.create(
+                    order=order,
+                    ticket_tier=tier,
+                    quantity=quantity,
+                    unit_price=tier.price,
+                    unit_service_fee=service_fee_amount,
+                    subtotal=item_subtotal
+                )
+            
             subtotal += item_subtotal
             service_fee += item_service_fee
-            from apps.events.models import OrderItem
-            order_item = OrderItem.objects.create(
-                order=order,
-                ticket_tier=tier,
-                quantity=quantity,
-                unit_price=tier.price,
-                unit_service_fee=tier.service_fee,
-                subtotal=item_subtotal
-            )
             # 🚀 ENTERPRISE: Only decrement availability when no reservation was used
             if not reservation_id:
                 tier.available -= quantity

@@ -87,6 +87,16 @@ class Organizer(TimeStampedModel):
         help_text=_("Si el email del organizador ha sido validado")
     )
     
+    # Service fee configuration at organizer level
+    default_service_fee_rate = models.DecimalField(
+        _("default service fee rate"),
+        max_digits=5,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text=_("Default service fee rate for this organizer (e.g., 0.15 for 15%). If null, uses platform default.")
+    )
+    
     class Meta:
         verbose_name = _("organizer")
         verbose_name_plural = _("organizers")
