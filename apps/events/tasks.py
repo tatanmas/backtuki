@@ -587,3 +587,206 @@ def cleanup_abandoned_orders(self, hours_old=48):
     except Exception as e:
         logger.error(f"🧹 [CLEANUP] Error in cleanup_abandoned_orders: {e}")
         raise
+
+
+@shared_task(bind=True, max_retries=3)
+def send_order_confirmation_email(self, order_id):
+    """
+    🚀 ENTERPRISE: Send consolidated order confirmation email to customer.
+    
+    Sends a single confirmation email with all tickets for the order.
+    """
+    try:
+        from apps.events.models import Order
+        import tempfile
+        import os
+        
+        logger.info(f"📧 [EMAIL] Starting order confirmation email for order: {order_id}")
+        
+        # Get the order with related data
+        logger.info(f"📧 [EMAIL] DEBUG: Fetching order data for {order_id}")
+        order = Order.objects.select_related(
+            'event', 'user', 'event__organizer'
+        ).prefetch_related('items__tickets', 'event__images').get(id=order_id)
+        logger.info(f"📧 [EMAIL] DEBUG: Order fetched successfully - Status: {order.status}, Event: {order.event.title}")
+        
+        if order.status != 'paid':
+            logger.warning(f"📧 [EMAIL] Order {order_id} not paid (status: {order.status}), skipping email")
+            return {'status': 'skipped', 'reason': 'order_not_paid'}
+        
+        # Get all tickets from all order items
+        logger.info(f"📧 [EMAIL] DEBUG: Fetching tickets for order {order_id}")
+        tickets = []
+        for item in order.items.all():
+            tickets.extend(item.tickets.all())
+        logger.info(f"📧 [EMAIL] DEBUG: Found {len(tickets)} tickets")
+        
+        if not tickets:
+            logger.warning(f"📧 [EMAIL] No tickets found for order {order_id}")
+            return {'status': 'skipped', 'reason': 'no_tickets'}
+        
+        # Group tickets by email to send one email per recipient
+        logger.info(f"📧 [EMAIL] DEBUG: Grouping tickets by email")
+        tickets_by_email = {}
+        for ticket in tickets:
+            email = ticket.email
+            if email not in tickets_by_email:
+                tickets_by_email[email] = []
+            tickets_by_email[email].append(ticket)
+        logger.info(f"📧 [EMAIL] DEBUG: Grouped into {len(tickets_by_email)} email recipients")
+        
+        emails_sent = 0
+        failed_emails = []
+        
+        for recipient_email, recipient_tickets in tickets_by_email.items():
+            logger.info(f"📧 [EMAIL] DEBUG: Processing email for {recipient_email} with {len(recipient_tickets)} tickets")
+            qr_temp_files = []
+            try:
+                # Generate QR codes for all tickets for this recipient
+                logger.info(f"📧 [EMAIL] DEBUG: Starting QR code generation for {recipient_email}")
+                import qrcode
+                
+                for ticket in recipient_tickets:
+                    # Generate QR code as file for inline embedding
+                    qr = qrcode.QRCode(
+                        version=1,
+                        error_correction=qrcode.constants.ERROR_CORRECT_H,
+                        box_size=10,
+                        border=4,
+                    )
+                    
+                    # QR data with ticket URL
+                    qr_data = f"{getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')}/tickets/{ticket.ticket_number}"
+                    qr.add_data(qr_data)
+                    qr.make(fit=True)
+                    
+                    # Create high-quality QR image
+                    img = qr.make_image(fill_color="black", back_color="white")
+                    
+                    # Save to temporary file
+                    qr_temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                    img.save(qr_temp_file.name, format='PNG')
+                    qr_temp_file.close()
+                    qr_temp_files.append((qr_temp_file.name, ticket.ticket_number))
+                
+                logger.info(f"📧 [EMAIL] DEBUG: QR codes generated successfully for {recipient_email}")
+                
+                # Prepare email context for this recipient's tickets
+                logger.info(f"📧 [EMAIL] DEBUG: Preparing email context for {recipient_email}")
+                context = {
+                    'order': order,
+                    'event': order.event,
+                    'user': order.user,
+                    'tickets': recipient_tickets,  # All tickets for this recipient
+                    'attendee_name': f"{recipient_tickets[0].first_name} {recipient_tickets[0].last_name}".strip(),
+                    'organizer': order.event.organizer,
+                    'total_amount': order.total,
+                    'booking_date': order.created_at,
+                    'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:8080'),
+                }
+                
+                # Render email templates (use order confirmation template with fallback)
+                logger.info(f"📧 [EMAIL] DEBUG: Starting template rendering for {recipient_email}")
+                try:
+                    logger.info(f"📧 [EMAIL] DEBUG: Rendering HTML template order_confirmation.html")
+                    html_message = render_to_string('emails/order_confirmation.html', context)
+                    logger.info(f"📧 [EMAIL] Successfully rendered order confirmation HTML template")
+                except Exception as e:
+                    logger.warning(f"📧 [EMAIL] Order confirmation HTML template failed, using fallback: {e}")
+                    logger.info(f"📧 [EMAIL] DEBUG: Rendering fallback HTML template ticket_confirmation.html")
+                    # Fallback to existing template
+                    html_message = render_to_string('emails/ticket_confirmation.html', context)
+                    logger.info(f"📧 [EMAIL] DEBUG: Fallback HTML template rendered successfully")
+                
+                try:
+                    logger.info(f"📧 [EMAIL] DEBUG: Rendering text template order_confirmation.txt")
+                    text_message = render_to_string('emails/order_confirmation.txt', context)
+                    logger.info(f"📧 [EMAIL] Successfully rendered order confirmation text template")
+                except Exception as e:
+                    logger.warning(f"📧 [EMAIL] Order confirmation text template failed, using fallback: {e}")
+                    logger.info(f"📧 [EMAIL] DEBUG: Rendering fallback text template ticket_confirmation.txt")
+                    # Fallback to existing template
+                    text_message = render_to_string('emails/ticket_confirmation.txt', context)
+                    logger.info(f"📧 [EMAIL] DEBUG: Fallback text template rendered successfully")
+                
+                # Create email with inline QR codes
+                logger.info(f"📧 [EMAIL] DEBUG: Creating email message for {recipient_email}")
+                subject = f'Tu orden para {order.event.title} - {len(recipient_tickets)} ticket{"s" if len(recipient_tickets) > 1 else ""}'
+                
+                # Use EmailMultiAlternatives for inline images
+                email = EmailMultiAlternatives(
+                    subject=subject,
+                    body=text_message,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    to=[recipient_email]
+                )
+                
+                # Attach HTML version
+                email.attach_alternative(html_message, "text/html")
+                logger.info(f"📧 [EMAIL] DEBUG: Email message created, attaching QR codes")
+                
+                # Attach QR codes as inline images
+                from email.mime.image import MIMEImage
+                for qr_file_path, ticket_number in qr_temp_files:
+                    with open(qr_file_path, 'rb') as qr_file:
+                        qr_content = qr_file.read()
+                    
+                    qr_image = MIMEImage(qr_content)
+                    qr_image.add_header('Content-ID', f'<qr_code_{ticket_number}>')
+                    qr_image.add_header('Content-Disposition', 'inline', filename=f'qr_code_{ticket_number}.png')
+                    email.attach(qr_image)
+                
+                # Attach logos as inline images
+                logo_negro_path = os.path.join(settings.BASE_DIR, 'static/images/logos/logo-negro.png')
+                if os.path.exists(logo_negro_path):
+                    with open(logo_negro_path, 'rb') as logo_file:
+                        logo_negro = MIMEImage(logo_file.read())
+                        logo_negro.add_header('Content-ID', '<logo_negro>')
+                        logo_negro.add_header('Content-Disposition', 'inline', filename='logo-negro.png')
+                        email.attach(logo_negro)
+                
+                # Isotipo azul para footer
+                isotipo_path = os.path.join(settings.BASE_DIR, 'static/images/logos/isotipo-azul.png')
+                if os.path.exists(isotipo_path):
+                    with open(isotipo_path, 'rb') as isotipo_file:
+                        isotipo_azul = MIMEImage(isotipo_file.read())
+                        isotipo_azul.add_header('Content-ID', '<isotipo_azul>')
+                        isotipo_azul.add_header('Content-Disposition', 'inline', filename='isotipo-azul.png')
+                        email.attach(isotipo_azul)
+                
+                # Send email
+                logger.info(f"📧 [EMAIL] Attempting to send email to {recipient_email}")
+                logger.info(f"📧 [EMAIL] DEBUG: About to call email.send()")
+                email.send()
+                logger.info(f"📧 [EMAIL] DEBUG: email.send() completed successfully")
+                emails_sent += 1
+                
+                logger.info(f"📧 [EMAIL] ✅ Order confirmation sent to {recipient_email} for {len(recipient_tickets)} tickets")
+                
+            except Exception as e:
+                logger.error(f"📧 [EMAIL] Failed to send order confirmation to {recipient_email}: {e}")
+                failed_emails.append({
+                    'email': recipient_email,
+                    'error': str(e),
+                    'tickets': [t.ticket_number for t in recipient_tickets]
+                })
+            finally:
+                # Clean up temporary QR files
+                for qr_file_path, _ in qr_temp_files:
+                    try:
+                        os.unlink(qr_file_path)
+                    except:
+                        pass
+        
+        logger.info(f"📧 [EMAIL] Order confirmation completed: {emails_sent} sent, {len(failed_emails)} failed")
+        
+        return {
+            'status': 'completed',
+            'emails_sent': emails_sent,
+            'failed_emails': failed_emails,
+            'total_tickets': len(tickets)
+        }
+        
+    except Exception as e:
+        logger.error(f"📧 [EMAIL] Error in send_order_confirmation_email: {e}")
+        self.retry(countdown=60 * (self.request.retries + 1), exc=e)

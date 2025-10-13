@@ -65,7 +65,9 @@ class QRCodeService:
             )
             
             # URL del ticket con información adicional
-            qr_data = f"https://tuki.cl/tickets/{ticket_number}"
+            from django.conf import settings
+            frontend_url = getattr(settings, 'FRONTEND_URL', 'https://tuki.live')
+            qr_data = f"{frontend_url}/tickets/{ticket_number}"
             qr.add_data(qr_data)
             qr.make(fit=True)
             
@@ -121,7 +123,9 @@ class QRCodeService:
             )
             
             # URL del ticket
-            qr_data = f"https://tuki.cl/tickets/{ticket_number}"
+            from django.conf import settings
+            frontend_url = getattr(settings, 'FRONTEND_URL', 'https://tuki.live')
+            qr_data = f"{frontend_url}/tickets/{ticket_number}"
             qr.add_data(qr_data)
             qr.make(fit=True)
             

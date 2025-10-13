@@ -26,3 +26,9 @@ EMAIL_USE_TLS: "false"
 EMAIL_HOST_USER: "noreply@tuki.cl"
 EMAIL_HOST_PASSWORD: "-W7)HsC<Hsfk"
 DEFAULT_FROM_EMAIL: "Tuki <noreply@tuki.cl>"
+# Frontend URL configuration
+FRONTEND_URL: "https://tuki.live"
+# Transbank WebPay Plus Production Configuration
+TRANSBANK_WEBPAY_PLUS_COMMERCE_CODE: "597049073915"
+TRANSBANK_WEBPAY_PLUS_API_KEY: "f845fa3c-4d56-4060-9ba4-e3d4fc154b5b"
+TRANSBANK_WEBPAY_PLUS_SANDBOX: "false"

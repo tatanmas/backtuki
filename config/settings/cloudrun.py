@@ -219,7 +219,7 @@ CELERY_RESULT_BACKEND = config('REDIS_URL')
 # No changes needed
 
 # Frontend URL for Cloud Run
-FRONTEND_URL = config('FRONTEND_URL', default='https://tuki.cl')
+FRONTEND_URL = config('FRONTEND_URL', default='https://tuki.live')
 
 # Transbank settings for production
 TRANSBANK_WEBPAY_PLUS_SANDBOX = config('TRANSBANK_WEBPAY_PLUS_SANDBOX', default=False, cast=bool)

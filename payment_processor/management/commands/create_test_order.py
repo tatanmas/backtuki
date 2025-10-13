@@ -72,7 +72,7 @@ class Command(BaseCommand):
                 email="test@example.com",
                 first_name="Test",
                 last_name="User",
-                phone="+56912345678",
+                phone="+56947627083",
                 subtotal=amount,
                 service_fee=Decimal('0'),
                 total=amount,

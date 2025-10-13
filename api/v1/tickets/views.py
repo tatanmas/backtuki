@@ -5,6 +5,7 @@ Advanced ticket operations including holds, reservations, and analytics
 
 from django.utils import timezone
 from django.db.models import Sum, Count, Q
+from decimal import Decimal
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -111,49 +112,77 @@ class TicketTierManagementViewSet(viewsets.ModelViewSet):
         try:
             ticket_tier = TicketTier.objects.get(id=pk)
             
-            # Check permissions
-            if not hasattr(request.user, 'organizer') or ticket_tier.event.organizer != request.user.organizer:
+            # Check permissions using the same pattern as other methods
+            organizer = self.get_organizer()
+            if not organizer or ticket_tier.event.organizer != organizer:
                 return Response({"detail": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
             
             # Get all paid orders for this ticket tier
+            # 🚀 ENTERPRISE: Use the same logic as analytics - aggregate from Orders, not OrderItems
+            paid_orders = Order.objects.filter(
+                items__ticket_tier=ticket_tier,
+                status='paid'
+            ).distinct().select_related('event')
+            
+            # Calculate revenue using the same enterprise logic as analytics
+            revenue_data = paid_orders.aggregate(
+                total_revenue=Sum('total'),  # What customers actually paid (includes service fees)
+                gross_revenue=Sum('subtotal'),  # Revenue before service fees (organizer income)
+                total_service_fees=Sum('service_fee'),
+                total_orders=Count('id')
+            )
+            
+            # Calculate tickets sold from order items
+            tickets_data = OrderItem.objects.filter(
+                ticket_tier=ticket_tier,
+                order__status='paid'
+            ).aggregate(
+                total_tickets=Sum('quantity')
+            )
+            
+            # Extract values with proper defaults
+            total_revenue = float(revenue_data['total_revenue'] or 0)  # Total paid by customers
+            total_service_fees = float(revenue_data['total_service_fees'] or 0)  # Platform commission
+            total_net_revenue = float(revenue_data['gross_revenue'] or 0)  # Organizer income
+            orders_count = revenue_data['total_orders'] or 0
+            tickets_sold = tickets_data['total_tickets'] or 0
+            
+            # For pricing history, we still need to look at individual order items to see price variations
             paid_order_items = OrderItem.objects.filter(
                 ticket_tier=ticket_tier,
                 order__status='paid'
             ).select_related('order')
             
-            # Calculate revenue from actual orders (enterprise approach)
-            total_revenue = 0
-            total_service_fees = 0
-            total_net_revenue = 0
-            orders_count = 0
-            tickets_sold = 0
-            
             revenue_by_price = {}  # Track different price points
             
             for item in paid_order_items:
-                # Revenue calculation based on actual order amounts
-                item_subtotal = item.quantity * item.price
-                item_service_fee = item.quantity * item.service_fee
-                item_total = item_subtotal + item_service_fee
+                # For pricing history, use the proportion of the order that corresponds to this item
+                # This handles PWYW correctly by using the actual order totals
+                order = item.order
+                order_total_items = order.items.aggregate(total_qty=Sum('quantity'))['total_qty'] or 1
                 
-                total_revenue += item_total
-                total_service_fees += item_service_fee
-                total_net_revenue += item_subtotal
-                tickets_sold += item.quantity
-                orders_count += 1
+                # Calculate this item's share of the order total (using Decimal for precision)
+                item_share = Decimal(item.quantity) / Decimal(order_total_items)
+                item_order_subtotal = float(order.subtotal * item_share)
+                item_order_service_fee = float(order.service_fee * item_share)
+                item_order_total = float(order.total * item_share)
                 
-                # Track revenue by price point
-                price_key = f"{item.price}_{item.service_fee}"
+                # Use the calculated per-unit prices for grouping
+                unit_subtotal = item_order_subtotal / item.quantity if item.quantity > 0 else 0
+                unit_service_fee = item_order_service_fee / item.quantity if item.quantity > 0 else 0
+                unit_total = item_order_total / item.quantity if item.quantity > 0 else 0
+                
+                price_key = f"{unit_subtotal:.2f}_{unit_service_fee:.2f}"
                 if price_key not in revenue_by_price:
                     revenue_by_price[price_key] = {
-                        'base_price': float(item.price),
-                        'service_fee': float(item.service_fee),
-                        'total_price': float(item.price + item.service_fee),
+                        'base_price': unit_subtotal,
+                        'service_fee': unit_service_fee,
+                        'total_price': unit_total,
                         'tickets_sold': 0,
                         'revenue': 0
                     }
                 revenue_by_price[price_key]['tickets_sold'] += item.quantity
-                revenue_by_price[price_key]['revenue'] += item_total
+                revenue_by_price[price_key]['revenue'] += item_order_total
             
             # Current pricing info
             current_base_price = float(ticket_tier.price)

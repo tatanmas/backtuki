@@ -88,6 +88,68 @@ class PaymentSetupView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class TransbankUpdateView(APIView):
+    """
+    🚀 ENTERPRISE: Admin endpoint for updating Transbank credentials
+    """
+    permission_classes = [permissions.AllowAny]  # For deployment automation
+    
+    def post(self, request):
+        """Update Transbank credentials"""
+        try:
+            commerce_code = request.data.get('commerce_code')
+            api_key = request.data.get('api_key')
+            is_sandbox = request.data.get('is_sandbox', False)
+            
+            if not commerce_code or not api_key:
+                return Response({
+                    'success': False,
+                    'error': 'Both commerce_code and api_key are required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Update existing provider
+            provider = PaymentProvider.objects.get(
+                provider_type='transbank_webpay_plus',
+                name='Transbank WebPay Plus'
+            )
+            
+            # Update configuration
+            provider.config = {
+                'commerce_code': commerce_code,
+                'api_key': api_key,
+            }
+            provider.is_sandbox = is_sandbox
+            provider.save()
+            
+            env_mode = "SANDBOX" if is_sandbox else "PRODUCTION"
+            logger.info(f"✅ Updated Transbank WebPay Plus provider to {env_mode}")
+            
+            return Response({
+                'success': True,
+                'message': f'Transbank credentials updated to {env_mode}',
+                'provider': {
+                    'id': str(provider.id),
+                    'name': provider.name,
+                    'is_sandbox': provider.is_sandbox,
+                    'commerce_code': commerce_code,
+                    'api_key_preview': api_key[:20] + '...' if len(api_key) > 20 else api_key
+                }
+            }, status=status.HTTP_200_OK)
+            
+        except PaymentProvider.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Transbank WebPay Plus provider not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+            
+        except Exception as e:
+            logger.error(f"💥 TRANSBANK UPDATE ERROR: {str(e)}")
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 class PaymentViewSet(viewsets.ModelViewSet):
     """
     🚀 ENTERPRISE: Payment processing endpoints

@@ -10,7 +10,9 @@ TU TICKET:
 🎫 Número: {{ ticket.ticket_number }}
 👤 Asistente: {{ attendee_name }}
 🎟️ Tipo: {{ ticket.order_item.ticket_tier.name }}
-{% if order.total > 0 %}💰 Precio: ${{ order.total|floatformat:0 }} {{ order.currency }}{% else %}💰 GRATUITO{% endif %}
+{% if order.total > 0 %}💰 Precio sin cargo: ${{ ticket.order_item.unit_price|floatformat:0 }} {{ order.currency }}{% if order.service_fee > 0 %}
+💳 Comisión de Servicio: ${{ order.service_fee|floatformat:0 }} {{ order.currency }}
+💵 Subtotal: ${{ order.total|floatformat:0 }} {{ order.currency }}{% endif %}{% else %}💰 GRATUITO{% endif %}
 📋 Orden: {{ order.order_number }}
 
 INFORMACIÓN IMPORTANTE:
@@ -20,8 +22,8 @@ INFORMACIÓN IMPORTANTE:
 {% if event.age_restriction %}• Restricción de edad: {{ event.age_restriction }}{% endif %}
 {% if event.dresscode %}• Código de vestimenta: {{ event.dresscode }}{% endif %}
 
-CÓDIGO QR: https://tuki.cl/tickets/{{ ticket.ticket_number }}
-Ver ticket completo: https://tuki.cl/tickets/{{ ticket.ticket_number }}
+CÓDIGO QR: https://tuki.live/tickets/{{ ticket.ticket_number }}
+Ver ticket completo: https://tuki.live/tickets/{{ ticket.ticket_number }}
 
 ¿Tienes alguna pregunta?
 Contacta al organizador: {{ event.organizer.email|default:'info@tuki.cl' }}
@@ -30,6 +32,6 @@ Contacta al organizador: {{ event.organizer.email|default:'info@tuki.cl' }}
 
 --
 Equipo Tuki
-https://tuki.cl
+https://tuki.live
 soporte@tuki.cl
 

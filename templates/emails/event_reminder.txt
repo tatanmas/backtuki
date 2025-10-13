@@ -21,7 +21,7 @@ LISTA DE VERIFICACIÓN:
 ✅ Llegar 15 minutos antes
 {% if event.dresscode %}✅ Vestimenta: {{ event.dresscode }}{% endif %}
 
-Ver mi ticket: https://tuki.cl/tickets/{{ ticket.ticket_number }}
+Ver mi ticket: https://tuki.live/tickets/{{ ticket.ticket_number }}
 
 ¿Necesitas direcciones?
 Google Maps: https://maps.google.com/?q={{ event.location.address|urlencode }}
@@ -30,6 +30,6 @@ Google Maps: https://maps.google.com/?q={{ event.location.address|urlencode }}
 
 --
 Equipo Tuki
-https://tuki.cl
+https://tuki.live
 soporte@tuki.cl
 

@@ -355,11 +355,26 @@ class TransbankWebPayPlusService(BasePaymentService):
                 self._cleanup_order_reservations(payment.order)
                 
                 # Trigger email sending
-                from apps.events.tasks import send_ticket_confirmation_email
-                send_ticket_confirmation_email.apply_async(
-                    args=[str(payment.order.id)], 
-                    queue='emails'
-                )
+                try:
+                    from apps.events.tasks import send_order_confirmation_email
+                    logger.info(f"📧 [EMAIL] Enqueuing order confirmation email for order {payment.order.id}")
+                    send_order_confirmation_email.apply_async(
+                        args=[str(payment.order.id)], 
+                        queue='emails'
+                    )
+                    logger.info(f"📧 [EMAIL] Successfully enqueued order confirmation email for order {payment.order.id}")
+                except Exception as e:
+                    logger.error(f"📧 [EMAIL] Failed to enqueue order confirmation email for order {payment.order.id}: {e}")
+                    # Fallback to old function if new one fails
+                    try:
+                        from apps.events.tasks import send_ticket_confirmation_email
+                        logger.info(f"📧 [EMAIL] Fallback: Enqueuing ticket confirmation email for order {payment.order.id}")
+                        send_ticket_confirmation_email.apply_async(
+                            args=[str(payment.order.id)], 
+                            queue='emails'
+                        )
+                    except Exception as fallback_e:
+                        logger.error(f"📧 [EMAIL] Fallback also failed for order {payment.order.id}: {fallback_e}")
                 
                 return {
                     'success': True,

@@ -1645,11 +1645,19 @@ class BookingSerializer(serializers.Serializer):
             
             # Send confirmation email for free orders
             try:
-                from apps.events.tasks import send_ticket_confirmation_email
-                print(f"📧 QUEUE: Enqueuing confirmation email for order {order.id} -> queue 'emails'")
-                send_ticket_confirmation_email.apply_async(args=[str(order.id)], queue='emails')
+                from apps.events.tasks import send_order_confirmation_email
+                print(f"📧 QUEUE: Enqueuing order confirmation email for order {order.id} -> queue 'emails'")
+                send_order_confirmation_email.apply_async(args=[str(order.id)], queue='emails')
+                print(f"📧 QUEUE: Successfully enqueued order confirmation email for order {order.id}")
             except Exception as e:
-                print(f'Warning: Could not queue confirmation email: {e}')
+                print(f'📧 ERROR: Could not queue order confirmation email: {e}')
+                # Fallback to old function
+                try:
+                    from apps.events.tasks import send_ticket_confirmation_email
+                    print(f"📧 FALLBACK: Enqueuing ticket confirmation email for order {order.id}")
+                    send_ticket_confirmation_email.apply_async(args=[str(order.id)], queue='emails')
+                except Exception as fallback_e:
+                    print(f'📧 FALLBACK ERROR: Could not queue any confirmation email: {fallback_e}')
             
             return {
                 'bookingId': str(order.id),

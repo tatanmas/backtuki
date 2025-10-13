@@ -4,7 +4,7 @@
 
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import PaymentViewSet, PaymentMethodsPublicView, PaymentSetupView
+from .views import PaymentViewSet, PaymentMethodsPublicView, PaymentSetupView, TransbankUpdateView
 
 app_name = 'payment_processor'
 
@@ -17,4 +17,5 @@ urlpatterns = [
     path('api/v1/payment-methods/', PaymentMethodsPublicView.as_view(), name='payment-methods-public'),
     # Admin endpoints
     path('api/v1/admin/setup-payment-providers/', PaymentSetupView.as_view(), name='setup-payment-providers'),
+    path('api/v1/admin/update-transbank-credentials/', TransbankUpdateView.as_view(), name='update-transbank-credentials'),
 ]

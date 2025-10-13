@@ -1,0 +1,44 @@
+¡Hola {{ attendee_name }}!
+
+¡Excelente noticia! Tu{% if tickets|length > 1 %}s{% endif %} reserva{% if tickets|length > 1 %}s{% endif %} para "{{ event.title }}" ha{% if tickets|length > 1 %}n{% endif %} sido confirmada{% if tickets|length > 1 %}s{% endif %} exitosamente.
+
+DETALLES DEL EVENTO:
+📅 Fecha: {{ event.start_date|date:"l, j \d\e F \d\e Y \a \l\a\s H:i" }}
+📍 Ubicación: {{ event.location.name }}{% if event.location.address %} - {{ event.location.address }}{% endif %}
+
+{% for ticket in tickets %}
+{% if not forloop.first %}
+═══════════════════════════════════════
+TICKET {{ forloop.counter }}
+═══════════════════════════════════════
+{% else %}
+TU{% if tickets|length > 1 %}S TICKET{% if tickets|length > 1 %}S{% endif %}{% else %} TICKET{% endif %}:
+{% endif %}
+🎫 Número: {{ ticket.ticket_number }}
+👤 Asistente: {{ ticket.first_name }} {{ ticket.last_name }}
+🎟️ Tipo: {{ ticket.order_item.ticket_tier.name }}
+{% if forloop.first %}{% if order.total > 0 %}💰 Subtotal: ${{ order.subtotal|floatformat:0 }} {{ order.currency }}{% if order.service_fee > 0 %}
+💳 Comisión de Servicio: ${{ order.service_fee|floatformat:0 }} {{ order.currency }}{% endif %}
+💵 TOTAL: ${{ order.total|floatformat:0 }} {{ order.currency }}{% if tickets|length > 1 %} ({{ tickets|length }} tickets){% endif %}{% else %}💰 GRATUITO{% endif %}
+📋 Orden: {{ order.order_number }}{% endif %}
+
+{% endfor %}
+INFORMACIÓN IMPORTANTE:
+• Llega 15 minutos antes del evento
+• Presenta tu{% if tickets|length > 1 %}s{% endif %} ticket{% if tickets|length > 1 %}s{% endif %} número{% if tickets|length > 1 %}s{% endif %} {% for ticket in tickets %}{{ ticket.ticket_number }}{% if not forloop.last %}{% if forloop.revcounter == 2 %} y {% else %}, {% endif %}{% endif %}{% endfor %}
+• Lleva un documento de identidad
+{% if event.age_restriction %}• Restricción de edad: {{ event.age_restriction }}{% endif %}
+{% if event.dresscode %}• Código de vestimenta: {{ event.dresscode }}{% endif %}
+
+{% for ticket in tickets %}CÓDIGO QR: https://tuki.live/tickets/{{ ticket.ticket_number }}
+{% endfor %}Ver ticket{% if tickets|length > 1 %}s{% endif %} completo{% if tickets|length > 1 %}s{% endif %}:{% for ticket in tickets %} https://tuki.live/tickets/{{ ticket.ticket_number }}{% if not forloop.last %},{% endif %}{% endfor %}
+
+¿Tienes alguna pregunta?
+Contacta al organizador: {{ event.organizer.email|default:'info@tuki.cl' }}
+
+¡Nos vemos en el evento!
+
+--
+Equipo Tuki
+https://tuki.live
+soporte@tuki.cl

@@ -29,22 +29,47 @@
 
 <!-- Ticket Information -->
 <div class="ticket-info">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-        <div>
-            <p class="ticket-number">Ticket #{{ ticket.ticket_number }}</p>
-            <p class="attendee-name">{{ attendee_name }}</p>
+    <div style="margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <div>
+                <p class="ticket-number">Ticket #{{ ticket.ticket_number }}</p>
+                <p class="attendee-name">{{ attendee_name }}</p>
+            </div>
         </div>
-        <div style="text-align: right;">
-            {% if order.total > 0 %}
-                <p style="font-size: 18px; font-weight: 600; margin: 0;">
-                    ${{ order.total|floatformat:0 }} {{ order.currency }}
-                </p>
-            {% else %}
-                <p style="font-size: 18px; font-weight: 600; margin: 0; color: #10b981;">
-                    GRATUITO
-                </p>
-            {% endif %}
+        
+        <!-- Desglose de precios -->
+        {% if order.total > 0 %}
+        <div style="background-color: rgba(255,255,255,0.1); border-radius: 8px; padding: 16px; margin-top: 16px;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <tr>
+                    <td style="padding: 4px 0; font-size: 14px; color: rgba(255,255,255,0.9);">Precio sin cargo:</td>
+                    <td style="padding: 4px 0; text-align: right; font-size: 14px; color: rgba(255,255,255,0.9);">
+                        ${{ ticket.order_item.unit_price|floatformat:0 }} {{ order.currency }}
+                    </td>
+                </tr>
+                {% if order.service_fee > 0 %}
+                <tr>
+                    <td style="padding: 4px 0; font-size: 14px; color: rgba(255,255,255,0.9);">Comisión de Servicio:</td>
+                    <td style="padding: 4px 0; text-align: right; font-size: 14px; color: rgba(255,255,255,0.9);">
+                        ${{ order.service_fee|floatformat:0 }} {{ order.currency }}
+                    </td>
+                </tr>
+                {% endif %}
+                <tr style="border-top: 1px solid rgba(255,255,255,0.3);">
+                    <td style="padding: 8px 0 4px 0; font-size: 16px; font-weight: 600; color: #ffffff;">Subtotal:</td>
+                    <td style="padding: 8px 0 4px 0; text-align: right; font-size: 16px; font-weight: 600; color: #ffffff;">
+                        ${{ order.total|floatformat:0 }} {{ order.currency }}
+                    </td>
+                </tr>
+            </table>
         </div>
+        {% else %}
+        <div style="text-align: center; margin-top: 16px;">
+            <p style="font-size: 18px; font-weight: 600; margin: 0; color: #10b981;">
+                GRATUITO
+            </p>
+        </div>
+        {% endif %}
     </div>
     
     <div style="border-top: 1px solid rgba(255,255,255,0.3); padding-top: 16px;">
@@ -76,7 +101,7 @@
 
 <!-- Call to Action -->
 <div style="text-align: center; margin: 32px 0;">
-    <a href="https://tuki.cl/tickets/{{ ticket.ticket_number }}" class="cta-button">
+    <a href="https://tuki.live/tickets/{{ ticket.ticket_number }}" class="cta-button">
         Ver mi ticket completo
     </a>
 </div>

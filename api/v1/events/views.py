@@ -499,6 +499,8 @@ class EventViewSet(viewsets.ModelViewSet):
         event_id = request.query_params.get('event_id')
         start_date = timezone.now() - timedelta(days=days)
         
+        print(f"🔍 [ANALYTICS DEBUG] days={days}, event_id={event_id}, start_date={start_date}")
+        
         # Base queryset for PAID orders only (effective sales)
         orders_queryset = Order.objects.filter(
             event__organizer=organizer,
@@ -506,8 +508,13 @@ class EventViewSet(viewsets.ModelViewSet):
             created_at__gte=start_date
         ).select_related('event')
         
+        print(f"🔍 [ANALYTICS DEBUG] Base orders count: {orders_queryset.count()}")
+        
         if event_id:
             orders_queryset = orders_queryset.filter(event_id=event_id)
+            print(f"🔍 [ANALYTICS DEBUG] Orders after event filter: {orders_queryset.count()}")
+        else:
+            print(f"🔍 [ANALYTICS DEBUG] No event_id filter applied")
         
         # 🚀 ENTERPRISE: EFFECTIVE REVENUE CALCULATION
         # Sum the actual 'total' field from orders (what customers actually paid)
@@ -640,7 +647,7 @@ class EventViewSet(viewsets.ModelViewSet):
             {'name': 'Directo', 'value': int(total_orders * 0.1), 'fill': '#8dd1e1'},
         ]
         
-        return Response({
+        response_data = {
             'kpis': {
                 'totalSales': total_tickets,
                 'totalRevenue': total_revenue,  # Effective revenue (what was actually paid)
@@ -665,9 +672,16 @@ class EventViewSet(viewsets.ModelViewSet):
                 'calculation_method': 'effective_revenue',
                 'includes_discounts': True,
                 'includes_service_fees': True,
-                'only_paid_orders': True
+                'only_paid_orders': True,
+                'event_id_filter': event_id,
+                'filtered_orders_count': orders_queryset.count()
             }
-        })
+        }
+        
+        print(f"🔍 [ANALYTICS DEBUG] Final response KPIs: totalSales={total_tickets}, totalRevenue={total_revenue}")
+        print(f"🔍 [ANALYTICS DEBUG] Event filter applied: {event_id is not None}")
+        
+        return Response(response_data)
 
     @action(detail=True, methods=['get'])
     def conversion_metrics(self, request, pk=None):
@@ -782,8 +796,11 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
         
-        # Get all events for the organizer
-        events = Event.objects.filter(organizer=organizer).select_related(
+        # Get all events for the organizer (exclude soft deleted)
+        events = Event.objects.filter(
+            organizer=organizer,
+            deleted_at__isnull=True  # Exclude soft deleted events
+        ).select_related(
             'location', 'category'
         ).prefetch_related(
             'ticket_tiers', 'images'
@@ -910,13 +927,37 @@ class EventViewSet(viewsets.ModelViewSet):
                             print(f"[UPLOAD] ⚠️ Could not delete file {saved_path}: {e}")
                         return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
                     
+                    # 🚀 ENTERPRISE FIX: Replace main image instead of adding additional ones
+                    # Check if this is meant to replace the main image (order=0)
+                    replace_main = request.data.get('replace_main', 'true').lower() == 'true'
+                    
+                    if replace_main:
+                        # Delete existing main image (order=0) if it exists
+                        main_image = event.images.filter(order=0).first()
+                        if main_image:
+                            try:
+                                # Delete the old file from storage
+                                default_storage.delete(main_image.image.name)
+                                print(f"[UPLOAD] 🗑️ Deleted old main image: {main_image.image.name}")
+                            except Exception as e:
+                                print(f"[UPLOAD] ⚠️ Could not delete old image file: {e}")
+                            # Delete the database record
+                            main_image.delete()
+                            print(f"[UPLOAD] 🗑️ Deleted old main image record")
+                        
+                        # Create new main image with order=0
+                        order = 0
+                    else:
+                        # Add as additional image
+                        order = event.images.count()
+                    
                     # Create EventImage record
                     event_image = EventImage.objects.create(
                         event=event,
                         image=saved_path,  # Store the path returned by storage backend
                         alt=request.data.get('alt', file_obj.name),
                         type=request.data.get('type', 'image'),
-                        order=event.images.count()  # Set order as current count
+                        order=order
                     )
                     
                     print(f"[UPLOAD] ✅ Created EventImage record: {event_image.id} for event {event.id}")
@@ -2764,7 +2805,7 @@ class EventCommunicationViewSet(viewsets.ModelViewSet):
                         "success": True,
                         "qr_code": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
                         "ticket_number": "TIX-B382C943",
-                        "ticket_url": "https://tuki.cl/tickets/TIX-B382C943",
+                        "ticket_url": "https://tuki.live/tickets/TIX-B382C943",
                         "expires_at": "2025-09-30T16:18:29Z",
                         "security_hash": "abc123def456"
                     }
@@ -2850,7 +2891,7 @@ def generate_ticket_qr(request, ticket_number):
             'success': True,
             'qr_code': qr_code_base64,
             'ticket_number': ticket_number,
-            'ticket_url': f"https://tuki.cl/tickets/{ticket_number}",
+            'ticket_url': f"{settings.FRONTEND_URL}/tickets/{ticket_number}",
             'expires_at': (timezone.now() + timezone.timedelta(days=30)).isoformat(),
             'security_hash': security_hash,
             'ticket_info': {

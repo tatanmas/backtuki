@@ -108,37 +108,43 @@
                     <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Tipo de Entrada</th>
                     <th style="padding: 12px; text-align: center; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Cantidad</th>
                     <th style="padding: 12px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Precio</th>
+                    <th style="padding: 12px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Cargo</th>
                     <th style="padding: 12px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Subtotal</th>
                 </tr>
             </thead>
             <tbody>
-                {% for item in order.items.all %}
-                    {% for ticket in item.tickets.all %}
-                    <tr>
-                        <td style="padding: 12px; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">
-                            <div>
-                                <p style="margin: 0; font-weight: 600;">{{ ticket.first_name }} {{ ticket.last_name }}</p>
-                                <p style="margin: 2px 0 0 0; font-size: 12px; color: #6b7280;">{{ ticket.email }}</p>
-                            </div>
-                        </td>
-                        <td style="padding: 12px; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">{{ item.ticket_tier.name }}</td>
-                        <td style="padding: 12px; text-align: center; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">1</td>
-                        <td style="padding: 12px; text-align: right; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">
-                            {% if item.unit_price > 0 %}
-                                ${{ item.unit_price|floatformat:0 }} {{ order.currency }}
-                            {% else %}
-                                Gratuito
-                            {% endif %}
-                        </td>
-                        <td style="padding: 12px; text-align: right; font-size: 14px; color: #1f2937; font-weight: 600; border-bottom: 1px solid #f3f4f6;">
-                            {% if item.unit_price > 0 %}
-                                ${{ item.unit_price|floatformat:0 }} {{ order.currency }}
-                            {% else %}
-                                Gratuito
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
+                {% for ticket in tickets %}
+                <tr>
+                    <td style="padding: 12px; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">
+                        <div>
+                            <p style="margin: 0; font-weight: 600;">{{ ticket.first_name }} {{ ticket.last_name }}</p>
+                            <p style="margin: 2px 0 0 0; font-size: 12px; color: #6b7280;">{{ ticket.email }}</p>
+                        </div>
+                    </td>
+                    <td style="padding: 12px; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">{{ ticket.order_item.ticket_tier.name }}</td>
+                    <td style="padding: 12px; text-align: center; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">1</td>
+                    <td style="padding: 12px; text-align: right; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">
+                        {% if ticket.order_item.unit_price > 0 %}
+                            ${{ ticket.order_item.unit_price|floatformat:0 }} {{ order.currency }}
+                        {% else %}
+                            Gratuito
+                        {% endif %}
+                    </td>
+                    <td style="padding: 12px; text-align: right; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">
+                        {% if ticket.order_item.unit_service_fee > 0 %}
+                            ${{ ticket.order_item.unit_service_fee|floatformat:0 }} {{ order.currency }}
+                        {% else %}
+                            $0 {{ order.currency }}
+                        {% endif %}
+                    </td>
+                    <td style="padding: 12px; text-align: right; font-size: 14px; color: #1f2937; font-weight: 600; border-bottom: 1px solid #f3f4f6;">
+                        {% if ticket.order_item.unit_price > 0 %}
+                            ${{ ticket.order_item.unit_price|add:ticket.order_item.unit_service_fee|floatformat:0 }} {{ order.currency }}
+                        {% else %}
+                            Gratuito
+                        {% endif %}
+                    </td>
+                </tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -189,11 +195,13 @@
     </div>
 
 
-    <!-- Ticket Individual Completo -->
+    <!-- Tickets Individuales Completos -->
     <div style="padding: 40px 0; text-align: center;">
         <h3 style="font-size: 18px; font-weight: 600; color: #1f2937; margin: 0 0 32px 0;">
-            Tu Ticket de Entrada
+            Tu{% if tickets|length > 1 %}s{% endif %} Ticket{% if tickets|length > 1 %}s{% endif %} de Entrada
         </h3>
+        
+        {% for ticket in tickets %}
         
         <div style="background: linear-gradient(135deg, #268078 0%, #572150 50%, #4CBED7 100%); border-radius: 12px; padding: 3px; margin: 0 auto; max-width: 500px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);">
             <div style="background-color: #ffffff; border-radius: 9px; padding: 24px;">
@@ -240,7 +248,7 @@
             <!-- Información del Asistente -->
             <div style="background-color: #f8fafc; border-radius: 8px; padding: 16px; margin-bottom: 20px; text-align: left;">
                 <p style="font-size: 16px; font-weight: 600; color: #1f2937; margin: 0 0 4px 0;">
-                    {{ attendee_name }}
+                    {{ ticket.first_name }} {{ ticket.last_name }}
                 </p>
                 <p style="font-size: 13px; color: #6b7280; margin: 0 0 4px 0;">
                     {{ ticket.email }}
@@ -252,7 +260,7 @@
             
             <!-- QR Code -->
             <div style="background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 20px 0;">
-                <img src="cid:qr_code" alt="QR Code para {{ ticket.ticket_number }}" style="width: 140px; height: 140px; display: block; margin: 0 auto;">
+                <img src="cid:qr_code_{{ ticket.ticket_number }}" alt="QR Code para {{ ticket.ticket_number }}" style="width: 140px; height: 140px; display: block; margin: 0 auto;">
             </div>
             
             <!-- Instrucciones -->
@@ -264,12 +272,19 @@
             </div>
             </div>
         </div>
+        
+        {% if not forloop.last %}
+        <!-- Separador entre tickets -->
+        <div style="margin: 32px 0; border-top: 1px solid #e5e7eb;"></div>
+        {% endif %}
+        
+        {% endfor %}
     </div>
 
     <!-- Acciones -->
     <div style="text-align: center; padding: 32px 0; border-bottom: 1px solid #f3f4f6;">
-        <a href="{{ frontend_url }}/tickets/{{ ticket.ticket_number }}" style="display: inline-block; background-color: #268078; color: white; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: 600; font-size: 14px; margin: 0 8px 8px 0;">
-            Ver Ticket Completo
+        <a href="{{ frontend_url }}/tickets/{{ tickets.0.ticket_number }}" style="display: inline-block; background-color: #268078; color: white; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: 600; font-size: 14px; margin: 0 8px 8px 0;">
+            Ver Ticket{% if tickets|length > 1 %}s{% endif %} Completo{% if tickets|length > 1 %}s{% endif %}
         </a>
         <a href="{{ frontend_url }}/events/{{ event.id }}" style="display: inline-block; background-color: transparent; color: #268078; text-decoration: none; padding: 12px 24px; border: 1px solid #268078; border-radius: 6px; font-weight: 600; font-size: 14px; margin: 0 8px 8px 0;">
             Detalles del Evento
