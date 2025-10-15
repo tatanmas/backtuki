@@ -1,8 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    EventViewSet, 
-    EventCategoryViewSet,
     TicketCategoryViewSet,
     TicketTierViewSet,
     generate_ticket_qr,
@@ -10,11 +8,8 @@ from .views import (
 )
 from .public_views import PublicEventViewSet
 
-router = DefaultRouter()
-router.register(r'events', EventViewSet)
-router.register(r'event-categories', EventCategoryViewSet)
-
-# ✅ Router para endpoints públicos
+# ✅ Router para endpoints públicos ONLY
+# EventViewSet is already registered in api/v1/urls.py to avoid duplicate registration
 public_router = DefaultRouter()
 public_router.register(r'public/events', PublicEventViewSet, basename='public-events')
 
@@ -24,8 +19,7 @@ event_router.register(r'ticket-categories', TicketCategoryViewSet, basename='eve
 event_router.register(r'ticket-tiers', TicketTierViewSet, basename='event-ticket-tier')
 
 urlpatterns = [
-    path('', include(router.urls)),
-    path('', include(public_router.urls)),  # ✅ NUEVO: Endpoints públicos
+    path('', include(public_router.urls)),  # ✅ Public event endpoints
     path('events/<str:event_id>/', include(event_router.urls)),
     
     # Standalone ticket category endpoints

@@ -49,8 +49,8 @@ class PublicEventViewSet(viewsets.ModelViewSet):
         Sobrescribir get_object para permitir acceso a eventos en draft
         que requieren validación de email (para el flujo público).
         """
-        if self.action in ['send_validation_otp', 'validate_and_publish']:
-            # Para acciones de validación, permitir acceso a eventos en draft
+        if self.action in ['send_validation_otp', 'validate_and_publish', 'update', 'partial_update']:
+            # Para acciones de validación y actualización, permitir acceso a eventos en draft
             lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
             lookup_value = self.kwargs[lookup_url_kwarg]
             filter_kwargs = {self.lookup_field: lookup_value}
@@ -63,9 +63,13 @@ class PublicEventViewSet(viewsets.ModelViewSet):
                     from django.http import Http404
                     raise Http404("Evento no encontrado")
                 
-                # ✅ MEJORADO: Permitir acceso si requiere validación O si ya fue validado (para reenvío de tokens)
+                # ✅ MEJORADO: Permitir acceso si:
+                # 1. Requiere validación (está en draft) O
+                # 2. Ya fue validado/publicado (para actualizaciones posteriores)
+                # 3. Para update/partial_update, permitir acceso a eventos publicados si hay autenticación
                 if (obj.requires_email_validation and obj.organizer and obj.organizer.is_temporary) or \
-                   (not obj.requires_email_validation and obj.organizer and not obj.organizer.is_temporary):
+                   (not obj.requires_email_validation and obj.organizer and not obj.organizer.is_temporary) or \
+                   (self.action in ['update', 'partial_update'] and not obj.requires_email_validation):
                     return obj
                 else:
                     from django.http import Http404
@@ -81,6 +85,8 @@ class PublicEventViewSet(viewsets.ModelViewSet):
         """Usar serializer apropiado según la acción."""
         if self.action in ['retrieve', 'list']:
             return EventDetailSerializer
+        elif self.action in ['update', 'partial_update']:
+            return PublicEventCreateSerializer  # Reuse create serializer for updates
         return PublicEventCreateSerializer
     
     def create(self, request, *args, **kwargs):
@@ -105,6 +111,85 @@ class PublicEventViewSet(viewsets.ModelViewSet):
             'organizer_id': str(temp_organizer.id),
             'message': 'Borrador de evento creado exitosamente. Por favor, valida tu email para continuar.'
         }, status=status.HTTP_201_CREATED)
+    
+    def update(self, request, *args, **kwargs):
+        """
+        🚀 ENTERPRISE UPDATE: Actualizar evento público.
+        Permite actualizar eventos en draft Y publicados.
+        """
+        try:
+            instance = self.get_object()
+            
+            # ✅ SECURITY: Validar permisos según el estado del evento
+            can_update = False
+            
+            if instance.requires_email_validation:
+                # Evento en draft - permitir sin autenticación (flujo público)
+                can_update = True
+                print(f"[PUBLIC-EVENT-UPDATE] 📝 Updating draft event (no auth required): {instance.id}")
+            elif request.user.is_authenticated:
+                # Evento publicado - validar que sea el organizador propietario o superadmin
+                user = request.user
+                
+                # Verificar si es superadmin
+                if user.is_superuser:
+                    can_update = True
+                    print(f"[PUBLIC-EVENT-UPDATE] 🔐 Superadmin updating published event: {instance.id}")
+                else:
+                    # Verificar si es el organizador propietario del evento
+                    try:
+                        from apps.organizers.models import OrganizerUser
+                        organizer_user = OrganizerUser.objects.get(
+                            user=user,
+                            organizer=instance.organizer
+                        )
+                        can_update = True
+                        print(f"[PUBLIC-EVENT-UPDATE] ✅ Organizer updating own published event: {instance.id}")
+                    except OrganizerUser.DoesNotExist:
+                        can_update = False
+                        print(f"[PUBLIC-EVENT-UPDATE] ❌ User {user.id} is not the organizer of event {instance.id}")
+            else:
+                can_update = False
+                print(f"[PUBLIC-EVENT-UPDATE] ❌ No permission to update published event: {instance.id}")
+            
+            if not can_update:
+                return Response({
+                    'success': False,
+                    'message': 'No tienes permisos para actualizar este evento'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            print(f"[PUBLIC-EVENT-UPDATE] 🔄 Updating public event: {instance.id}")
+            print(f"[PUBLIC-EVENT-UPDATE] 📊 Update data: {request.data}")
+            
+            # Usar el serializer para validar y actualizar
+            serializer = self.get_serializer(instance, data=request.data, partial=kwargs.get('partial', False))
+            serializer.is_valid(raise_exception=True)
+            
+            # Actualizar el evento
+            updated_event = serializer.save()
+            
+            print(f"[PUBLIC-EVENT-UPDATE] ✅ Event updated successfully: {updated_event.id}")
+            
+            return Response({
+                'success': True,
+                'message': 'Evento actualizado exitosamente',
+                'event_id': str(updated_event.id),
+                'data': serializer.data
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            print(f"[PUBLIC-EVENT-UPDATE] ❌ Error updating event: {e}")
+            return Response({
+                'success': False,
+                'message': f'Error al actualizar el evento: {str(e)}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+    
+    def partial_update(self, request, *args, **kwargs):
+        """
+        Actualización parcial de evento público.
+        """
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
     
     def create_temp_organizer(self):
         """Crear organizador temporal con datos mínimos."""

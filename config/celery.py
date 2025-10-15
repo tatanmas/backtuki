@@ -53,6 +53,26 @@ app.conf.beat_schedule = {
             'routing_key': 'maintenance.cleanup_orders',
         }
     },
+    
+    # 🚀 ENTERPRISE: WooCommerce Sync Tasks
+    'run-scheduled-woocommerce-syncs': {
+        'task': 'apps.sync_woocommerce.tasks.run_scheduled_syncs',
+        'schedule': crontab(minute='*/15'),  # Every 15 minutes
+        'options': {
+            'queue': 'default',
+            'routing_key': 'sync.scheduled',
+        }
+    },
+    
+    # Clean up old sync executions (weekly)
+    'cleanup-sync-executions': {
+        'task': 'apps.sync_woocommerce.tasks.cleanup_old_executions',
+        'schedule': crontab(hour=3, minute=0, day_of_week=1),  # Monday at 3 AM
+        'options': {
+            'queue': 'maintenance',
+            'routing_key': 'maintenance.cleanup_syncs',
+        }
+    },
 }
 
 # 🚀 ENTERPRISE TASK ROUTING
@@ -63,6 +83,12 @@ app.conf.task_routes = {
     'apps.events.tasks.send_welcome_organizer_email': {'queue': 'emails'},
     'apps.events.tasks.schedule_event_reminders': {'queue': 'emails'},
     'apps.events.tasks.generate_ticket_pdf': {'queue': 'documents'},
+    
+    # 🚀 ENTERPRISE: WooCommerce Sync Task Routing
+    'apps.sync_woocommerce.tasks.sync_woocommerce_event': {'queue': 'default'},
+    'apps.sync_woocommerce.tasks.run_scheduled_syncs': {'queue': 'default'},
+    'apps.sync_woocommerce.tasks.cleanup_old_executions': {'queue': 'maintenance'},
+    'apps.sync_woocommerce.tasks.test_woocommerce_connection': {'queue': 'default'},
 }
 
 # 🚀 ENTERPRISE CELERY CONFIGURATION

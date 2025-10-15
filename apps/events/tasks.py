@@ -275,6 +275,13 @@ def send_ticket_confirmation_email(self, order_id):
     Sends a confirmation email with ticket details after successful booking.
     """
     try:
+        from django.conf import settings
+        
+        # ✅ NO enviar emails durante migración
+        if getattr(settings, 'MIGRATION_MODE', False):
+            logger.info(f"📧 [EMAIL] Skipping email for order {order_id} - MIGRATION MODE active")
+            return {'status': 'skipped', 'reason': 'migration_mode'}
+        
         from apps.events.models import Order
         
         logger.info(f"📧 [EMAIL] Starting ticket confirmation email for order: {order_id}")
@@ -479,8 +486,8 @@ def cleanup_expired_ticket_holds():
         count = expired_holds.count()
         
         if count > 0:
-            # Mark as expired and release the holds
-            expired_holds.update(is_expired=True)
+            # Mark as released and free up the holds
+            expired_holds.update(released=True)
             logger.info(f"🧹 [CLEANUP] Cleaned up {count} expired ticket holds")
         
         return {
@@ -597,6 +604,13 @@ def send_order_confirmation_email(self, order_id):
     Sends a single confirmation email with all tickets for the order.
     """
     try:
+        from django.conf import settings
+        
+        # ✅ NO enviar emails durante migración
+        if getattr(settings, 'MIGRATION_MODE', False):
+            logger.info(f"📧 [EMAIL] Skipping order email for {order_id} - MIGRATION MODE active")
+            return {'status': 'skipped', 'reason': 'migration_mode'}
+        
         from apps.events.models import Order
         import tempfile
         import os

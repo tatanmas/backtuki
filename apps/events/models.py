@@ -1124,7 +1124,10 @@ class OrderItem(BaseModel):
             
             # Calculate amounts: custom_price = organizer_amount + platform_fee
             # organizer_amount = custom_price / (1 + service_fee_rate)
-            organizer_amount = self.custom_price / (Decimal('1') + service_fee_rate)
+            # Round organizer_amount to nearest integer for CLP (no decimals)
+            from decimal import ROUND_HALF_UP
+            organizer_amount = (self.custom_price / (Decimal('1') + service_fee_rate)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+            # Platform fee is the difference to ensure exact sum
             platform_fee = self.custom_price - organizer_amount
             
             self.unit_price = organizer_amount

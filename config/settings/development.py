@@ -14,6 +14,15 @@ INSTALLED_APPS += ['debug_toolbar']
 MIDDLEWARE += ['debug_toolbar.middleware.DebugToolbarMiddleware']
 INTERNAL_IPS = ['127.0.0.1']
 
+# ✅ Configurar Debug Toolbar para no interferir con API endpoints
+DEBUG_TOOLBAR_CONFIG = {
+    'SHOW_TOOLBAR_CALLBACK': lambda request: (
+        DEBUG and 
+        request.META.get('REMOTE_ADDR') in INTERNAL_IPS and
+        not request.path.startswith('/api/')  # ✅ Excluir rutas de API
+    ),
+}
+
 # 🚀 ENTERPRISE EMAIL CONFIGURATION for Tuki
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'mail.tuki.cl'
@@ -124,4 +133,7 @@ CSRF_COOKIE_HTTPONLY = False
 CSRF_COOKIE_SAMESITE = None  # Needed for cross-origin requests
 
 # 🚀 ENTERPRISE: Override frontend URL for development
-FRONTEND_URL = 'http://localhost:8080' 
+FRONTEND_URL = 'http://localhost:8080'
+
+# 🚨 CRÍTICO: Deshabilitar emails durante migraciones de WooCommerce
+MIGRATION_MODE = True 

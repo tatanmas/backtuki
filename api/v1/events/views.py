@@ -13,16 +13,21 @@ from django.db.models import F, Sum, Count, Q
 from django.utils.text import slugify
 from django.shortcuts import get_object_or_404
 from django.conf import settings
-from django.http import Http404
+from django.http import Http404, HttpResponse
 import uuid
 import os
-from django.db import transaction
+from django.db import transaction, models
 from django.db.models import Count, Sum, F, Q, Value
 from django.db.models.functions import Coalesce
 from django.http import Http404, JsonResponse
 from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 from datetime import timedelta
+import csv
+import io
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
 
 from core.permissions import IsOrganizer, HasEventModule
 from apps.events.models import (
@@ -90,30 +95,31 @@ class EventViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """Return events based on user permissions."""
-        # For public endpoints like book/reserve/retrieve, allow access to all published events
+        organizer = self.get_organizer()
+        print(f"DEBUG - EventViewSet.get_queryset - User: {self.request.user.id if self.request.user.is_authenticated else 'Anonymous'}")
+        print(f"DEBUG - EventViewSet.get_queryset - Organizer: {organizer.id if organizer else 'None'}")
+        print(f"DEBUG - EventViewSet.get_queryset - Action: {getattr(self, 'action', 'N/A')}")
+        
+        # Si es un organizador autenticado, puede acceder a TODOS sus eventos
+        if organizer:
+            queryset = self.queryset.filter(
+                organizer=organizer,
+                deleted_at__isnull=True
+            )
+            print(f"DEBUG - EventViewSet.get_queryset - Found {queryset.count()} events for organizer")
+            return queryset
+        
+        # Para usuarios no organizadores o anónimos, solo eventos públicos
         if self.action in ['book', 'reserve', 'availability', 'retrieve']:
             return Event.objects.filter(
                 status='published', 
                 visibility='public',
                 deleted_at__isnull=True  # Exclude soft deleted events
             )
-            
-        organizer = self.get_organizer()
-        print(f"DEBUG - EventViewSet.get_queryset - User: {self.request.user.id if self.request.user.is_authenticated else 'Anonymous'}")
-        print(f"DEBUG - EventViewSet.get_queryset - Organizer: {organizer.id if organizer else 'None'}")
         
-        if not organizer:
-            print("DEBUG - EventViewSet.get_queryset - No organizer found, returning empty queryset")
-            return Event.objects.none()
-        
-        # For organizer dashboard, exclude soft deleted events by default
-        queryset = self.queryset.filter(
-            organizer=organizer,
-            deleted_at__isnull=True
-        )
-        print(f"DEBUG - EventViewSet.get_queryset - Found {queryset.count()} events for organizer")
-        
-        return queryset
+        # Si no hay organizador y no es una acción pública, retornar vacío
+        print("DEBUG - EventViewSet.get_queryset - No organizer found, returning empty queryset")
+        return Event.objects.none()
     
     def get_serializer_class(self):
         """Return appropriate serializer based on action."""
@@ -684,6 +690,151 @@ class EventViewSet(viewsets.ModelViewSet):
         return Response(response_data)
 
     @action(detail=True, methods=['get'])
+    def export_orders(self, request, pk=None):
+        """
+        🚀 ENTERPRISE: Export event orders with complete financial data
+        
+        Supports CSV and Excel formats with complete order information:
+        - Order details (number, status, dates)
+        - Customer information (name, email, phone, address)
+        - Financial data (subtotal, taxes, fees, discounts, total)
+        - Payment information (method, transaction ID, payment dates)
+        - Items breakdown (ticket types, quantities, prices)
+        - Coupon usage and discount details
+        """
+        print(f"🔍 [EXPORT ORDERS] Method called with pk: {pk}")
+        print(f"🔍 [EXPORT ORDERS] Request path: {request.path}")
+        print(f"🔍 [EXPORT ORDERS] Request method: {request.method}")
+        
+        try:
+            print(f"🔍 [EXPORT ORDERS] Getting event object...")
+            event = self.get_object()
+            print(f"🔍 [EXPORT ORDERS] Event found: {event.title} (ID: {event.id})")
+            
+            print(f"🔍 [EXPORT ORDERS] Getting organizer...")
+            organizer = self.get_organizer()
+            print(f"🔍 [EXPORT ORDERS] Organizer: {organizer}")
+            
+            # Verify organizer owns this event
+            if not organizer or event.organizer != organizer:
+                print(f"🔍 [EXPORT ORDERS] Permission denied - organizer mismatch")
+                return Response(
+                    {"detail": "No tienes permisos para exportar este evento"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            print(f"🔍 [EXPORT ORDERS] Permission check passed")
+            
+            # Get export format (default to CSV)
+            export_format = request.query_params.get('export_format', 'csv').lower()
+            print(f"🔍 [EXPORT ORDERS] Export format: {export_format}")
+            
+            # Get all orders for this event with related data
+            print(f"🔍 [EXPORT ORDERS] Querying orders for event {event.id}...")
+            orders = Order.objects.filter(
+                event=event
+            ).select_related(
+                'user',
+                'coupon'
+            ).prefetch_related(
+                'items__ticket_tier',
+                'items__tickets'
+            ).order_by('created_at')
+            
+            orders_count = orders.count()
+            print(f"🔍 [EXPORT ORDERS] Found {orders_count} orders")
+            
+            if orders_count == 0:
+                print(f"🔍 [EXPORT ORDERS] No orders found - returning empty response")
+                return Response(
+                    {"detail": "No hay órdenes para exportar para este evento"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            print(f"🔍 [EXPORT ORDERS] Generating {export_format} export...")
+            if export_format == 'excel':
+                print(f"🔍 [EXPORT ORDERS] Calling _export_orders_excel...")
+                result = self._export_orders_excel(event, orders)
+                print(f"🔍 [EXPORT ORDERS] Excel export completed, content_type: {result.get('Content-Type', 'NOT SET')}")
+            else:
+                print(f"🔍 [EXPORT ORDERS] Calling _export_orders_csv...")
+                result = self._export_orders_csv(event, orders)
+                print(f"🔍 [EXPORT ORDERS] CSV export completed, content_type: {result.get('Content-Type', 'NOT SET')}")
+            
+            print(f"🔍 [EXPORT ORDERS] Export generated successfully")
+            return result
+                
+        except Exception as e:
+            print(f"🔍 [EXPORT ORDERS] ERROR: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {"detail": f"Error al exportar pedidos: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['get'])
+    def export_attendees(self, request, pk=None):
+        """
+        🚀 ENTERPRISE: Export event attendees with all data including custom fields
+        
+        Supports CSV and Excel formats with complete attendee information:
+        - Basic attendee info (name, email, phone)
+        - Ticket information (type, price, status)
+        - Order information (order number, payment status, dates)
+        - Custom form fields and responses
+        - Check-in status and timestamps
+        - Approval status for tickets requiring approval
+        """
+        try:
+            event = self.get_object()
+            organizer = self.get_organizer()
+            
+            # Verify organizer owns this event
+            if not organizer or event.organizer != organizer:
+                return Response(
+                    {"detail": "No tienes permisos para exportar este evento"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Get export format (default to CSV)
+            export_format = request.query_params.get('export_format', 'csv').lower()
+            
+            # Get all tickets for this event with related data
+            tickets = Ticket.objects.filter(
+                order_item__order__event=event
+            ).select_related(
+                'order_item__order',
+                'order_item__ticket_tier',
+                'order_item__ticket_tier__form',
+                'check_in_by',
+                'approved_by'
+            ).prefetch_related(
+                'order_item__ticket_tier__form__fields'
+            ).order_by('created_at')
+            
+            print(f"🔍 [EXPORT ATTENDEES] Generating {export_format} export...")
+            if export_format == 'excel':
+                print(f"🔍 [EXPORT ATTENDEES] Calling _export_attendees_excel...")
+                result = self._export_attendees_excel(event, tickets)
+                print(f"🔍 [EXPORT ATTENDEES] Excel export completed, content_type: {result.get('Content-Type', 'NOT SET')}")
+                return result
+            else:
+                print(f"🔍 [EXPORT ATTENDEES] Calling _export_attendees_csv...")
+                result = self._export_attendees_csv(event, tickets)
+                print(f"🔍 [EXPORT ATTENDEES] CSV export completed, content_type: {result.get('Content-Type', 'NOT SET')}")
+                return result
+                
+        except Exception as e:
+            print(f"🔍 [EXPORT ATTENDEES] ERROR: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {"detail": f"Error al exportar asistentes: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['get'])
     def conversion_metrics(self, request, pk=None):
         """🚀 ENTERPRISE: Get conversion funnel metrics for a specific event."""
         from apps.events.analytics_models import EventView, ConversionFunnel, EventPerformanceMetrics
@@ -1172,6 +1323,427 @@ class EventViewSet(viewsets.ModelViewSet):
                 {"detail": f"Error al eliminar el evento: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+    
+    
+    def _export_attendees_csv(self, event, tickets):
+        """Generate CSV export for attendees"""
+        response = HttpResponse(content_type='text/csv; charset=utf-8')
+        response['Content-Disposition'] = f'attachment; filename="asistentes_{event.slug}_{timezone.now().strftime("%Y%m%d_%H%M%S")}.csv"'
+        
+        # Add BOM for proper UTF-8 encoding in Excel
+        response.write('\ufeff')
+        
+        writer = csv.writer(response)
+        
+        # Get all form fields for this event
+        form_fields = []
+        for ticket_tier in event.ticket_tiers.all():
+            if ticket_tier.form:
+                for field in ticket_tier.form.fields.all():
+                    if field.label not in [f.label for f in form_fields]:
+                        form_fields.append(field)
+        
+        # Write header
+        header = [
+            'Número de Ticket',
+            'Nombre',
+            'Apellido',
+            'Email',
+            'Tipo de Ticket',
+            'Precio del Ticket',
+            'Estado del Ticket',
+            'Estado de Check-in',
+            'Fecha de Check-in',
+            'Check-in por',
+            'Estado de Aprobación',
+            'Aprobado por',
+            'Fecha de Aprobación',
+            'Razón de Rechazo',
+            'Número de Orden',
+            'Estado de Orden',
+            'Método de Pago',
+            'Total de Orden',
+            'Fecha de Compra',
+            'Fecha de Pago',
+            'Teléfono del Comprador',
+            'Nombre del Comprador',
+            'IP de Compra',
+            'Cupón Usado',
+            'Descuento Aplicado'
+        ]
+        
+        # Add custom form fields to header
+        for field in form_fields:
+            header.append(f'Campo: {field.label}')
+        
+        writer.writerow(header)
+        
+        # Write data rows
+        for ticket in tickets:
+            order = ticket.order_item.order
+            
+            row = [
+                ticket.ticket_number,
+                ticket.first_name,
+                ticket.last_name,
+                ticket.email,
+                ticket.order_item.ticket_tier.name if ticket.order_item.ticket_tier else 'N/A',
+                str(ticket.order_item.unit_price),
+                ticket.get_status_display(),
+                ticket.get_check_in_status_display(),
+                ticket.check_in_time.strftime('%Y-%m-%d %H:%M:%S') if ticket.check_in_time else '',
+                ticket.check_in_by.get_full_name() if ticket.check_in_by else '',
+                ticket.get_approval_status_display() if ticket.approval_status else '',
+                ticket.approved_by.get_full_name() if ticket.approved_by else '',
+                ticket.approved_at.strftime('%Y-%m-%d %H:%M:%S') if ticket.approved_at else '',
+                ticket.rejection_reason,
+                order.order_number,
+                order.get_status_display(),
+                order.payment_method,
+                str(order.total),
+                order.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                order.updated_at.strftime('%Y-%m-%d %H:%M:%S') if order.is_paid else '',
+                order.phone,
+                f"{order.first_name} {order.last_name}".strip(),
+                order.ip_address or '',
+                order.coupon.code if order.coupon else '',
+                str(order.discount) if order.discount > 0 else '0'
+            ]
+            
+            # Add custom form field values
+            for field in form_fields:
+                field_value = ''
+                if ticket.form_data and str(field.id) in ticket.form_data:
+                    field_value = str(ticket.form_data[str(field.id)])
+                row.append(field_value)
+            
+            writer.writerow(row)
+        
+        return response
+    
+    def _export_attendees_excel(self, event, tickets):
+        """Generate Excel export for attendees"""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Asistentes"
+        
+        # Get all form fields for this event
+        form_fields = []
+        for ticket_tier in event.ticket_tiers.all():
+            if ticket_tier.form:
+                for field in ticket_tier.form.fields.all():
+                    if field.label not in [f.label for f in form_fields]:
+                        form_fields.append(field)
+        
+        # Define headers
+        headers = [
+            'Número de Ticket',
+            'Nombre',
+            'Apellido',
+            'Email',
+            'Tipo de Ticket',
+            'Precio del Ticket',
+            'Estado del Ticket',
+            'Estado de Check-in',
+            'Fecha de Check-in',
+            'Check-in por',
+            'Estado de Aprobación',
+            'Aprobado por',
+            'Fecha de Aprobación',
+            'Razón de Rechazo',
+            'Número de Orden',
+            'Estado de Orden',
+            'Método de Pago',
+            'Total de Orden',
+            'Fecha de Compra',
+            'Fecha de Pago',
+            'Teléfono del Comprador',
+            'Nombre del Comprador',
+            'IP de Compra',
+            'Cupón Usado',
+            'Descuento Aplicado'
+        ]
+        
+        # Add custom form fields to headers
+        for field in form_fields:
+            headers.append(f'Campo: {field.label}')
+        
+        # Style headers
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+        
+        # Write headers
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+        
+        # Write data
+        for row_num, ticket in enumerate(tickets, 2):
+            order = ticket.order_item.order
+            
+            data = [
+                ticket.ticket_number,
+                ticket.first_name,
+                ticket.last_name,
+                ticket.email,
+                ticket.order_item.ticket_tier.name if ticket.order_item.ticket_tier else 'N/A',
+                float(ticket.order_item.unit_price),
+                ticket.get_status_display(),
+                ticket.get_check_in_status_display(),
+                ticket.check_in_time.replace(tzinfo=None) if ticket.check_in_time else '',
+                ticket.check_in_by.get_full_name() if ticket.check_in_by else '',
+                ticket.get_approval_status_display() if ticket.approval_status else '',
+                ticket.approved_by.get_full_name() if ticket.approved_by else '',
+                ticket.approved_at.replace(tzinfo=None) if ticket.approved_at else '',
+                ticket.rejection_reason,
+                order.order_number,
+                order.get_status_display(),
+                order.payment_method,
+                float(order.total),
+                order.created_at.replace(tzinfo=None) if order.created_at else '',
+                order.updated_at.replace(tzinfo=None) if order.updated_at and order.is_paid else '',
+                order.phone,
+                f"{order.first_name} {order.last_name}".strip(),
+                order.ip_address or '',
+                order.coupon.code if order.coupon else '',
+                float(order.discount) if order.discount > 0 else 0
+            ]
+            
+            # Add custom form field values
+            for field in form_fields:
+                field_value = ''
+                if ticket.form_data and str(field.id) in ticket.form_data:
+                    field_value = ticket.form_data[str(field.id)]
+                data.append(field_value)
+            
+            for col, value in enumerate(data, 1):
+                ws.cell(row=row_num, column=col, value=value)
+        
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column_letter = get_column_letter(column[0].column)
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Create response
+        response = HttpResponse(
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = f'attachment; filename="asistentes_{event.slug}_{timezone.now().strftime("%Y%m%d_%H%M%S")}.xlsx"'
+        
+        wb.save(response)
+        return response
+    
+    def _export_orders_csv(self, event, orders):
+        """Generate CSV export for orders"""
+        response = HttpResponse(content_type='text/csv; charset=utf-8')
+        response['Content-Disposition'] = f'attachment; filename="pedidos_{event.slug}_{timezone.now().strftime("%Y%m%d_%H%M%S")}.csv"'
+        
+        # Add BOM for proper UTF-8 encoding in Excel
+        response.write('\ufeff')
+        
+        writer = csv.writer(response)
+        
+        # Write header
+        header = [
+            'Número de Orden',
+            'Estado de Orden',
+            'Fecha de Creación',
+            'Fecha de Pago',
+            'Email del Comprador',
+            'Nombre del Comprador',
+            'Apellido del Comprador',
+            'Teléfono',
+            'Subtotal',
+            'Impuestos',
+            'Comisión de Servicio',
+            'Descuento',
+            'Total',
+            'Moneda',
+            'Método de Pago',
+            'ID de Transacción',
+            'Cupón Usado',
+            'Código de Cupón',
+            'IP de Compra',
+            'User Agent',
+            'Cantidad de Tickets',
+            'Tipos de Tickets',
+            'Precios Unitarios',
+            'Notas',
+            'Monto Reembolsado',
+            'Razón de Reembolso'
+        ]
+        
+        writer.writerow(header)
+        
+        # Write data rows
+        for order in orders:
+            # Aggregate ticket information
+            ticket_types = []
+            unit_prices = []
+            total_tickets = 0
+            
+            for item in order.items.all():
+                ticket_types.append(f"{item.ticket_tier.name} (x{item.quantity})")
+                unit_prices.append(f"{item.ticket_tier.name}: ${item.unit_price}")
+                total_tickets += item.quantity
+            
+            row = [
+                order.order_number,
+                order.get_status_display(),
+                order.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                order.updated_at.strftime('%Y-%m-%d %H:%M:%S') if order.is_paid else '',
+                order.email,
+                order.first_name,
+                order.last_name,
+                order.phone,
+                str(order.subtotal),
+                str(order.taxes),
+                str(order.service_fee),
+                str(order.discount),
+                str(order.total),
+                order.currency,
+                order.payment_method,
+                order.payment_id or '',
+                'Sí' if order.coupon else 'No',
+                order.coupon.code if order.coupon else '',
+                order.ip_address or '',
+                order.user_agent,
+                str(total_tickets),
+                '; '.join(ticket_types),
+                '; '.join(unit_prices),
+                order.notes,
+                str(order.refunded_amount),
+                order.refund_reason
+            ]
+            
+            writer.writerow(row)
+        
+        return response
+    
+    def _export_orders_excel(self, event, orders):
+        """Generate Excel export for orders"""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Pedidos"
+        
+        # Define headers
+        headers = [
+            'Número de Orden',
+            'Estado de Orden',
+            'Fecha de Creación',
+            'Fecha de Pago',
+            'Email del Comprador',
+            'Nombre del Comprador',
+            'Apellido del Comprador',
+            'Teléfono',
+            'Subtotal',
+            'Impuestos',
+            'Comisión de Servicio',
+            'Descuento',
+            'Total',
+            'Moneda',
+            'Método de Pago',
+            'ID de Transacción',
+            'Cupón Usado',
+            'Código de Cupón',
+            'IP de Compra',
+            'User Agent',
+            'Cantidad de Tickets',
+            'Tipos de Tickets',
+            'Precios Unitarios',
+            'Notas',
+            'Monto Reembolsado',
+            'Razón de Reembolso'
+        ]
+        
+        # Style headers
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+        
+        # Write headers
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+        
+        # Write data
+        for row_num, order in enumerate(orders, 2):
+            # Aggregate ticket information
+            ticket_types = []
+            unit_prices = []
+            total_tickets = 0
+            
+            for item in order.items.all():
+                ticket_types.append(f"{item.ticket_tier.name} (x{item.quantity})")
+                unit_prices.append(f"{item.ticket_tier.name}: ${item.unit_price}")
+                total_tickets += item.quantity
+            
+            data = [
+                order.order_number,
+                order.get_status_display(),
+                order.created_at.replace(tzinfo=None) if order.created_at else '',
+                order.updated_at.replace(tzinfo=None) if order.updated_at and order.is_paid else '',
+                order.email,
+                order.first_name,
+                order.last_name,
+                order.phone,
+                float(order.subtotal),
+                float(order.taxes),
+                float(order.service_fee),
+                float(order.discount),
+                float(order.total),
+                order.currency,
+                order.payment_method,
+                order.payment_id or '',
+                'Sí' if order.coupon else 'No',
+                order.coupon.code if order.coupon else '',
+                order.ip_address or '',
+                order.user_agent,
+                total_tickets,
+                '; '.join(ticket_types),
+                '; '.join(unit_prices),
+                order.notes,
+                float(order.refunded_amount),
+                order.refund_reason
+            ]
+            
+            for col, value in enumerate(data, 1):
+                ws.cell(row=row_num, column=col, value=value)
+        
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column_letter = get_column_letter(column[0].column)
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Create response
+        response = HttpResponse(
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = f'attachment; filename="pedidos_{event.slug}_{timezone.now().strftime("%Y%m%d_%H%M%S")}.xlsx"'
+        
+        wb.save(response)
+        return response
 
 
 class EventCategoryViewSet(viewsets.ModelViewSet):
@@ -1875,6 +2447,66 @@ class OrderViewSet(viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'updated_at', 'total']
     ordering = ['-created_at']
     
+    # ✅ SOLUCIÓN ROBUSTA: Paginación personalizada para órdenes
+    def get_paginated_response(self, data):
+        """
+        Personalizar respuesta paginada para incluir estadísticas completas
+        """
+        # Si no hay paginación activa, devolver respuesta normal
+        if not hasattr(self, 'paginator') or self.paginator is None:
+            return Response(data)
+            
+        # Calcular estadísticas sobre TODOS los pedidos (no solo la página actual)
+        all_orders = self.filter_queryset(self.get_queryset())
+        
+        # Estadísticas completas
+        total_orders = all_orders.count()
+        total_revenue = all_orders.aggregate(
+            total=models.Sum('total'),
+            service_fees=models.Sum('service_fee')
+        )
+        
+        # Respuesta paginada con estadísticas completas
+        return self.paginator.get_paginated_response({
+            'results': data,
+            'statistics': {
+                'total_orders': total_orders,
+                'total_revenue': total_revenue['total'] or 0,
+                'total_service_fees': total_revenue['service_fees'] or 0,
+                'current_page_count': len(data)
+            }
+        })
+    
+    def list(self, request, *args, **kwargs):
+        """
+        Listar órdenes con opción de desactivar paginación para dashboards
+        """
+        # ✅ SOLUCIÓN ROBUSTA: Permitir desactivar paginación con parámetro
+        if request.query_params.get('no_pagination') == 'true':
+            # Sin paginación - devolver todas las órdenes
+            queryset = self.filter_queryset(self.get_queryset())
+            serializer = self.get_serializer(queryset, many=True)
+            
+            # Incluir estadísticas
+            total_orders = queryset.count()
+            total_revenue = queryset.aggregate(
+                total=models.Sum('total'),
+                service_fees=models.Sum('service_fee')
+            )
+            
+            return Response({
+                'results': serializer.data,
+                'count': total_orders,
+                'statistics': {
+                    'total_orders': total_orders,
+                    'total_revenue': total_revenue['total'] or 0,
+                    'total_service_fees': total_revenue['service_fees'] or 0,
+                }
+            })
+        
+        # Con paginación normal
+        return super().list(request, *args, **kwargs)
+    
     def get_organizer(self):
         """Obtener el organizador asociado al usuario actual."""
         try:
@@ -2000,6 +2632,34 @@ class TicketViewSet(viewsets.ModelViewSet):
     search_fields = ['ticket_number', 'first_name', 'last_name', 'email']
     ordering_fields = ['first_name', 'last_name', 'check_in_time']
     ordering = ['first_name', 'last_name']
+    
+    def list(self, request, *args, **kwargs):
+        """
+        ✅ SOLUCIÓN ROBUSTA: Permitir paginación ilimitada para tickets
+        """
+        # Verificar si se solicita sin paginación
+        no_pagination = request.query_params.get('no_pagination', '').lower() == 'true'
+        
+        if no_pagination:
+            # Devolver todos los tickets sin paginación
+            queryset = self.filter_queryset(self.get_queryset())
+            serializer = self.get_serializer(queryset, many=True)
+            
+            # Calcular estadísticas completas
+            total_tickets = queryset.count()
+            checked_in_count = queryset.filter(checked_in=True).count()
+            
+            return Response({
+                'results': serializer.data,
+                'statistics': {
+                    'total_tickets': total_tickets,
+                    'checked_in_count': checked_in_count,
+                    'pending_checkin': total_tickets - checked_in_count
+                }
+            })
+        
+        # Paginación normal
+        return super().list(request, *args, **kwargs)
     
     def get_organizer(self):
         """Obtener el organizador asociado al usuario actual."""

@@ -1547,7 +1547,9 @@ class BookingSerializer(serializers.Serializer):
                 print(f"🔍 PWYW CALC - custom_price_decimal: {custom_price_decimal}, service_fee_rate: {service_fee_rate}")
                 
                 # Use proper rounding for CLP (no decimals)
+                # Round organizer_amount to nearest integer
                 organizer_amount = (custom_price_decimal / (Decimal('1') + service_fee_rate)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+                # Platform fee is the difference to ensure exact sum
                 platform_fee = custom_price_decimal - organizer_amount
                 
                 print(f"🔍 PWYW CALC - organizer_amount: {organizer_amount}, platform_fee: {platform_fee}")
@@ -1567,7 +1569,10 @@ class BookingSerializer(serializers.Serializer):
                 )
             else:
                 # Regular ticket pricing
+                from decimal import Decimal, ROUND_HALF_UP
                 service_fee_amount = tier.get_service_fee_amount()
+                # Round to integer for CLP (no decimals)
+                service_fee_amount = service_fee_amount.quantize(Decimal('1'), rounding=ROUND_HALF_UP)
                 item_subtotal = tier.price * quantity
                 item_service_fee = service_fee_amount * quantity
                 

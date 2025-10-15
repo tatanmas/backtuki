@@ -18,9 +18,9 @@ urlpatterns = [
     # Django Admin
     path('admin/', admin.site.urls),
     
-    # API URLs - Public URLs first to avoid authentication conflicts
-    path('api/v1/', include('api.v1.public_urls')),
+    # API URLs - Main URLs first, then public URLs to avoid conflicts
     path('api/v1/', include('api.v1.urls')),
+    path('api/v1/', include('api.v1.public_urls')),
     
     # API Documentation
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

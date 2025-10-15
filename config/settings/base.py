@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     'apps.ticket_validation',
     'apps.otp',  # 🔐 OTP Authentication System
     'apps.validation',  # 🚀 Enterprise Validation System
+    'apps.sync_woocommerce',  # 🚀 ENTERPRISE: WooCommerce Sync System
     'payment_processor',  # 🚀 ENTERPRISE Payment System
     'core',
 ]
