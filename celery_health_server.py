@@ -54,11 +54,15 @@ if __name__ == '__main__':
     logger.info("Starting Celery worker...")
     
     # Use subprocess to start Celery worker
+    # 🚀 ENTERPRISE: Auto-scales based on CPU (1.5x = optimal for I/O-bound)
+    # Cuando escales a 4 CPU, cambia concurrency a 6
     celery_cmd = [
         'celery', '-A', 'config', 'worker', 
         '-l', 'info', 
         '-Q', 'default,emails,critical,maintenance,documents',
-        '--concurrency=4'
+        '--autoscale=6,2',                  # Min 2, Max 6 workers (auto-ajusta según carga)
+        '--prefetch-multiplier=1',          # Evita que workers acaparen tareas
+        '--max-tasks-per-child=1000',       # Recicla workers cada 1000 tareas (previene memory leaks)
     ]
     
     try:

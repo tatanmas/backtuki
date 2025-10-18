@@ -160,8 +160,8 @@ REST_FRAMEWORK['DEFAULT_THROTTLE_CLASSES'] = [
     'rest_framework.throttling.UserRateThrottle',
 ]
 REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] = {
-    'anon': '100/hour',
-    'user': '2000/hour',
+    'anon': '500/hour',  # Aumentado para permitir más peticiones de sincronización
+    'user': '3000/hour',
 }
 
 # Logging configuration for Cloud Run

@@ -63,10 +63,10 @@ gcloud run deploy ${WORKER_SERVICE_NAME} \
   --no-allow-unauthenticated \
   --port 8080 \
   --min-instances 1 \
-  --max-instances 10 \
+  --max-instances 20 \
   --concurrency 1 \
-  --memory 1Gi \
-  --cpu 1 \
+  --memory 2Gi \
+  --cpu 2 \
   --timeout 3600 \
   --env-vars-file cloud-run-env.yaml \
   --vpc-connector serverless-conn \

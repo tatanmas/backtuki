@@ -97,8 +97,8 @@ app.conf.update(
     enable_utc=True,
     
     # Task execution settings
-    task_soft_time_limit=300,  # 5 minutes soft limit
-    task_time_limit=600,       # 10 minutes hard limit
+    task_soft_time_limit=1700,  # 28 minutes soft limit (para WooCommerce sync)
+    task_time_limit=1800,       # 30 minutes hard limit (para WooCommerce sync)
     task_acks_late=True,       # Acknowledge after task completion
     worker_prefetch_multiplier=1,  # Process one task at a time for reliability
     

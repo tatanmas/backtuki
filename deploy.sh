@@ -63,8 +63,8 @@ gcloud run deploy ${SERVICE_NAME} \
   --port 8080 \
   --min-instances 1 \
   --max-instances 100 \
-  --concurrency 80 \
-  --memory 2Gi \
+  --concurrency 200 \
+  --memory 4Gi \
   --cpu 2 \
   --timeout 300 \
   --env-vars-file cloud-run-env.yaml \

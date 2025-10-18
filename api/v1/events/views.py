@@ -538,6 +538,7 @@ class EventViewSet(viewsets.ModelViewSet):
             order__in=orders_queryset
         ).aggregate(
             total_tickets=Sum('quantity'),
+            total_gross_revenue=Sum('unit_price'),  # Sum unit_price * quantity for gross revenue
             avg_unit_price=Avg('unit_price')  # Average actual price paid per ticket
         )
         
@@ -545,10 +546,12 @@ class EventViewSet(viewsets.ModelViewSet):
         total_tickets = tickets_data['total_tickets'] or 0
         total_orders = revenue_data['total_orders'] or 0
         
-        # Calculate effective average ticket price (what was actually paid)
+        # Calculate effective average ticket price (base price without service fees)
         effective_avg_price = 0
         if total_tickets > 0:
-            effective_avg_price = total_revenue / total_tickets
+            # Use unit_price sum for accurate ticket price calculation
+            gross_revenue_from_items = float(tickets_data['total_gross_revenue'] or 0)
+            effective_avg_price = gross_revenue_from_items / total_tickets
         
         # 🚀 ENTERPRISE: Time series with effective revenue
         chart_data = []
@@ -985,19 +988,33 @@ class EventViewSet(viewsets.ModelViewSet):
         # Calculate metrics for each event
         events_with_metrics = []
         for event in events:
-            # Calculate ticket metrics
-            total_tickets = 0
-            sold_tickets = 0
-            total_revenue = 0
+            # 🚀 ENTERPRISE: Calculate real revenue from actual orders (robust method)
+            from django.db.models import Sum, Count
+            from apps.events.models import Order, OrderItem
             
+            # 🚀 ENTERPRISE: Calculate REAL revenue from OrderItems (robust method)
+            # Sum unit_price and unit_service_fee for each ticket sold
+            order_items_data = OrderItem.objects.filter(
+                order__event=event,
+                order__status='paid'
+            ).aggregate(
+                total_tickets=Sum('quantity'),
+                total_organizer_revenue=Sum('unit_price'),  # What organizer gets (unit_price × quantity)
+                total_service_fees=Sum('unit_service_fee'),  # Service fees (unit_service_fee × quantity)
+                total_customer_paid=Sum('subtotal')  # What customers actually paid per item
+            )
+            
+            # Calculate metrics
+            total_tickets = 0
+            sold_tickets = order_items_data['total_tickets'] or 0
+            organizer_revenue = float(order_items_data['total_organizer_revenue'] or 0)
+            service_fees = float(order_items_data['total_service_fees'] or 0)
+            total_revenue = organizer_revenue + service_fees  # Total paid by customers
+            
+            # Calculate total capacity from ticket tiers
             for tier in event.ticket_tiers.all():
-                # 🚀 ENTERPRISE: Use real data instead of estimates
                 tier_capacity = tier.capacity or 0
-                tier_sold = tier.tickets_sold  # Real sold tickets from paid orders
-                
                 total_tickets += tier_capacity
-                sold_tickets += tier_sold
-                total_revenue += tier_sold * tier.price
             
             events_with_metrics.append({
                 'id': str(event.id),
@@ -1022,7 +1039,9 @@ class EventViewSet(viewsets.ModelViewSet):
                     }
                     for tier in event.ticket_tiers.all()
                 ],
-                'total_revenue': total_revenue,
+                'total_revenue': total_revenue,  # What customers actually paid
+                'gross_revenue': organizer_revenue,  # Revenue for organizer (unit_price × quantity)
+                'service_fees': service_fees,  # Platform commission (unit_service_fee × quantity)
                 'total_tickets': total_tickets,
                 'sold_tickets': sold_tickets,
                 'has_unlimited_capacity': any(tier.capacity is None for tier in event.ticket_tiers.all()),  # 🚀 ENTERPRISE: Event-level unlimited flag

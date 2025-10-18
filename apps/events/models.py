@@ -2240,4 +2240,16 @@ class TicketRequest(BaseModel):
             return self.ticket_tier.name
         elif self.ticket_category:
             return self.ticket_category.name
-        return "Entrada al evento" 
+        return "Entrada al evento"
+
+
+# 🚀 ENTERPRISE: Import analytics models to ensure they're registered with Django
+from .analytics_models import EventView, ConversionFunnel, EventPerformanceMetrics
+
+__all__ = [
+    'Location', 'Event', 'TicketTier', 'TicketCategory', 'Order', 'OrderItem', 
+    'Ticket', 'TicketHold', 'Coupon', 'EventForm', 'FormField', 'FormSubmission',
+    'EmailLog', 'TicketNote', 'TicketHolderReservation',
+    # Analytics models
+    'EventView', 'ConversionFunnel', 'EventPerformanceMetrics'
+] 

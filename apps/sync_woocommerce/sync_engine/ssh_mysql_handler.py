@@ -396,18 +396,32 @@ class SSHMySQLHandler:
         Obtiene todos los tickets para un producto específico usando event_magic_tickets
         Incluye campos personalizados (Custom Attendee Fields) con enfoque híbrido optimizado
         """
-        # Paso 1: Obtener tickets básicos (rápido)
+        # Paso 1: Obtener tickets básicos con precio (optimizado)
         basic_query = """
         SELECT
-          t.ID                   AS ticket_post_id,
-          t.post_date            AS ticket_created,
-          m_ticket.meta_value    AS ticket_id,
-          m_order.meta_value     AS order_id,
-          m_prod.meta_value      AS product_id,
-          m_var.meta_value       AS variation_id,
-          m_att_fn.meta_value    AS attendee_first_name,
-          m_att_ln.meta_value    AS attendee_last_name,
-          m_att_email.meta_value AS attendee_email
+          t.ID                       AS ticket_post_id,
+          t.post_date                AS ticket_created,
+          m_ticket.meta_value        AS ticket_id,
+          m_order.meta_value         AS order_id,
+          m_prod.meta_value          AS product_id,
+          m_var.meta_value           AS variation_id,
+          m_att_fn.meta_value        AS attendee_first_name,
+          m_att_ln.meta_value        AS attendee_last_name,
+          m_att_email.meta_value     AS attendee_email,
+          m_price.meta_value         AS price_paid_raw,
+          CAST(
+            COALESCE(
+              FLOOR(
+                REPLACE(
+                  REPLACE(
+                    REPLACE(REGEXP_REPLACE(m_price.meta_value, '<[^>]+>', ''), '&#36;', ''),
+                  '.', ''),
+                ',', '.')
+              ),
+              FLOOR(CAST(oim_line_total.meta_value AS DECIMAL(12,4)) / NULLIF(CAST(oim_qty.meta_value AS DECIMAL(12,4)),0))
+            )
+          AS UNSIGNED) AS price_paid_clean
+          
         FROM wp_posts t
         LEFT JOIN wp_postmeta m_prod
           ON m_prod.post_id = t.ID AND m_prod.meta_key = 'WooCommerceEventsProductID'
@@ -423,12 +437,33 @@ class SSHMySQLHandler:
           ON m_att_ln.post_id = t.ID AND m_att_ln.meta_key = 'WooCommerceEventsAttendeeLastName'
         LEFT JOIN wp_postmeta m_att_email
           ON m_att_email.post_id = t.ID AND m_att_email.meta_key = 'WooCommerceEventsAttendeeEmail'
+        LEFT JOIN wp_postmeta m_price
+          ON m_price.post_id = t.ID AND m_price.meta_key = 'WooCommerceEventsPrice'
+          
+        -- JOIN para obtener precio desde order items (fallback si no está en ticket)
+        LEFT JOIN wp_woocommerce_order_items oi
+          ON oi.order_id = m_order.meta_value AND oi.order_item_type = 'line_item'
+        LEFT JOIN wp_woocommerce_order_itemmeta oim_prod
+          ON oim_prod.order_item_id = oi.order_item_id AND oim_prod.meta_key = '_product_id'
+        LEFT JOIN wp_woocommerce_order_itemmeta oim_var
+          ON oim_var.order_item_id = oi.order_item_id AND oim_var.meta_key = '_variation_id'
+        LEFT JOIN wp_woocommerce_order_itemmeta oim_qty
+          ON oim_qty.order_item_id = oi.order_item_id AND oim_qty.meta_key = '_qty'
+        LEFT JOIN wp_woocommerce_order_itemmeta oim_line_total
+          ON oim_line_total.order_item_id = oi.order_item_id AND oim_line_total.meta_key = '_line_total'
+          
         WHERE t.post_type = 'event_magic_tickets'
           AND (
             (m_prod.meta_value IS NOT NULL AND CAST(m_prod.meta_value AS UNSIGNED) = %s)
             OR
             (m_var.meta_value  IS NOT NULL AND CAST(m_var.meta_value  AS UNSIGNED) = %s)
           )
+          AND (
+            oim_var.meta_value IS NULL
+            OR CAST(oim_var.meta_value AS UNSIGNED) = CAST(m_var.meta_value AS UNSIGNED)
+            OR CAST(oim_prod.meta_value AS UNSIGNED) = CAST(m_prod.meta_value AS UNSIGNED)
+          )
+        GROUP BY t.ID
         ORDER BY t.ID DESC
         """
         

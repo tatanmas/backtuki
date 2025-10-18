@@ -851,8 +851,11 @@ class DjangoORMClient:
             elif not order_date:
                 order_date = timezone.now()
             
-            # ✅ Crear orden con fechas originales de WooCommerce
-            order = Order.objects.create(
+            # ✅ Desactivar auto_now temporalmente para preservar fechas originales
+            from django.db import connection
+            
+            # Crear orden y guardar con SQL directo para evitar problemas con triggers
+            order = Order(
                 event_id=order_data['event'],
                 payment_id=order_data.get('payment_id', str(woo_order_id)),
                 status='paid',  # Las órdenes de WooCommerce ya están pagadas
@@ -868,11 +871,35 @@ class DjangoORMClient:
                 notes=order_data.get('notes', f"Migrado desde WooCommerce - Order ID: {woo_order_id}")
             )
             
-            # ✅ Actualizar fechas manualmente después de crear
-            Order.objects.filter(id=order.id).update(
-                created_at=order_date,
-                updated_at=order_date
-            )
+            logger.info(f"💾 Guardando orden WooCommerce #{woo_order_id}...")
+            order.save()
+            logger.info(f"✅ Orden guardada con ID: {order.id}")
+            
+            # 🔥 FORZAR fechas de WooCommerce con SQL directo (bypass auto_now/auto_now_add)
+            from django.db import connection
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE events_order 
+                    SET created_at = %s, updated_at = %s 
+                    WHERE id = %s
+                """, [order_date, order_date, str(order.id)])
+                logger.info(f"📅 Fechas forzadas a: {order_date}")
+                
+                # Verificar que se guardó correctamente
+                cursor.execute("SELECT COUNT(*), created_at FROM events_order WHERE id = %s GROUP BY created_at", [str(order.id)])
+                result = cursor.fetchone()
+                if result:
+                    count, saved_date = result
+                    logger.info(f"🔍 Verificación SQL directa: {count} orden(es) con fecha {saved_date}")
+                    
+                    if count == 0:
+                        logger.error(f"❌ ORDEN NO EXISTE EN BD después de save()!")
+                        raise Exception(f"La orden {order.id} no se guardó correctamente")
+                else:
+                    logger.error(f"❌ No se pudo verificar la orden {order.id}")
+                    raise Exception(f"La orden {order.id} no se guardó correctamente en la base de datos")
+            
+            logger.info(f"✅ Orden verificada en BD con SQL directo")
             
             was_existing = existing_order is not None
             action = "SOBRESCRITA" if was_existing else "CREADA"
@@ -935,8 +962,31 @@ class DjangoORMClient:
         try:
             # Validar y obtener la orden Django
             order_id = ticket_data['order']
+            logger.info(f"🔍 Buscando orden {order_id} para crear ticket...")
+            
+            # Verificar primero con SQL directo
+            from django.db import connection
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT id, payment_id, status FROM events_order WHERE id = %s", [str(order_id)])
+                sql_result = cursor.fetchone()
+                logger.info(f"🔍 SQL directo - Orden {order_id}: {sql_result}")
+            
+            try:
+                # Usar select_for_update(nowait=True) para evitar deadlocks
+                order = Order.objects.select_related('event').select_for_update(nowait=True).get(id=order_id)
+                logger.info(f"✅ Orden encontrada por ORM: {order.id} (payment_id: {order.payment_id})")
+            except Order.DoesNotExist:
+                logger.error(f"❌ Orden {order_id} NO encontrada por ORM!")
+                logger.error(f"   - SQL directo encontró: {sql_result}")
+                raise ValueError(f"Orden {order_id} no encontrada")
+            except Exception as e:
+                logger.error(f"❌ Error obteniendo orden {order_id}: {e}")
+                logger.error(f"   - SQL directo encontró: {sql_result}")
+                # Si SQL directo la encuentra pero ORM falla, hacer query sin lock
+                logger.warning(f"⚠️ Reintentando sin lock...")
             try:
                 order = Order.objects.select_related('event').get(id=order_id)
+                logger.info(f"✅ Orden obtenida sin lock: {order.id}")
             except Order.DoesNotExist:
                 raise ValueError(f"Orden {order_id} no encontrada")
             
@@ -1202,50 +1252,235 @@ class EventMigrator:
             migrated_tickets = []
             updated_tickets = []  # Siempre vacío después del blanqueo total
             
+            # 🚀 OPTIMIZACIÓN BULK: Procesar órdenes y tickets en batch
+            logger.info(f"🚀 Procesando {len(woo_data['orders'])} órdenes en modo BULK...")
+            
+            # Paso 1: Preparar datos de todas las órdenes
+            orders_to_create = []
+            order_mapping = {}  # woo_order_id -> django_order
+            
             for woo_order in woo_data['orders']:
-                # Crear orden (siempre nueva después del blanqueo total)
                 order_data = self.mapper.map_order_data(
                     woo_order, 
                     event['id'], 
                     service_fee_percentage
                 )
-                
                 woo_order_id = woo_order.get('order_id')
-                django_order, order_created = self.client.get_or_create_order(
-                    order_data, woo_order_id
+                
+                # Preparar objeto Order (sin guardar aún)
+                order_date = order_data.get('order_date')
+                if isinstance(order_date, str):
+                    try:
+                        order_date = datetime.fromisoformat(order_date.replace('Z', '+00:00'))
+                    except:
+                        order_date = timezone.now()
+                elif not order_date:
+                    order_date = timezone.now()
+                
+                total_amount = Decimal(str(order_data['total']))
+                service_fee = Decimal(str(order_data['service_fee']))
+                subtotal = total_amount - service_fee
+                
+                order_obj = Order(
+                    event_id=order_data['event'],
+                    payment_id=str(woo_order_id),
+                    status='paid',
+                    email=order_data.get('email', ''),
+                    first_name=order_data.get('first_name', ''),
+                    last_name=order_data.get('last_name', ''),
+                    phone=order_data.get('phone', '') or '',
+                    subtotal=subtotal,
+                    service_fee=service_fee,
+                    total=total_amount,
+                    currency=order_data.get('currency', 'CLP'),
+                    payment_method=order_data.get('payment_method', 'woocommerce'),
+                    notes=order_data.get('notes', f"Migrado desde WooCommerce - Order ID: {woo_order_id}")
                 )
+                orders_to_create.append((order_obj, woo_order_id, order_date))
+            
+            # Paso 2: Crear todas las órdenes de una vez
+            logger.info(f"💾 Creando {len(orders_to_create)} órdenes en bulk...")
+            Order.objects.bulk_create([o[0] for o in orders_to_create])
+            
+            # Paso 3: Actualizar fechas con SQL directo (bypass auto_now)
+            from django.db import connection
+            for order_obj, woo_order_id, order_date in orders_to_create:
+                # Buscar el ID que Django asignó
+                order_obj.refresh_from_db()
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE events_order 
+                        SET created_at = %s, updated_at = %s 
+                        WHERE id = %s
+                    """, [order_date, order_date, str(order_obj.id)])
                 
-                # Después del blanqueo total, todas las órdenes son nuevas
-                migrated_orders.append(django_order)
+                order_mapping[woo_order_id] = {
+                    'id': str(order_obj.id),
+                    'payment_id': order_obj.payment_id,
+                    'status': order_obj.status,
+                    'total': str(order_obj.total),
+                    'subtotal': str(order_obj.subtotal),
+                }
+                migrated_orders.append(order_mapping[woo_order_id])
+            
+            logger.info(f"✅ {len(migrated_orders)} órdenes creadas en bulk")
+            
+            # Paso 4: Pre-cargar TicketTier y Form (solo 2 queries para todo el evento)
+            logger.info(f"🎫 Pre-cargando TicketTier y Form del evento...")
+            
+            # Obtener organizador del evento para el formulario
+            event_obj = Event.objects.get(id=event['id'])
+            
+            ticket_tier, _ = TicketTier.objects.get_or_create(
+                   event_id=event['id'],
+                   name='General',
+                   defaults={
+                       'description': 'Entrada general migrada de WooCommerce',
+                       'max_quantity': None,
+                       'available_from': timezone.now(),
+                       'is_active': True,
+                       'is_public': True,  # 🚀 ENTERPRISE: Make public so frontend can see it
+                       'price': Decimal('0'),  # Se actualizará después
+                   }
+               )
+            
+            event_form, _ = Form.objects.get_or_create(
+                name='Información de Asistente',
+                organizer=event_obj.organizer,
+                defaults={
+                    'description': 'Formulario migrado de WooCommerce',
+                    'status': 'active'
+                }
+            )
+            
+            # Vincular formulario al tier si no está vinculado
+            if not ticket_tier.form:
+                ticket_tier.form = event_form
+                ticket_tier.save()
+            
+            # 🚀 ENTERPRISE: Update ticket tier with correct capacity and availability
+            total_tickets_sold = len(woo_data['tickets'])
+            ticket_tier.capacity = total_tickets_sold
+            ticket_tier.available = 0  # All tickets are sold
+            ticket_tier.is_public = True  # Ensure it's visible to frontend
+            ticket_tier.save()
+            
+            logger.info(f"✅ TicketTier y Form pre-cargados")
+            
+            # Paso 5: Crear OrderItems y Tickets en modo optimizado
+            logger.info(f"🎫 Procesando tickets...")
+            order_items_cache = {}  # Cache de OrderItems por order_id
+            
+            for woo_order in woo_data['orders']:
+                woo_order_id = woo_order.get('order_id')
+                django_order = order_mapping.get(woo_order_id)
                 
-                # Encontrar tickets asociados a esta orden
+                if not django_order:
+                    continue
+                
                 order_tickets = [
                     t for t in woo_data['tickets'] 
                     if t.get('order_id') == woo_order_id
                 ]
                 
-                # ✅ CRÍTICO: Pasar el número real de tickets para cálculo correcto de precios
+                if not order_tickets:
+                    continue
+                
                 tickets_count_in_order = len(order_tickets)
                 
+                # Obtener Order object y service_fee_percentage
+                order = Order.objects.get(id=django_order['id'])
+                service_fee_pct = service_fee_percentage / Decimal('100')
+                
+                # Crear todos los tickets de esta orden (cada uno con su precio)
                 for woo_ticket in order_tickets:
-                    # Crear/obtener ticket - pasamos directamente los datos de WooCommerce
-                    # y el ID de la orden Django para que get_or_create_ticket maneje la creación del OrderItem
-                    ticket_data = {
-                        'order': django_order['id'],  # ID de la orden Django
-                        'attendee_first_name': woo_ticket.get('attendee_first_name', ''),
-                        'attendee_last_name': woo_ticket.get('attendee_last_name', ''),
-                        'attendee_email': woo_ticket.get('attendee_email', ''),
-                        'custom_fields': woo_ticket.get('custom_attendee_fields', {}),
-                        'status': 'active'
-                    }
+                    # 💰 PRECIO DEL TICKET desde WooCommerce (puede venir como price_paid_clean o expr_10)
+                    price_raw = woo_ticket.get('price_paid_clean') or woo_ticket.get('expr_10')
+                    logger.info(f"🔍 DEBUG Ticket {woo_ticket.get('ticket_id')}: price_raw={price_raw}, price_paid_raw={woo_ticket.get('price_paid_raw')}")
                     
-                    woo_ticket_id = woo_ticket.get('ticket_id')
-                    django_ticket, ticket_created = self.client.get_or_create_ticket(
-                        ticket_data, woo_ticket_id, tickets_count_in_order  # ✅ PASAR NÚMERO DE TICKETS
+                    if price_raw:
+                        ticket_total_price = Decimal(str(price_raw))
+                    else:
+                        ticket_total_price = Decimal('0')
+                    
+                    if ticket_total_price > 0:
+                        # Calcular service_fee y subtotal del ticket
+                        ticket_service_fee = (ticket_total_price * service_fee_pct).quantize(Decimal('0.01'))
+                        ticket_subtotal = ticket_total_price - ticket_service_fee
+                        logger.info(f"💰 Ticket {woo_ticket.get('ticket_id')}: Total=${ticket_total_price}, Service Fee=${ticket_service_fee}, Subtotal=${ticket_subtotal}")
+                    else:
+                        # Fallback: dividir el total de la orden
+                        ticket_total_price = order.total / max(1, tickets_count_in_order)
+                        ticket_service_fee = order.service_fee / max(1, tickets_count_in_order)
+                        ticket_subtotal = order.subtotal / max(1, tickets_count_in_order)
+                        logger.warning(f"⚠️ Ticket {woo_ticket.get('ticket_id')} sin precio en WooCommerce, usando fallback")
+                    
+                    # Crear OrderItem POR TICKET (quantity=1, precio específico)
+                    order_item = OrderItem.objects.create(
+                        order=order,
+                        ticket_tier=ticket_tier,
+                        quantity=1,  # Un OrderItem por ticket
+                        unit_price=ticket_subtotal,  # Precio sin service_fee
+                        unit_service_fee=ticket_service_fee,
+                        subtotal=ticket_subtotal,
+                        custom_price=None
                     )
+                    first_name = woo_ticket.get('attendee_first_name', '').strip()
+                    last_name = woo_ticket.get('attendee_last_name', '').strip()
+                    email = woo_ticket.get('attendee_email', '').strip()
                     
-                    # Después del blanqueo total, todos los tickets son nuevos
-                    migrated_tickets.append(django_ticket)
+                    if not first_name and not last_name:
+                        first_name = "Asistente"
+                        last_name = "Sin Nombre"
+                    
+                    if not email:
+                        email = f"sin-email-{woo_ticket.get('ticket_id')}@migrado.local"
+                    
+                    # Preparar form_data
+                    form_data = woo_ticket.get('custom_attendee_fields', {}) or {}
+                    
+                    # Crear ticket directamente (sin signal de email)
+                    from django.conf import settings
+                    old_migration_mode = getattr(settings, 'MIGRATION_MODE', False)
+                    settings.MIGRATION_MODE = True
+                    
+                    try:
+                        ticket = Ticket.objects.create(
+                            order_item=order_item,
+                            first_name=first_name,
+                            last_name=last_name,
+                            email=email,
+                            status='active',
+                            form_data=form_data
+                        )
+                        
+                        # Actualizar fechas si es necesario
+                        ticket_created = woo_ticket.get('ticket_created')
+                        if ticket_created:
+                            if isinstance(ticket_created, str):
+                                try:
+                                    ticket_created = datetime.fromisoformat(ticket_created.replace('Z', '+00:00'))
+                                    if ticket_created.tzinfo is None:
+                                        ticket_created = timezone.make_aware(ticket_created)
+                                except:
+                                    ticket_created = None
+                            
+                            if ticket_created:
+                                Ticket.objects.filter(id=ticket.id).update(
+                                    created_at=ticket_created,
+                                    updated_at=ticket_created
+                                )
+                        
+                        migrated_tickets.append({
+                            'id': str(ticket.id),
+                            'status': ticket.status,
+                            'attendee_name': f"{ticket.first_name} {ticket.last_name}",
+                            'attendee_email': ticket.email,
+                        })
+                    finally:
+                        settings.MIGRATION_MODE = old_migration_mode
+            
+            logger.info(f"✅ {len(migrated_tickets)} tickets creados")
             
             # ✅ ACTUALIZAR PRECIO PROMEDIO DEL TICKET TIER
             self._update_ticket_tier_average_price(event['id'])

@@ -47,6 +47,7 @@ class SyncConfigurationViewSet(viewsets.ModelViewSet):
     
     queryset = SyncConfiguration.objects.all()
     permission_classes = [AllowAny]  # 🚀 Sin autenticación para Super Admin
+    throttle_classes = []  # 🚀 Sin rate limiting para sincronización WooCommerce
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['status', 'frequency', 'organizer_email']
     search_fields = ['name', 'event_name', 'organizer_email']
@@ -205,6 +206,7 @@ class SyncExecutionViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = SyncExecution.objects.all()
     serializer_class = SyncExecutionSerializer
     permission_classes = [AllowAny]  # 🚀 Sin autenticación para Super Admin
+    throttle_classes = []  # 🚀 Sin rate limiting
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['status', 'trigger', 'configuration']
     search_fields = ['configuration__name', 'error_message']
@@ -266,6 +268,7 @@ class SyncManagementViewSet(viewsets.ViewSet):
     """
     
     permission_classes = [AllowAny]  # 🚀 Sin autenticación para Super Admin
+    throttle_classes = []  # 🚀 Sin rate limiting
     
     @action(detail=False, methods=['get'])
     def stats(self, request):

@@ -29,7 +29,7 @@ from .sync_engine.django_config import get_sync_config
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=300)
+@shared_task(bind=True, max_retries=3, default_retry_delay=300, time_limit=1800, soft_time_limit=1700)
 def sync_woocommerce_event(self, sync_config_id: str, trigger: str = 'scheduled', user_id: int = None):
     """
     Tarea principal de sincronización de un evento desde WooCommerce
@@ -39,6 +39,24 @@ def sync_woocommerce_event(self, sync_config_id: str, trigger: str = 'scheduled'
         trigger: Tipo de disparador ('scheduled', 'manual', 'api')
         user_id: ID del usuario que disparó la sincronización (opcional)
     """
+    
+    from django.core.cache import cache
+    
+    # 🔒 LOCK: Evitar ejecuciones paralelas del mismo evento
+    lock_key = f'sync_lock_{sync_config_id}'
+    lock_timeout = 1800  # 30 minutos
+    
+    # 🚨 LOG CRÍTICO: Confirmar que la tarea se ejecuta
+    logger.error(f"🚨🚨🚨 CELERY TASK EJECUTÁNDOSE: sync_config_id={sync_config_id}, trigger={trigger} 🚨🚨🚨")
+    
+    # Intentar adquirir el lock
+    if not cache.add(lock_key, 'locked', lock_timeout):
+        logger.warning(f"⚠️ Sincronización {sync_config_id} ya está en ejecución, omitiendo...")
+        return {
+            'success': False,
+            'sync_config_id': sync_config_id,
+            'error': 'Sincronización ya en ejecución'
+        }
     
     execution = None
     
@@ -190,6 +208,12 @@ def sync_woocommerce_event(self, sync_config_id: str, trigger: str = 'scheduled'
             'sync_config_id': sync_config_id,
             'error': str(exc)
         }
+    
+    finally:
+        # 🔓 LIBERAR LOCK siempre, incluso si falla
+        from django.core.cache import cache
+        cache.delete(lock_key)
+        logger.info(f"🔓 Lock liberado para sincronización {sync_config_id}")
 
 
 @shared_task
