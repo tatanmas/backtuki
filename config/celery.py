@@ -85,7 +85,8 @@ app.conf.task_routes = {
     'apps.events.tasks.generate_ticket_pdf': {'queue': 'documents'},
     
     # 🚀 ENTERPRISE: WooCommerce Sync Task Routing
-    'apps.sync_woocommerce.tasks.sync_woocommerce_event': {'queue': 'default'},
+    # sync_woocommerce_event va a cola dedicada 'sync-heavy' con concurrencia=1
+    'apps.sync_woocommerce.tasks.sync_woocommerce_event': {'queue': 'sync-heavy'},
     'apps.sync_woocommerce.tasks.run_scheduled_syncs': {'queue': 'default'},
     'apps.sync_woocommerce.tasks.cleanup_old_executions': {'queue': 'maintenance'},
     'apps.sync_woocommerce.tasks.test_woocommerce_connection': {'queue': 'default'},

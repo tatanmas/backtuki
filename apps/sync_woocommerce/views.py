@@ -75,11 +75,23 @@ class SyncConfigurationViewSet(viewsets.ModelViewSet):
         """
         config = self.get_object()
         
+        logger.info(f"🔵 TRIGGER RECIBIDO - Config: {config.name} (ID: {config.id}), Status: {config.status}")
+        
         if config.status not in ['active', 'paused']:
+            logger.warning(f"⚠️ Trigger rechazado - Status inválido: {config.status}")
             return Response(
                 {'error': 'La configuración debe estar activa o pausada'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        
+        # Log de info importante ANTES de disparar
+        from django.conf import settings
+        logger.info(f"📤 Enviando tarea a Celery:")
+        logger.info(f"   - Broker: {settings.CELERY_BROKER_URL}")
+        logger.info(f"   - Config ID: {config.id}")
+        logger.info(f"   - Event Name: {config.event_name}")
+        logger.info(f"   - WooCommerce Product ID: {config.woocommerce_product_id}")
+        logger.info(f"   - Cola: sync-heavy (concurrency=1, solo 1 sync a la vez)")
         
         # Disparar tarea de Celery
         task = sync_woocommerce_event.delay(
@@ -88,7 +100,11 @@ class SyncConfigurationViewSet(viewsets.ModelViewSet):
             user_id=request.user.id
         )
         
-        logger.info(f"Sincronización manual disparada por {request.user.username}: {config.name}")
+        logger.info(f"✅ Tarea Celery creada - Task ID: {task.id}")
+        logger.info(f"   - Usuario: {request.user.username}")
+        logger.info(f"   - Config: {config.name}")
+        logger.info(f"   - La tarea está en cola 'sync-heavy' esperando ser procesada")
+        logger.info(f"   💡 Si hay otra sync ejecutándose, esta esperará automáticamente")
         
         return Response({
             'message': 'Sincronización iniciada',
@@ -376,13 +392,25 @@ class SyncManagementViewSet(viewsets.ViewSet):
         user_id = None if request.user.is_anonymous else request.user.id
         username = 'SuperAdmin' if request.user.is_anonymous else request.user.username
         
+        logger.info(f"🔵 TRIGGER ALL recibido por {username}")
+        logger.info(f"   - Configs activas encontradas: {active_configs.count()}")
+        
+        from django.conf import settings
+        logger.info(f"📤 Broker Celery: {settings.CELERY_BROKER_URL}")
+        logger.info(f"   Cola: sync-heavy (concurrency=1, las syncs se procesarán una por una)")
+        
         triggered_tasks = []
         for config in active_configs:
+            logger.info(f"   📝 Disparando: {config.name} (ID: {config.id})")
+            
             task = sync_woocommerce_event.delay(
                 str(config.id),
                 trigger='api',
                 user_id=user_id
             )
+            
+            logger.info(f"      ✅ Task ID: {task.id}")
+            
             triggered_tasks.append({
                 'config_id': str(config.id),
                 'config_name': config.name,
@@ -390,7 +418,9 @@ class SyncManagementViewSet(viewsets.ViewSet):
                 'task_id': task.id
             })
         
-        logger.info(f"🚀 Todas las sincronizaciones disparadas por {username}: {len(triggered_tasks)} tareas")
+        logger.info(f"🚀 RESUMEN: {len(triggered_tasks)} sincronizaciones enviadas a cola 'sync-heavy' por {username}")
+        logger.info(f"   💡 Se procesarán una por una para evitar problemas de memoria")
+        logger.info(f"   Las tareas están en Redis y se ejecutarán automáticamente cuando haya capacidad")
         
         return Response({
             'message': f'{len(triggered_tasks)} sincronizaciones iniciadas',
@@ -412,3 +442,74 @@ class SyncManagementViewSet(viewsets.ViewSet):
             'message': 'Limpieza iniciada',
             'task_id': task.id
         })
+    
+    @action(detail=False, methods=['post'])
+    def purge_queue(self, request):
+        """
+        Purgar (eliminar) todas las tareas pendientes en la cola sync-heavy
+        
+        POST /api/v1/sync-woocommerce/management/purge-queue/
+        
+        ⚠️ CUIDADO: Esto elimina TODAS las syncs pendientes irrecuperablemente
+        """
+        from celery import current_app
+        
+        queue_name = request.data.get('queue', 'sync-heavy')
+        
+        try:
+            # Purgar la cola especificada
+            current_app.control.purge()
+            
+            logger.warning(f"🗑️ Cola '{queue_name}' purgada por SuperAdmin")
+            
+            return Response({
+                'message': f"Cola '{queue_name}' purgada exitosamente",
+                'warning': 'Todas las tareas pendientes han sido eliminadas'
+            })
+        except Exception as e:
+            logger.error(f"Error purgando cola: {e}")
+            return Response({
+                'error': str(e)
+            }, status=500)
+    
+    @action(detail=False, methods=['get'])
+    def queue_status(self, request):
+        """
+        Ver estado de las colas de Celery
+        
+        GET /api/v1/sync-woocommerce/management/queue-status/
+        """
+        from celery import current_app
+        from celery.app.control import Inspect
+        
+        try:
+            i = Inspect(app=current_app)
+            
+            # Obtener información de los workers
+            active_tasks = i.active()
+            reserved_tasks = i.reserved()
+            scheduled_tasks = i.scheduled()
+            stats = i.stats()
+            
+            return Response({
+                'workers': {
+                    'active_tasks': active_tasks or {},
+                    'reserved_tasks': reserved_tasks or {},
+                    'scheduled_tasks': scheduled_tasks or {},
+                    'stats': stats or {}
+                },
+                'queues': {
+                    'sync-heavy': {
+                        'description': 'Cola dedicada para syncs pesadas (concurrency=1)'
+                    },
+                    'default': {
+                        'description': 'Cola general'
+                    }
+                }
+            })
+        except Exception as e:
+            logger.error(f"Error obteniendo estado de colas: {e}")
+            return Response({
+                'error': str(e),
+                'message': 'No se pudo conectar con los workers de Celery'
+            }, status=500)

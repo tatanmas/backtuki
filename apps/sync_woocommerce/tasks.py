@@ -40,31 +40,50 @@ def sync_woocommerce_event(self, sync_config_id: str, trigger: str = 'scheduled'
         user_id: ID del usuario que disparó la sincronización (opcional)
     """
     
+    # 🚨 LOG CRÍTICO 1: Confirmar que Celery Worker RECIBIÓ la tarea
+    logger.error(f"🚨🚨🚨 CELERY WORKER RECIBIÓ LA TAREA 🚨🚨🚨")
+    logger.error(f"   Task ID: {self.request.id}")
+    logger.error(f"   Sync Config ID: {sync_config_id}")
+    logger.error(f"   Trigger: {trigger}")
+    logger.error(f"   User ID: {user_id}")
+    logger.error(f"   Queue: sync-heavy (concurrency=1, solo 1 sync a la vez)")
+    logger.error(f"   Hostname: {self.request.hostname}")
+    logger.error(f"   Retries: {self.request.retries}/{self.max_retries}")
+    logger.error(f"   💡 Si hay otra sync ejecutándose, esta esperará en cola automáticamente")
+    
     from django.core.cache import cache
     
     # 🔒 LOCK: Evitar ejecuciones paralelas del mismo evento
     lock_key = f'sync_lock_{sync_config_id}'
     lock_timeout = 1800  # 30 minutos
     
-    # 🚨 LOG CRÍTICO: Confirmar que la tarea se ejecuta
-    logger.error(f"🚨🚨🚨 CELERY TASK EJECUTÁNDOSE: sync_config_id={sync_config_id}, trigger={trigger} 🚨🚨🚨")
+    logger.info(f"🔐 Intentando adquirir lock: {lock_key}")
     
     # Intentar adquirir el lock
     if not cache.add(lock_key, 'locked', lock_timeout):
         logger.warning(f"⚠️ Sincronización {sync_config_id} ya está en ejecución, omitiendo...")
+        logger.warning(f"   Lock key: {lock_key}")
         return {
             'success': False,
             'sync_config_id': sync_config_id,
             'error': 'Sincronización ya en ejecución'
         }
     
+    logger.info(f"✅ Lock adquirido exitosamente para {sync_config_id}")
+    
     execution = None
     
     try:
         # Obtener configuración
+        logger.info(f"📋 Obteniendo configuración de BD: {sync_config_id}")
         sync_config = SyncConfiguration.objects.get(id=sync_config_id)
+        logger.info(f"   ✅ Config encontrada: {sync_config.name}")
+        logger.info(f"   - Event: {sync_config.event_name}")
+        logger.info(f"   - WooCommerce Product ID: {sync_config.woocommerce_product_id}")
+        logger.info(f"   - Organizer: {sync_config.organizer_email}")
         
         # Crear registro de ejecución
+        logger.info(f"📝 Creando registro de ejecución en BD...")
         execution = SyncExecution.objects.create(
             configuration=sync_config,
             status='running',
@@ -72,8 +91,10 @@ def sync_woocommerce_event(self, sync_config_id: str, trigger: str = 'scheduled'
             celery_task_id=self.request.id,
             triggered_by_id=user_id
         )
+        logger.info(f"   ✅ Execution creada: {execution.id}")
         
-        logger.info(f"Iniciando sincronización: {sync_config.name} (ID: {sync_config_id})")
+        logger.info(f"🚀 INICIANDO SINCRONIZACIÓN: {sync_config.name} (ID: {sync_config_id})")
+        logger.info(f"=" * 80)
         
         # Configurar integración
         integration_config = IntegrationConfig(
@@ -94,13 +115,16 @@ def sync_woocommerce_event(self, sync_config_id: str, trigger: str = 'scheduled'
         )
         
         # Extraer datos de WooCommerce
-        logger.info(f"Extrayendo datos de WooCommerce para producto {sync_config.woocommerce_product_id}")
+        logger.info(f"🔍 PASO 1: Extrayendo datos de WooCommerce...")
+        logger.info(f"   - Product ID: {sync_config.woocommerce_product_id}")
         woo_data = extract_woocommerce_data(sync_config.woocommerce_product_id)
+        logger.info(f"   ✅ Datos extraídos: {len(woo_data.get('orders', []))} órdenes, {len(woo_data.get('tickets', []))} tickets")
         
         # Migrar al backend Django
-        logger.info("Migrando datos al backend Django")
+        logger.info(f"🔄 PASO 2: Migrando datos al backend Django...")
         migrator = EventMigrator(integration_config)
         result = migrator.migrate_event(woo_data, migration_request)
+        logger.info(f"   ✅ Migración completada: success={result.get('success')}")
         
         if result['success']:
             # Actualizar configuración con referencias
@@ -163,7 +187,14 @@ def sync_woocommerce_event(self, sync_config_id: str, trigger: str = 'scheduled'
             execution.finished_at = timezone.now()
             execution.save()
             
-            logger.info(f"Sincronización exitosa: {sync_config.name}")
+            logger.info(f"=" * 80)
+            logger.info(f"✅✅✅ SINCRONIZACIÓN EXITOSA ✅✅✅")
+            logger.info(f"   Config: {sync_config.name}")
+            logger.info(f"   Execution ID: {execution.id}")
+            logger.info(f"   Orders: {execution.orders_processed} procesadas ({execution.orders_created} nuevas, {execution.orders_updated} actualizadas)")
+            logger.info(f"   Tickets: {execution.tickets_processed} procesados ({execution.tickets_created} nuevos, {execution.tickets_updated} actualizados)")
+            logger.info(f"   Duración: {(execution.finished_at - execution.started_at).total_seconds():.2f}s")
+            logger.info(f"=" * 80)
             
             return {
                 'success': True,
@@ -176,8 +207,13 @@ def sync_woocommerce_event(self, sync_config_id: str, trigger: str = 'scheduled'
             raise Exception(f"Error en migración: {result['error']}")
             
     except Exception as exc:
-        logger.error(f"Error en sincronización {sync_config_id}: {exc}")
+        logger.error(f"=" * 80)
+        logger.error(f"❌❌❌ ERROR EN SINCRONIZACIÓN ❌❌❌")
+        logger.error(f"   Sync Config ID: {sync_config_id}")
+        logger.error(f"   Error: {exc}")
+        logger.error(f"   Traceback completo:")
         logger.error(traceback.format_exc())
+        logger.error(f"=" * 80)
         
         # Actualizar configuración
         if 'sync_config' in locals():

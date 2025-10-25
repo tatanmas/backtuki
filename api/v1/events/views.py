@@ -1764,6 +1764,181 @@ class EventViewSet(viewsets.ModelViewSet):
         wb.save(response)
         return response
 
+    @action(detail=False, methods=['get'])
+    def validation_stats(self, request):
+        """
+        Get validation statistics for an event by event ID.
+        """
+        event_id = request.query_params.get('event_id')
+        if not event_id:
+            return Response(
+                {"detail": "event_id parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            organizer = self.get_organizer()
+            if not organizer:
+                return Response(
+                    {"detail": "Unauthorized."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Get event and verify organizer access
+            event = Event.objects.get(id=event_id, organizer=organizer)
+            
+            # Get all tickets for this event
+            tickets = Ticket.objects.filter(
+                order_item__order__event=event
+            ).select_related(
+                'order_item__ticket_tier'
+            ).order_by('order_item__ticket_tier__name')
+            
+            # Calculate overall stats
+            total_tickets = tickets.count()
+            checked_in_tickets = tickets.filter(check_in_status='checked_in').count()
+            pending_tickets = tickets.filter(check_in_status='pending').count()
+            cancelled_tickets = tickets.filter(status='cancelled').count()
+            refunded_tickets = tickets.filter(status='refunded').count()
+            
+            # Calculate stats by ticket tier
+            ticket_tier_stats = {}
+            for ticket in tickets:
+                tier_name = ticket.order_item.ticket_tier.name if ticket.order_item.ticket_tier else 'General'
+                
+                if tier_name not in ticket_tier_stats:
+                    ticket_tier_stats[tier_name] = {
+                        'tier_name': tier_name,
+                        'total': 0,
+                        'checked_in': 0,
+                        'pending': 0,
+                        'cancelled': 0,
+                        'refunded': 0,
+                        'check_in_rate': 0.0
+                    }
+                
+                ticket_tier_stats[tier_name]['total'] += 1
+                
+                if ticket.check_in_status == 'checked_in':
+                    ticket_tier_stats[tier_name]['checked_in'] += 1
+                elif ticket.check_in_status == 'pending':
+                    ticket_tier_stats[tier_name]['pending'] += 1
+                
+                if ticket.status == 'cancelled':
+                    ticket_tier_stats[tier_name]['cancelled'] += 1
+                elif ticket.status == 'refunded':
+                    ticket_tier_stats[tier_name]['refunded'] += 1
+            
+            # Calculate check-in rates
+            for tier_stats in ticket_tier_stats.values():
+                if tier_stats['total'] > 0:
+                    tier_stats['check_in_rate'] = round(
+                        (tier_stats['checked_in'] / tier_stats['total']) * 100, 2
+                    )
+            
+            # Calculate overall check-in rate
+            overall_check_in_rate = round((checked_in_tickets / total_tickets * 100), 2) if total_tickets > 0 else 0
+            
+            return Response({
+                'event': {
+                    'id': str(event.id),
+                    'title': event.title,
+                    'start_date': event.start_date.isoformat(),
+                    'end_date': event.end_date.isoformat(),
+                },
+                'overall_stats': {
+                    'total_tickets': total_tickets,
+                    'checked_in': checked_in_tickets,
+                    'pending': pending_tickets,
+                    'cancelled': cancelled_tickets,
+                    'refunded': refunded_tickets,
+                    'check_in_rate': overall_check_in_rate
+                },
+                'ticket_tier_stats': list(ticket_tier_stats.values())
+            })
+            
+        except Event.DoesNotExist:
+            return Response(
+                {"detail": "Event not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"detail": f"Error retrieving validation stats: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'])
+    def validation_logs(self, request):
+        """
+        Get validation logs for an event by event ID.
+        """
+        event_id = request.query_params.get('event_id')
+        if not event_id:
+            return Response(
+                {"detail": "event_id parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            organizer = self.get_organizer()
+            if not organizer:
+                return Response(
+                    {"detail": "Unauthorized."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Get event and verify organizer access
+            event = Event.objects.get(id=event_id, organizer=organizer)
+            
+            # Import here to avoid circular imports
+            from apps.validation.models import TicketValidationLog
+            
+            # Get validation logs for this event
+            logs = TicketValidationLog.objects.filter(
+                validator_session__event=event
+            ).select_related(
+                'ticket',
+                'validator_session'
+            ).order_by('-created_at')
+            
+            # Serialize the logs
+            logs_data = []
+            for log in logs:
+                logs_data.append({
+                    'id': str(log.id),
+                    'ticket_id': str(log.ticket.id) if log.ticket else None,
+                    'ticket_number': log.ticket.ticket_number if log.ticket else 'N/A',
+                    'attendee_name': f"{log.ticket.first_name} {log.ticket.last_name}" if log.ticket else 'N/A',
+                    'validator_name': log.validator_session.validator_name,
+                    'action': log.action,
+                    'status': log.status,
+                    'message': log.message,
+                    'timestamp': log.created_at.isoformat(),
+                    'from_status': log.metadata.get('from_status', 'pending'),
+                    'to_status': log.metadata.get('to_status', 'checked_in'),
+                })
+            
+            return Response({
+                'event': {
+                    'id': str(event.id),
+                    'title': event.title,
+                },
+                'logs': logs_data,
+                'total_logs': len(logs_data)
+            })
+            
+        except Event.DoesNotExist:
+            return Response(
+                {"detail": "Event not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"detail": f"Error retrieving validation logs: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
 class EventCategoryViewSet(viewsets.ModelViewSet):
     """
@@ -2723,6 +2898,100 @@ class TicketViewSet(viewsets.ModelViewSet):
         # No tickets for unauthenticated users
         return Ticket.objects.none()
     
+    @action(detail=False, methods=['get'])
+    def by_uuid(self, request):
+        """
+        Get a ticket by UUID with complete order information.
+        """
+        ticket_uuid = request.query_params.get('uuid')
+        if not ticket_uuid:
+            return Response(
+                {"detail": "UUID parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # For by_uuid, we need to bypass the strict event isolation
+            # and check permissions manually
+            organizer = self.get_organizer()
+            if not organizer:
+                return Response(
+                    {"detail": "Unauthorized."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Get the ticket with all related data
+            ticket = Ticket.objects.select_related(
+                'order_item__order__event',
+                'order_item__order__user',
+                'order_item__ticket_tier',
+                'check_in_by'
+            ).prefetch_related(
+                'order_item__order__items__tickets'
+            ).get(id=ticket_uuid)
+            
+            # Verify the ticket belongs to an event owned by this organizer
+            if ticket.order_item.order.event.organizer != organizer:
+                return Response(
+                    {"detail": "Ticket not found."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Get all tickets from the same order
+            order_tickets = Ticket.objects.filter(
+                order_item__order=ticket.order_item.order
+            ).select_related(
+                'order_item__ticket_tier'
+            ).order_by('first_name', 'last_name')
+            
+            # Serialize the main ticket
+            ticket_serializer = self.get_serializer(ticket)
+            ticket_data = ticket_serializer.data
+            
+            # Add order information
+            order = ticket.order_item.order
+            user_name = "Usuario"
+            user_email = order.email
+            
+            if order.user:
+                user_name = f"{order.user.first_name or ''} {order.user.last_name or ''}".strip() or order.user.email or order.email
+                user_email = order.user.email or order.email
+            else:
+                user_name = f"{order.first_name or ''} {order.last_name or ''}".strip() or order.email
+                user_email = order.email
+            
+            ticket_data['order_info'] = {
+                'id': str(order.id),
+                'order_number': order.order_number,
+                'status': order.status,
+                'total_amount': float(order.total),
+                'subtotal': float(order.subtotal),
+                'taxes': float(order.taxes),
+                'service_fee': float(order.service_fee),
+                'discount': float(order.discount),
+                'payment_method': order.payment_method or 'N/A',
+                'created_at': order.created_at.isoformat(),
+                'user': {
+                    'name': user_name,
+                    'email': user_email
+                }
+            }
+            
+            # Add other tickets from the same order
+            ticket_data['order_tickets'] = self.get_serializer(order_tickets, many=True).data
+            
+            return Response(ticket_data)
+        except Ticket.DoesNotExist:
+            return Response(
+                {"detail": "Ticket not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"detail": f"Error retrieving ticket: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
     @action(detail=True, methods=['post'])
     def check_in(self, request, pk=None):
         """
@@ -2745,14 +3014,19 @@ class TicketViewSet(viewsets.ModelViewSet):
         
         # Update ticket status
         ticket.checked_in = True
+        ticket.check_in_status = 'checked_in'
         ticket.check_in_time = timezone.now()
+        ticket.check_in_by = request.user
         ticket.status = 'used'
         ticket.save()
         
         return Response({
+            "success": True,
             "detail": "Ticket checked in successfully.",
             "ticket": TicketSerializer(ticket).data
         })
+
+
     
     @action(detail=True, methods=['post'])
     def validate(self, request, pk=None):
@@ -2937,6 +3211,219 @@ class TicketViewSet(viewsets.ModelViewSet):
         return Response({
             "detail": "No form associated with this ticket."
         }, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'])
+    def check_in_by_uuid(self, request):
+        """
+        Check in a ticket by UUID.
+        """
+        ticket_uuid = request.data.get('ticket_uuid')
+        if not ticket_uuid:
+            return Response(
+                {"detail": "ticket_uuid is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get the ticket
+            ticket = Ticket.objects.select_related(
+                'order_item__order__event'
+            ).get(id=ticket_uuid)
+            
+            # Verify permissions
+            organizer = self.get_organizer()
+            if not organizer or ticket.order_item.order.event.organizer != organizer:
+                return Response(
+                    {"detail": "Unauthorized."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Check if ticket can be checked in
+            if ticket.status in ['cancelled', 'refunded']:
+                return Response(
+                    {"success": False, "detail": f"Ticket is {ticket.status} and cannot be checked in."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if ticket.check_in_status == 'checked_in':
+                return Response(
+                    {"success": False, "detail": "Ticket already checked in."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Update ticket status
+            ticket.checked_in = True
+            ticket.check_in_status = 'checked_in'
+            ticket.check_in_time = timezone.now()
+            ticket.check_in_by = request.user
+            ticket.status = 'used'
+            ticket.save()
+            
+            # Create validation log
+            try:
+                from apps.validation.models import TicketValidationLog, ValidatorSession
+                
+                # Get or create validator session
+                validator_session, created = ValidatorSession.objects.get_or_create(
+                    event=ticket.order_item.order.event,
+                    validator_name=request.user.email or "Sistema",
+                    user=request.user,
+                    organizer=ticket.order_item.order.event.organizer,
+                    defaults={
+                        'device_info': {'user_agent': request.META.get('HTTP_USER_AGENT', 'Unknown')},
+                        'end_time': timezone.now(),
+                        'total_scans': 0,
+                        'successful_validations': 0,
+                        'failed_validations': 0,
+                        'tickets_checked_in': 0
+                    }
+                )
+                
+                # Create validation log
+                TicketValidationLog.objects.create(
+                    ticket=ticket,
+                    validator_session=validator_session,
+                    action='check_in',
+                    status='success',
+                    message=f'Check-in manual realizado por {request.user.email}',
+                    metadata={
+                        'from_status': 'pending',
+                        'to_status': 'checked_in',
+                        'method': 'manual',
+                        'validator_email': request.user.email
+                    }
+                )
+                
+                # Update validator session stats
+                validator_session.total_scans += 1
+                validator_session.successful_validations += 1
+                validator_session.tickets_checked_in += 1
+                validator_session.end_time = timezone.now()
+                validator_session.save()
+                
+            except Exception as log_error:
+                # Log the error but don't fail the check-in
+                print(f"Error creating validation log: {log_error}")
+            
+            return Response({
+                "success": True,
+                "detail": "Ticket checked in successfully.",
+                "ticket": TicketSerializer(ticket).data
+            })
+            
+        except Ticket.DoesNotExist:
+            return Response(
+                {"success": False, "detail": "Ticket not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"success": False, "detail": f"Error checking in ticket: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['post'])
+    def check_out_by_uuid(self, request):
+        """
+        Check out a ticket by UUID.
+        """
+        ticket_uuid = request.data.get('ticket_uuid')
+        if not ticket_uuid:
+            return Response(
+                {"detail": "ticket_uuid is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get the ticket
+            ticket = Ticket.objects.select_related(
+                'order_item__order__event'
+            ).get(id=ticket_uuid)
+            
+            # Verify permissions
+            organizer = self.get_organizer()
+            if not organizer or ticket.order_item.order.event.organizer != organizer:
+                return Response(
+                    {"detail": "Unauthorized."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Check if ticket can be checked out
+            if ticket.check_in_status != 'checked_in':
+                return Response(
+                    {"success": False, "detail": "Ticket must be checked in to perform check-out."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Update ticket status
+            ticket.checked_in = False
+            ticket.check_in_status = 'checked_out'
+            ticket.check_out_time = timezone.now()
+            ticket.check_out_by = request.user
+            ticket.status = 'active'  # Return to active status
+            ticket.save()
+            
+            # Create validation log
+            try:
+                from apps.validation.models import TicketValidationLog, ValidatorSession
+                
+                # Get or create validator session
+                validator_session, created = ValidatorSession.objects.get_or_create(
+                    event=ticket.order_item.order.event,
+                    validator_name=request.user.email or "Sistema",
+                    user=request.user,
+                    organizer=ticket.order_item.order.event.organizer,
+                    defaults={
+                        'device_info': {'user_agent': request.META.get('HTTP_USER_AGENT', 'Unknown')},
+                        'end_time': timezone.now(),
+                        'total_scans': 0,
+                        'successful_validations': 0,
+                        'failed_validations': 0,
+                        'tickets_checked_in': 0
+                    }
+                )
+                
+                # Create validation log
+                TicketValidationLog.objects.create(
+                    ticket=ticket,
+                    validator_session=validator_session,
+                    action='check_out',
+                    status='success',
+                    message=f'Check-out manual realizado por {request.user.email}',
+                    metadata={
+                        'from_status': 'checked_in',
+                        'to_status': 'checked_out',
+                        'method': 'manual',
+                        'validator_email': request.user.email
+                    }
+                )
+                
+                # Update validator session stats
+                validator_session.total_scans += 1
+                validator_session.successful_validations += 1
+                validator_session.end_time = timezone.now()
+                validator_session.save()
+                
+            except Exception as log_error:
+                # Log the error but don't fail the check-out
+                print(f"Error creating validation log: {log_error}")
+            
+            return Response({
+                "success": True,
+                "detail": "Ticket checked out successfully.",
+                "ticket": TicketSerializer(ticket).data
+            })
+            
+        except Ticket.DoesNotExist:
+            return Response(
+                {"success": False, "detail": "Ticket not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"success": False, "detail": f"Error checking out ticket: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 class CouponViewSet(viewsets.ModelViewSet):

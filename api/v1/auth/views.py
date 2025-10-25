@@ -17,7 +17,8 @@ from apps.otp.services import OTPService
 from .serializers import (
     UserLoginSerializer, UserCheckSerializer, UserProfileSerializer,
     UserRegistrationSerializer, OTPLoginSerializer, OrganizerOTPSerializer,
-    OrganizerOTPValidateSerializer, OrganizerProfileSetupSerializer
+    OrganizerOTPValidateSerializer, OrganizerProfileSetupSerializer,
+    PasswordChangeSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 )
 import logging
 
@@ -377,48 +378,209 @@ def create_guest_user_from_purchase(request):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# Vistas adicionales para compatibilidad
+# ========================================
+# PASSWORD MANAGEMENT SYSTEM
+# ========================================
+
+@method_decorator(csrf_exempt, name='dispatch')
+class PasswordChangeView(APIView):
+    """
+    Cambiar contraseña con contraseña actual
+    Requiere autenticación y conocer la contraseña actual
+    """
+    permission_classes = [IsAuthenticated]
+    renderer_classes = [JSONRenderer]
+    
+    def post(self, request):
+        serializer = PasswordChangeSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({
+                'success': False,
+                'message': 'Datos inválidos',
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        current_password = serializer.validated_data['current_password']
+        new_password = serializer.validated_data['new_password']
+        
+        user = request.user
+        
+        # Verificar contraseña actual
+        if not user.check_password(current_password):
+            return Response({
+                'success': False,
+                'message': 'La contraseña actual es incorrecta'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Verificar que la nueva contraseña sea diferente
+        if current_password == new_password:
+            return Response({
+                'success': False,
+                'message': 'La nueva contraseña debe ser diferente a la actual'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # Cambiar contraseña
+            user.set_password(new_password)
+            user.last_password_change = timezone.now()
+            user.save(update_fields=['password', 'last_password_change'])
+            
+            logger.info(f"Password changed successfully for user {user.email}")
+            
+            return Response({
+                'success': True,
+                'message': 'Contraseña cambiada exitosamente',
+                'last_password_change': user.last_password_change
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error changing password for user {user.email}: {str(e)}")
+            return Response({
+                'success': False,
+                'message': 'Error al cambiar la contraseña'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
 class PasswordResetView(APIView):
-    """Vista de reset de contraseña (placeholder)"""
+    """
+    Solicitar restablecimiento de contraseña vía OTP
+    Envía un código de 6 dígitos al email del usuario
+    """
     permission_classes = [AllowAny]
+    renderer_classes = [JSONRenderer]
     
     def post(self, request):
-        return Response({
-            'success': False,
-            'message': 'Usa OTP para recuperar acceso'
-        }, status=status.HTTP_501_NOT_IMPLEMENTED)
+        serializer = PasswordResetRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({
+                'success': False,
+                'message': 'Email inválido',
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        email = serializer.validated_data['email']
+        
+        # Verificar que el usuario existe
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            # Por seguridad, no revelar que el usuario no existe
+            # Devolver éxito pero no enviar email
+            return Response({
+                'success': True,
+                'message': 'Si el email existe, recibirás un código de restablecimiento',
+                'email': email
+            }, status=status.HTTP_200_OK)
+        
+        # Generar y enviar OTP
+        result = OTPService.generate_and_send(
+            email=email,
+            purpose=OTPPurpose.PASSWORD_RESET,
+            user=user,
+            metadata={'action': 'password_reset'},
+            request=request
+        )
+        
+        if result['success']:
+            otp = result['otp']
+            logger.info(f"Password reset OTP sent to {email}")
+            
+            return Response({
+                'success': True,
+                'message': 'Código de restablecimiento enviado a tu email',
+                'email': email,
+                'expires_at': otp.expires_at,
+                'time_remaining_minutes': int(otp.time_remaining.total_seconds() // 60)
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({
+                'success': False,
+                'message': result['message']
+            }, status=status.HTTP_400_BAD_REQUEST)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class PasswordResetConfirmView(APIView):
-    """Vista de confirmación de reset (placeholder)"""
+    """
+    Restablecer contraseña con código OTP
+    Permite cambiar la contraseña sin conocer la contraseña actual
+    """
     permission_classes = [AllowAny]
+    renderer_classes = [JSONRenderer]
     
     def post(self, request):
-        return Response({
-            'success': False,
-            'message': 'Usa OTP para recuperar acceso'
-        }, status=status.HTTP_501_NOT_IMPLEMENTED)
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({
+                'success': False,
+                'message': 'Datos inválidos',
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        email = serializer.validated_data['email']
+        code = serializer.validated_data['code']
+        new_password = serializer.validated_data['new_password']
+        
+        # Validar código OTP
+        result = OTPService.validate_code(
+            email=email,
+            code=code,
+            purpose=OTPPurpose.PASSWORD_RESET,
+            request=request
+        )
+        
+        if not result['success']:
+            return Response({
+                'success': False,
+                'message': result['message']
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            with transaction.atomic():
+                # Obtener usuario
+                user = User.objects.get(email__iexact=email)
+                
+                # Cambiar contraseña
+                user.set_password(new_password)
+                user.last_password_change = timezone.now()
+                user.save(update_fields=['password', 'last_password_change'])
+                
+                logger.info(f"Password reset successfully for user {user.email}")
+                
+                # Generar tokens JWT para login automático
+                refresh = RefreshToken.for_user(user)
+                access_token = str(refresh.access_token)
+                
+                return Response({
+                    'success': True,
+                    'message': 'Contraseña restablecida exitosamente',
+                    'access': access_token,
+                    'refresh': str(refresh),
+                    'user': UserProfileSerializer(user).data
+                }, status=status.HTTP_200_OK)
+                
+        except User.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'Usuario no encontrado'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"Error resetting password for {email}: {str(e)}")
+            return Response({
+                'success': False,
+                'message': 'Error al restablecer la contraseña'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def set_password_view(request):
-    """Vista para establecer contraseña"""
+    """Vista para establecer contraseña (legacy)"""
     return Response({
         'success': False,
-        'message': 'Usa el perfil para cambiar contraseña'
-    }, status=status.HTTP_501_NOT_IMPLEMENTED)
-
-
-class PasswordChangeView(APIView):
-    """Vista para cambiar contraseña"""
-    permission_classes = [IsAuthenticated]
-    
-    def post(self, request):
-        return Response({
-            'success': False,
-            'message': 'Usa el perfil para cambiar contraseña'
-        }, status=status.HTTP_501_NOT_IMPLEMENTED)
+        'message': 'Usa /auth/change-password/ o /auth/password-reset/ según tu caso'
+    }, status=status.HTTP_410_GONE)
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -633,11 +795,62 @@ class OrganizerOTPValidateView(APIView):
 class OrganizerProfileSetupView(APIView):
     """
     Configuración inicial del perfil de organizador
+    GET: Verificar si el perfil está completo
+    POST: Completar el perfil
     """
     permission_classes = [IsAuthenticated]
     renderer_classes = [JSONRenderer]
     
+    def get(self, request):
+        """Verificar si el perfil del organizador está completo"""
+        try:
+            # Verificar que el usuario es organizador
+            if not (hasattr(request.user, 'organizer_roles') and request.user.organizer_roles.exists()):
+                return Response({
+                    'is_organizer': False,
+                    'needs_setup': False,
+                    'message': 'Usuario no es organizador'
+                }, status=status.HTTP_200_OK)
+            
+            organizer_user = request.user.organizer_roles.first()
+            organizer = organizer_user.organizer
+            
+            # Verificar si necesita configuración inicial
+            needs_setup = (
+                not organizer.name or 
+                organizer.name.startswith('Organizador ') or 
+                organizer.is_temporary or 
+                not organizer.email_validated or
+                not organizer.onboarding_completed or
+                not organizer.representative_name
+            )
+            
+            return Response({
+                'is_organizer': True,
+                'needs_setup': needs_setup,
+                'organizer': {
+                    'id': str(organizer.id),
+                    'name': organizer.name,
+                    'slug': organizer.slug,
+                    'contact_email': organizer.contact_email,
+                    'representative_name': organizer.representative_name,
+                    'contact_phone': organizer.contact_phone,
+                    'is_temporary': organizer.is_temporary,
+                    'email_validated': organizer.email_validated,
+                    'onboarding_completed': organizer.onboarding_completed
+                }
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error checking organizer profile status: {str(e)}")
+            return Response({
+                'is_organizer': False,
+                'needs_setup': False,
+                'message': 'Error al verificar perfil'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
     def post(self, request):
+        """Completar configuración inicial del perfil de organizador"""
         # Verificar que el usuario es organizador
         if not (hasattr(request.user, 'organizer_roles') and request.user.organizer_roles.exists()):
             return Response({
@@ -709,6 +922,8 @@ class OrganizerProfileSetupView(APIView):
                     user.mark_profile_complete()
                 else:
                     user.save()
+                
+                logger.info(f"✅ Organizer profile setup completed for {user.email} - Organization: {organizer.name}")
                 
                 return Response({
                     'success': True,

@@ -53,6 +53,7 @@ urlpatterns = [
     path('tickets/', include('api.v1.tickets.urls')),  # 🚀 ENTERPRISE: Ticket management endpoints
     path('validation/', include('api.v1.validation.urls')),  # 🚀 ENTERPRISE: Validation system endpoints
     path('sync-woocommerce/', include('apps.sync_woocommerce.urls')),  # 🚀 ENTERPRISE: WooCommerce Sync System
+    path('superadmin/', include('api.v1.superadmin.urls')),  # 🚀 ENTERPRISE: Super Admin management
     path('', include('api.v1.events.urls')),  # ✅ NUEVO: Incluir URLs de eventos (incluye endpoints públicos)
     # Onboarding URLs
     path('organizers/onboarding/start/', CurrentOnboardingView.as_view(), name='onboarding-start'),

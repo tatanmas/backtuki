@@ -65,8 +65,8 @@ gcloud run deploy ${WORKER_SERVICE_NAME} \
   --min-instances 1 \
   --max-instances 20 \
   --concurrency 1 \
-  --memory 2Gi \
-  --cpu 2 \
+  --memory 8Gi \
+  --cpu 4 \
   --timeout 3600 \
   --env-vars-file cloud-run-env.yaml \
   --vpc-connector serverless-conn \

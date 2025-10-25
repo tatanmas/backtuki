@@ -233,7 +233,7 @@ class WooCommerceToDjangoMapper:
             'service_fee': service_fee,
             'total': total,
             'currency': woo_order.get('order_currency', self.config.default_currency),
-            'payment_method': woo_order.get('payment_method', ''),
+            'payment_method': woo_order.get('payment_method') or '',  # ✅ FIX: Asegurar cadena vacía en lugar de None
             'payment_id': str(woo_order.get('order_id', '')),
             'notes': f'Migrado de WooCommerce - Orden #{woo_order.get("order_id")}',
             
@@ -867,7 +867,7 @@ class DjangoORMClient:
                 service_fee=service_fee,
                 total=total_amount,
                 currency=order_data.get('currency', 'CLP'),
-                payment_method=order_data.get('payment_method', 'woocommerce'),
+                payment_method=order_data.get('payment_method') or 'woocommerce',  # ✅ FIX: Manejar None correctamente
                 notes=order_data.get('notes', f"Migrado desde WooCommerce - Order ID: {woo_order_id}")
             )
             
@@ -1293,7 +1293,7 @@ class EventMigrator:
                     service_fee=service_fee,
                     total=total_amount,
                     currency=order_data.get('currency', 'CLP'),
-                    payment_method=order_data.get('payment_method', 'woocommerce'),
+                    payment_method=order_data.get('payment_method') or 'woocommerce',  # ✅ FIX: Manejar None correctamente
                     notes=order_data.get('notes', f"Migrado desde WooCommerce - Order ID: {woo_order_id}")
                 )
                 orders_to_create.append((order_obj, woo_order_id, order_date))

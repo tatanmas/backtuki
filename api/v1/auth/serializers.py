@@ -193,3 +193,71 @@ class OrganizerProfileSetupSerializer(serializers.Serializer):
             raise serializers.ValidationError("Confirma tu contraseña")
         
         return attrs
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    """Serializer para cambio de contraseña con contraseña actual"""
+    current_password = serializers.CharField(write_only=True, required=True)
+    new_password = serializers.CharField(write_only=True, required=True, min_length=6)
+    new_password_confirm = serializers.CharField(write_only=True, required=False)
+    
+    def validate_new_password(self, value):
+        """Validar contraseña nueva con validadores de Django"""
+        validate_password(value)
+        return value
+    
+    def validate(self, attrs):
+        """Validar que las contraseñas coincidan si se proporciona confirmación"""
+        new_password = attrs.get('new_password')
+        new_password_confirm = attrs.get('new_password_confirm')
+        
+        # Si se proporciona confirmación, validar que coincidan
+        if new_password_confirm and new_password != new_password_confirm:
+            raise serializers.ValidationError({
+                'new_password_confirm': 'Las contraseñas no coinciden'
+            })
+        
+        return attrs
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    """Serializer para solicitar restablecimiento de contraseña vía OTP"""
+    email = serializers.EmailField(required=True)
+    
+    def validate_email(self, value):
+        return value.lower().strip()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """Serializer para restablecer contraseña con código OTP"""
+    email = serializers.EmailField(required=True)
+    code = serializers.CharField(min_length=6, max_length=6, required=True)
+    new_password = serializers.CharField(write_only=True, required=True, min_length=6)
+    new_password_confirm = serializers.CharField(write_only=True, required=False)
+    
+    def validate_email(self, value):
+        return value.lower().strip()
+    
+    def validate_code(self, value):
+        """Validar formato del código OTP"""
+        code = value.strip().replace(' ', '')
+        if not code.isdigit():
+            raise serializers.ValidationError("El código debe contener solo números")
+        return code
+    
+    def validate_new_password(self, value):
+        """Validar contraseña nueva con validadores de Django"""
+        validate_password(value)
+        return value
+    
+    def validate(self, attrs):
+        """Validar que las contraseñas coincidan si se proporciona confirmación"""
+        new_password = attrs.get('new_password')
+        new_password_confirm = attrs.get('new_password_confirm')
+        
+        if new_password_confirm and new_password != new_password_confirm:
+            raise serializers.ValidationError({
+                'new_password_confirm': 'Las contraseñas no coinciden'
+            })
+        
+        return attrs

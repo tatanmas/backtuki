@@ -666,6 +666,25 @@ class TicketTier(BaseModel):
         blank=True
     )
     
+    # Availability control - for limiting ticket sales by time
+    available_from = models.DateTimeField(
+        _("available from"),
+        null=True,
+        blank=True,
+        help_text=_("Date and time when this ticket becomes available for purchase. Leave empty for immediate availability.")
+    )
+    is_active = models.BooleanField(
+        _("is active"),
+        default=True,
+        help_text=_("Whether this ticket tier is currently active and can be purchased")
+    )
+    max_quantity = models.PositiveIntegerField(
+        _("max quantity"),
+        null=True,
+        blank=True,
+        help_text=_("Maximum total quantity that can be sold for this tier (across all orders). Leave empty for unlimited.")
+    )
+    
     # Metadata
     is_highlighted = models.BooleanField(_("is highlighted"), default=False)
     is_waitlist = models.BooleanField(_("is waitlist"), default=False)

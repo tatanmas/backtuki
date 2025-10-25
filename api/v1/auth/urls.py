@@ -50,9 +50,9 @@ urlpatterns = [
     path('organizer/otp/validate/', OrganizerOTPValidateView.as_view(), name='organizer_otp_validate'),
     path('organizer/profile/setup/', OrganizerProfileSetupView.as_view(), name='organizer_profile_setup'),
     
-    # Legacy endpoints
+    # Password Management
+    path('change-password/', PasswordChangeView.as_view(), name='change_password'),
     path('password-reset/', PasswordResetView.as_view(), name='password_reset'),
     path('password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
-    path('set-password/', set_password_view, name='set_password'),
-    path('change-password/', PasswordChangeView.as_view(), name='change_password'),
+    path('set-password/', set_password_view, name='set_password'),  # Legacy
 ] 
