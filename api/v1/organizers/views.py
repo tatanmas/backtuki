@@ -73,6 +73,184 @@ class OrganizerViewSet(viewsets.ModelViewSet):
                 {"detail": f"Error retrieving organizer: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+    
+    @action(detail=False, methods=['get'], url_path='dashboard-stats')
+    def dashboard_stats(self, request):
+        """
+        🚀 ENTERPRISE: Get comprehensive dashboard statistics for the organizer.
+        
+        This endpoint calculates robust metrics across all events:
+        - Total tickets sold (from paid orders)
+        - Total revenue (actual payments received)
+        - Daily breakdown for charts
+        - Trend comparisons (current period vs previous period)
+        
+        Query parameters:
+        - days: Number of days to include (default: 14)
+        """
+        from django.db.models import Sum, Count, Q, F
+        from django.utils import timezone
+        from datetime import timedelta, datetime
+        from apps.events.models import Event, Order, OrderItem
+        
+        if not request.user.is_authenticated:
+            return Response(
+                {"detail": "Authentication required."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        # Get organizer
+        try:
+            organizer_user = request.user.organizer_roles.first()
+            if not organizer_user:
+                return Response(
+                    {"detail": "No organizer found for this user."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            organizer = organizer_user.organizer
+        except Exception as e:
+            return Response(
+                {"detail": f"Error retrieving organizer: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Get parameters
+        days = int(request.query_params.get('days', 14))
+        
+        # Calculate date ranges
+        now = timezone.now()
+        current_period_start = now - timedelta(days=days)
+        previous_period_start = current_period_start - timedelta(days=days)
+        
+        # 🚀 ENTERPRISE: Get all events for this organizer
+        organizer_events = Event.objects.filter(organizer=organizer)
+        
+        # 🚀 ENTERPRISE: Calculate ROBUST revenue from actual paid orders
+        # This is the correct way: sum what customers actually paid
+        current_period_orders = Order.objects.filter(
+            event__organizer=organizer,
+            status='paid',
+            created_at__gte=current_period_start,
+            created_at__lte=now
+        )
+        
+        previous_period_orders = Order.objects.filter(
+            event__organizer=organizer,
+            status='paid',
+            created_at__gte=previous_period_start,
+            created_at__lt=current_period_start
+        )
+        
+        # Calculate current period metrics
+        current_metrics = current_period_orders.aggregate(
+            total_revenue=Sum('total'),  # What customers paid (includes service fees)
+            total_orders=Count('id')
+        )
+        
+        # Calculate tickets sold from OrderItems (more accurate than counting orders)
+        current_tickets_data = OrderItem.objects.filter(
+            order__event__organizer=organizer,
+            order__status='paid',
+            order__created_at__gte=current_period_start,
+            order__created_at__lte=now
+        ).aggregate(
+            total_tickets=Sum('quantity')
+        )
+        
+        # Calculate previous period metrics for trend comparison
+        previous_metrics = previous_period_orders.aggregate(
+            total_revenue=Sum('total'),
+            total_orders=Count('id')
+        )
+        
+        previous_tickets_data = OrderItem.objects.filter(
+            order__event__organizer=organizer,
+            order__status='paid',
+            order__created_at__gte=previous_period_start,
+            order__created_at__lt=current_period_start
+        ).aggregate(
+            total_tickets=Sum('quantity')
+        )
+        
+        # Extract values
+        total_tickets_sold = current_tickets_data['total_tickets'] or 0
+        total_revenue = float(current_metrics['total_revenue'] or 0)
+        
+        previous_tickets_sold = previous_tickets_data['total_tickets'] or 0
+        previous_revenue = float(previous_metrics['total_revenue'] or 0)
+        
+        # Calculate trends (percentage change)
+        if previous_tickets_sold > 0:
+            tickets_trend = ((total_tickets_sold - previous_tickets_sold) / previous_tickets_sold) * 100
+        else:
+            tickets_trend = 100.0 if total_tickets_sold > 0 else 0.0
+        
+        if previous_revenue > 0:
+            revenue_trend = ((total_revenue - previous_revenue) / previous_revenue) * 100
+        else:
+            revenue_trend = 100.0 if total_revenue > 0 else 0.0
+        
+        # 🚀 ENTERPRISE: Generate daily breakdown for charts
+        daily_data = []
+        for day_offset in range(days):
+            day_date = (current_period_start + timedelta(days=day_offset)).date()
+            day_start = timezone.make_aware(datetime.combine(day_date, datetime.min.time()))
+            day_end = timezone.make_aware(datetime.combine(day_date, datetime.max.time()))
+            
+            # Get orders for this day
+            day_orders = Order.objects.filter(
+                event__organizer=organizer,
+                status='paid',
+                created_at__gte=day_start,
+                created_at__lte=day_end
+            )
+            
+            day_revenue = day_orders.aggregate(total=Sum('total'))['total'] or 0
+            
+            # Get tickets sold this day
+            day_tickets = OrderItem.objects.filter(
+                order__event__organizer=organizer,
+                order__status='paid',
+                order__created_at__gte=day_start,
+                order__created_at__lte=day_end
+            ).aggregate(total=Sum('quantity'))['total'] or 0
+            
+            daily_data.append({
+                'date': day_date.strftime('%d %b'),  # Format: "17 oct"
+                'tickets': int(day_tickets),
+                'revenue': float(day_revenue)
+            })
+        
+        # Calculate event views (if available)
+        # This is optional - you mentioned views might not be available yet
+        total_views = 0
+        try:
+            from apps.events.analytics_models import EventView
+            total_views = EventView.objects.filter(
+                event__organizer=organizer,
+                created_at__gte=current_period_start,
+                created_at__lte=now
+            ).count()
+        except:
+            # If EventView doesn't exist or there's an error, default to 0
+            pass
+        
+        return Response({
+            'period': {
+                'days': days,
+                'start_date': current_period_start.isoformat(),
+                'end_date': now.isoformat()
+            },
+            'summary': {
+                'total_tickets_sold': int(total_tickets_sold),
+                'tickets_trend': round(tickets_trend, 1),
+                'total_revenue': round(total_revenue, 0),  # Round to nearest integer for CLP
+                'revenue_trend': round(revenue_trend, 1),
+                'total_views': total_views,
+                'total_orders': current_metrics['total_orders'] or 0
+            },
+            'daily_data': daily_data
+        })
 
 
 class CurrentOnboardingView(APIView):
@@ -236,6 +414,178 @@ class CurrentOrganizerView(RetrieveUpdateAPIView):
         if not hasattr(user, 'organizer') or not user.organizer:
             raise NotFound("No organizer is associated with the current user.")
         return user.organizer
+
+
+class DashboardStatsView(APIView):
+    """
+    🚀 ENTERPRISE: Get comprehensive dashboard statistics for the organizer.
+    
+    This endpoint calculates robust metrics across all events:
+    - Total tickets sold (from paid orders)
+    - Total revenue (actual payments received)
+    - Daily breakdown for charts
+    - Trend comparisons (current period vs previous period)
+    
+    Query parameters:
+    - days: Number of days to include (default: 14)
+    """
+    permission_classes = [IsAuthenticated, IsOrganizer]
+    
+    def get(self, request):
+        from django.db.models import Sum, Count
+        from django.utils import timezone
+        from datetime import timedelta, datetime
+        from apps.events.models import Event, Order, OrderItem
+        
+        # Get organizer
+        try:
+            organizer_user = request.user.organizer_roles.first()
+            if not organizer_user:
+                return Response(
+                    {"detail": "No organizer found for this user."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            organizer = organizer_user.organizer
+        except Exception as e:
+            return Response(
+                {"detail": f"Error retrieving organizer: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Get parameters
+        days = int(request.query_params.get('days', 14))
+        
+        # Calculate date ranges
+        now = timezone.now()
+        current_period_start = now - timedelta(days=days)
+        previous_period_start = current_period_start - timedelta(days=days)
+        
+        # 🚀 ENTERPRISE: Get all events for this organizer
+        organizer_events = Event.objects.filter(organizer=organizer)
+        
+        # 🚀 ENTERPRISE: Calculate ROBUST revenue from actual paid orders
+        current_period_orders = Order.objects.filter(
+            event__organizer=organizer,
+            status='paid',
+            created_at__gte=current_period_start,
+            created_at__lte=now
+        )
+        
+        previous_period_orders = Order.objects.filter(
+            event__organizer=organizer,
+            status='paid',
+            created_at__gte=previous_period_start,
+            created_at__lt=current_period_start
+        )
+        
+        # Calculate current period metrics
+        current_metrics = current_period_orders.aggregate(
+            total_revenue=Sum('total'),
+            total_orders=Count('id')
+        )
+        
+        # Calculate tickets sold from OrderItems
+        current_tickets_data = OrderItem.objects.filter(
+            order__event__organizer=organizer,
+            order__status='paid',
+            order__created_at__gte=current_period_start,
+            order__created_at__lte=now
+        ).aggregate(
+            total_tickets=Sum('quantity')
+        )
+        
+        # Calculate previous period metrics for trend comparison
+        previous_metrics = previous_period_orders.aggregate(
+            total_revenue=Sum('total'),
+            total_orders=Count('id')
+        )
+        
+        previous_tickets_data = OrderItem.objects.filter(
+            order__event__organizer=organizer,
+            order__status='paid',
+            order__created_at__gte=previous_period_start,
+            order__created_at__lt=current_period_start
+        ).aggregate(
+            total_tickets=Sum('quantity')
+        )
+        
+        # Extract values
+        total_tickets_sold = current_tickets_data['total_tickets'] or 0
+        total_revenue = float(current_metrics['total_revenue'] or 0)
+        
+        previous_tickets_sold = previous_tickets_data['total_tickets'] or 0
+        previous_revenue = float(previous_metrics['total_revenue'] or 0)
+        
+        # Calculate trends (percentage change)
+        if previous_tickets_sold > 0:
+            tickets_trend = ((total_tickets_sold - previous_tickets_sold) / previous_tickets_sold) * 100
+        else:
+            tickets_trend = 100.0 if total_tickets_sold > 0 else 0.0
+        
+        if previous_revenue > 0:
+            revenue_trend = ((total_revenue - previous_revenue) / previous_revenue) * 100
+        else:
+            revenue_trend = 100.0 if total_revenue > 0 else 0.0
+        
+        # 🚀 ENTERPRISE: Generate daily breakdown for charts
+        daily_data = []
+        for day_offset in range(days):
+            day_date = (current_period_start + timedelta(days=day_offset)).date()
+            day_start = timezone.make_aware(datetime.combine(day_date, datetime.min.time()))
+            day_end = timezone.make_aware(datetime.combine(day_date, datetime.max.time()))
+            
+            # Get orders for this day
+            day_orders = Order.objects.filter(
+                event__organizer=organizer,
+                status='paid',
+                created_at__gte=day_start,
+                created_at__lte=day_end
+            )
+            
+            day_revenue = day_orders.aggregate(total=Sum('total'))['total'] or 0
+            
+            # Get tickets sold this day
+            day_tickets = OrderItem.objects.filter(
+                order__event__organizer=organizer,
+                order__status='paid',
+                order__created_at__gte=day_start,
+                order__created_at__lte=day_end
+            ).aggregate(total=Sum('quantity'))['total'] or 0
+            
+            daily_data.append({
+                'date': day_date.strftime('%d %b'),
+                'tickets': int(day_tickets),
+                'revenue': float(day_revenue)
+            })
+        
+        # Calculate event views (if available)
+        total_views = 0
+        try:
+            from apps.events.analytics_models import EventView
+            total_views = EventView.objects.filter(
+                event__organizer=organizer,
+                created_at__gte=current_period_start,
+                created_at__lte=now
+            ).count()
+        except:
+            pass
+        
+        return Response({
+            'period': {
+                'days': days,
+                'start_date': current_period_start.isoformat(),
+                'end_date': now.isoformat()
+            },
+            'summary': {
+                'total_tickets_sold': int(total_tickets_sold),
+                'tickets_trend': round(tickets_trend, 1),
+                'total_revenue': round(total_revenue, 0),
+                'revenue_trend': round(revenue_trend, 1),
+                'total_views': total_views,
+                'total_orders': current_metrics['total_orders'] or 0
+            },
+            'daily_data': daily_data
+        })
 
 
 class CheckSubdomainAvailabilityView(APIView):

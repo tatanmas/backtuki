@@ -47,6 +47,8 @@ router.register(r'form-responses', FormResponseViewSet, basename='form-response'
 
 # Wire up our API using automatic URL routing
 urlpatterns = [
+    # ⚠️ IMPORTANTE: Incluir organizers.urls ANTES del router para que tenga prioridad
+    path('', include('api.v1.organizers.urls')),  # 🚀 Organizer profile management (incluyendo PATCH a /organizers/current/)
     path('', include(router.urls)),
     path('auth/', include('api.v1.auth.urls')),
     path('user/', include('api.v1.users.urls')),

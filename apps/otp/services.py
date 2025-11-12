@@ -1,11 +1,13 @@
-from django.core.mail import send_mail
+from django.core.mail import send_mail, EmailMultiAlternatives
 from django.template.loader import render_to_string
 from django.conf import settings
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from .models import OTP, OTPPurpose, OTPAttempt
+from email.mime.image import MIMEImage
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -233,7 +235,7 @@ class OTPService:
     @classmethod
     def _send_otp_email(cls, otp):
         """
-        Envía el email con el código OTP
+        Envía el email con el código OTP con logos de Tuki embebidos
         """
         try:
             # Obtener template según el propósito
@@ -268,19 +270,34 @@ class OTPService:
                 'time_remaining_minutes': int(otp.time_remaining.total_seconds() // 60),
             }
             
-            # Renderizar email
+            # Renderizar email HTML
             html_message = render_to_string(template, context)
             
-            # Enviar email
-            send_mail(
+            # Crear email con soporte para attachments
+            email = EmailMultiAlternatives(
                 subject=subject,
-                message=f'Tu código de verificación es: {otp.code}',
+                body=f'Tu código de verificación es: {otp.code}\n\nEste código expira en {int(otp.time_remaining.total_seconds() // 60)} minutos.',
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[otp.email],
-                html_message=html_message,
-                fail_silently=False
+                to=[otp.email]
             )
             
+            # Adjuntar versión HTML
+            email.attach_alternative(html_message, "text/html")
+            
+            # Adjuntar logo como imagen inline (CID)
+            # Logo negro para el header
+            logo_negro_path = os.path.join(settings.BASE_DIR, 'static/images/logos/logo-negro.png')
+            if os.path.exists(logo_negro_path):
+                with open(logo_negro_path, 'rb') as logo_file:
+                    logo_negro = MIMEImage(logo_file.read())
+                    logo_negro.add_header('Content-ID', '<logo_negro>')
+                    logo_negro.add_header('Content-Disposition', 'inline', filename='logo-negro.png')
+                    email.attach(logo_negro)
+            
+            # Enviar email
+            email.send(fail_silently=False)
+            
+            logger.info(f"📧 [OTP EMAIL] Sent OTP email for purpose {otp.purpose} to {otp.email}")
             return True
             
         except Exception as e:

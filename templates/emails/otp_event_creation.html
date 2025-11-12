@@ -1,164 +1,53 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Código para crear tu evento - Tuki</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f8f9fa;
-        }
-        .container {
-            background: white;
-            border-radius: 12px;
-            padding: 40px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        .logo {
-            font-size: 32px;
-            font-weight: bold;
-            color: #4F46E5;
-            margin-bottom: 10px;
-        }
-        .icon {
-            font-size: 48px;
-            margin-bottom: 20px;
-        }
-        .code-container {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 12px;
-            padding: 30px;
-            text-align: center;
-            margin: 30px 0;
-            color: white;
-        }
-        .code {
-            font-size: 36px;
-            font-weight: bold;
-            letter-spacing: 8px;
-            font-family: 'Courier New', monospace;
-        }
-        .code-label {
-            font-size: 14px;
-            margin-bottom: 15px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            opacity: 0.9;
-        }
-        .event-info {
-            background: #f0f7ff;
-            border-left: 4px solid #4F46E5;
-            padding: 20px;
-            margin: 20px 0;
-            border-radius: 4px;
-        }
-        .steps {
-            background: #f8f9fa;
-            border-radius: 8px;
-            padding: 20px;
-            margin: 20px 0;
-        }
-        .step {
-            display: flex;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-        .step-number {
-            background: #4F46E5;
-            color: white;
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            font-weight: bold;
-            margin-right: 12px;
-        }
-        .footer {
-            text-align: center;
-            color: #666;
-            font-size: 14px;
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid #eee;
-        }
-        .expires-info {
-            background: #fff3e0;
-            border-radius: 8px;
-            padding: 15px;
-            margin: 20px 0;
-            text-align: center;
-            color: #f57c00;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <div class="logo">Tuki</div>
-            <div class="icon">🎉</div>
-            <h1>¡Crea tu evento increíble!</h1>
-        </div>
+{% extends "emails/base.html" %}
 
-        <p>¡Hola!</p>
-        <p>Estás a un paso de crear tu evento en Tuki. Usa el siguiente código para continuar:</p>
+{% block title %}Código para crear tu evento - Tuki{% endblock %}
 
-        {% if otp.metadata.event_title %}
-        <div class="event-info">
-            <strong>📅 Evento:</strong> {{ otp.metadata.event_title }}
-        </div>
-        {% endif %}
+{% block content %}
+<h1 class="greeting">Código para crear tu evento</h1>
 
-        <div class="code-container">
-            <div class="code-label">Tu código de verificación:</div>
-            <div class="code">{{ code }}</div>
-        </div>
+<p class="subtitle">
+    Ingresa este código para continuar con la creación de tu evento en Tuki.
+</p>
 
-        <div class="expires-info">
-            ⏰ Este código expira en {{ time_remaining_minutes }} minutos
-        </div>
+{% if otp.metadata.event_title %}
+<div style="background-color: #f9fafb; border-left: 3px solid #268078; padding: 16px; margin: 24px 0; border-radius: 4px;">
+    <p style="font-size: 14px; color: #1f2937; margin: 0;">
+        <strong>Evento:</strong> {{ otp.metadata.event_title }}
+    </p>
+</div>
+{% endif %}
 
-        <div class="steps">
-            <h3>Próximos pasos:</h3>
-            <div class="step">
-                <div class="step-number">1</div>
-                <div>Ingresa este código en la pantalla de verificación</div>
-            </div>
-            <div class="step">
-                <div class="step-number">2</div>
-                <div>Completa los detalles de tu evento</div>
-            </div>
-            <div class="step">
-                <div class="step-number">3</div>
-                <div>¡Publica y comienza a vender tickets!</div>
-            </div>
-        </div>
-
-        {% if otp.metadata.is_paid_event %}
-        <div style="background: #e8f5e8; padding: 15px; border-radius: 8px; margin: 20px 0;">
-            <strong>💰 Evento de pago:</strong> Necesitarás completar tu perfil de organizador para recibir pagos.
-        </div>
-        {% endif %}
-
-        <p><strong>¿Por qué necesitas verificar tu email?</strong></p>
-        <p>La verificación nos ayuda a mantener la plataforma segura y te permite recibir notificaciones importantes sobre tu evento.</p>
-
-        <div class="footer">
-            <p>Este email fue enviado por Tuki<br>
-            Si no intentaste crear un evento, puedes ignorar este mensaje.</p>
-        </div>
+<!-- OTP Code Card -->
+<div style="background: linear-gradient(135deg, #268078 0%, #572150 50%, #4CBED7 100%); border-radius: 8px; padding: 3px; margin: 32px 0;">
+    <div style="background-color: #ffffff; border-radius: 5px; padding: 32px; text-align: center;">
+        <p style="font-size: 13px; color: #6b7280; margin: 0 0 12px 0; text-transform: uppercase; letter-spacing: 0.5px;">
+            Código de verificación
+        </p>
+        <p style="font-size: 42px; font-weight: 700; letter-spacing: 10px; color: #268078; margin: 0; font-family: 'Courier New', monospace;">
+            {{ code }}
+        </p>
+        <p style="font-size: 12px; color: #9ca3af; margin: 12px 0 0 0;">
+            Válido por {{ time_remaining_minutes }} minutos
+        </p>
     </div>
-</body>
-</html>
+</div>
+
+<p style="font-size: 14px; color: #6b7280; margin: 24px 0; text-align: center; line-height: 1.6;">
+    Ingresa este código en la pantalla de verificación para completar los detalles de tu evento y comenzar a vender tickets.
+</p>
+
+{% if otp.metadata.is_paid_event %}
+<div style="background-color: #eff6ff; border-left: 3px solid #3b82f6; padding: 16px; margin: 24px 0; border-radius: 4px;">
+    <p style="font-size: 13px; color: #1e40af; margin: 0;">
+        <strong>Nota:</strong> Necesitarás completar tu perfil de organizador para recibir pagos.
+    </p>
+</div>
+{% endif %}
+
+<div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #e5e7eb; text-align: center;">
+    <p style="font-size: 13px; color: #9ca3af; margin: 0;">
+        Si no solicitaste este código, ignora este mensaje.
+    </p>
+</div>
+
+{% endblock %}

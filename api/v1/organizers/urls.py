@@ -3,7 +3,7 @@ from .views import (
     OnboardingStepView,
     CurrentOnboardingView,
     CurrentOrganizerView,
-    # Remove OrganizerViewSet and other unused views if any
+    DashboardStatsView,
 )
 
 urlpatterns = [
@@ -13,4 +13,5 @@ urlpatterns = [
     
     # Organizer endpoints
     path('organizers/current/', CurrentOrganizerView.as_view(), name='current_organizer'),
+    path('organizers/dashboard-stats/', DashboardStatsView.as_view(), name='organizer_dashboard_stats'),
 ] 
