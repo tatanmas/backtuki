@@ -411,9 +411,10 @@ class CurrentOrganizerView(RetrieveUpdateAPIView):
         # The user is already authenticated, and IsOrganizer permission ensures they are an organizer.
         # We can now safely retrieve the organizer linked to the user.
         user = self.request.user
-        if not hasattr(user, 'organizer') or not user.organizer:
-            raise NotFound("No organizer is associated with the current user.")
-        return user.organizer
+        organizer = user.get_primary_organizer() if hasattr(user, 'get_primary_organizer') else None
+        if organizer:
+            return organizer
+        raise NotFound("No organizer is associated with the current user.")
 
 
 class DashboardStatsView(APIView):

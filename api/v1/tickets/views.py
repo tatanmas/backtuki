@@ -12,7 +12,6 @@ from rest_framework.response import Response
 from django.utils import timezone
 
 from apps.events.models import TicketTier, TicketHold, Order, OrderItem
-from apps.organizers.models import OrganizerUser
 from api.v1.events.serializers import TicketTierSerializer
 
 
@@ -33,11 +32,9 @@ class TicketTierManagementViewSet(viewsets.ModelViewSet):
     
     def get_organizer(self):
         """Obtener el organizador asociado al usuario actual (mismo patrón que TicketTierViewSet)."""
-        try:
-            organizer_user = OrganizerUser.objects.get(user=self.request.user)
-            return organizer_user.organizer
-        except OrganizerUser.DoesNotExist:
-            return None
+        if hasattr(self.request.user, 'get_primary_organizer'):
+            return self.request.user.get_primary_organizer()
+        return None
 
     @action(detail=True, methods=['get'])
     def holds(self, request, pk=None):
@@ -229,7 +226,8 @@ class TicketTierManagementViewSet(viewsets.ModelViewSet):
             ticket_tier = TicketTier.objects.get(id=pk)
             
             # Check permissions
-            if not hasattr(request.user, 'organizer') or ticket_tier.event.organizer != request.user.organizer:
+            organizer = request.user.get_primary_organizer() if hasattr(request.user, 'get_primary_organizer') else None
+            if not organizer or ticket_tier.event.organizer != organizer:
                 return Response({"detail": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
             
             now = timezone.now()

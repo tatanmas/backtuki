@@ -3,12 +3,12 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
 from django.core.files.storage import default_storage
 from django.conf import settings
 from apps.forms.models import Form, FormResponse, FormResponseFile
 from apps.forms.serializers import FormSerializer, FormResponseSerializer
 from apps.events.models import Ticket
-from apps.organizers.models import OrganizerUser
 import os
 import uuid
 from core.utils import get_upload_path
@@ -174,21 +174,11 @@ class FormViewSet(viewsets.ModelViewSet):
     
     def get_organizer(self):
         """Obtener el organizador asociado al usuario actual."""
-        try:
-            # Handle anonymous users
-            if not self.request.user.is_authenticated:
-                return None
-            
-            # Buscar OrganizerUser, si hay múltiples tomar el más reciente
-            organizer_users = OrganizerUser.objects.filter(user=self.request.user)
-            if organizer_users.exists():
-                organizer_user = organizer_users.order_by('-created_at').first()
-                return organizer_user.organizer
-            else:
-                return None
-        except Exception as e:
-            print(f"[FormViewSet] Error getting organizer: {e}")
+        if not self.request.user.is_authenticated:
             return None
+        if hasattr(self.request.user, 'get_primary_organizer'):
+            return self.request.user.get_primary_organizer()
+        return None
     
     def get_queryset(self):
         # Filter by organizer if authenticated
@@ -207,7 +197,7 @@ class FormViewSet(viewsets.ModelViewSet):
         
         if not organizer:
             print(f"[FormViewSet] ERROR: No organizer found for user {self.request.user}")
-            raise ValueError("No organizer found for current user")
+            raise PermissionDenied("No organizer found for current user")
         
         print(f"[FormViewSet] Saving form with organizer: {organizer} and created_by: {self.request.user}")
         serializer.save(

@@ -7,7 +7,7 @@ from django.db import transaction
 
 from .models import Form, FormField
 from .serializers import FormSerializer, FormFieldSerializer
-from apps.organizers.models import OrganizerUser
+from rest_framework.exceptions import PermissionDenied
 
 class IsOrganizerUser(permissions.BasePermission):
     """
@@ -18,12 +18,8 @@ class IsOrganizerUser(permissions.BasePermission):
         if not request.user.is_authenticated:
             return False
             
-        # Check if the user is associated with an organizer through OrganizerUser
-        try:
-            organizer_user = OrganizerUser.objects.get(user=request.user)
-            return organizer_user.organizer is not None
-        except OrganizerUser.DoesNotExist:
-            return False
+        organizer = request.user.get_primary_organizer() if hasattr(request.user, 'get_primary_organizer') else None
+        return organizer is not None
 
 class FormViewSet(viewsets.ModelViewSet):
     """
@@ -38,11 +34,17 @@ class FormViewSet(viewsets.ModelViewSet):
         This view should return a list of all forms
         for the currently authenticated user's organization.
         """
-        return Form.objects.filter(organizer=self.request.user.organizer)
+        organizer = self._get_user_organizer(required=False)
+        if not organizer:
+            return Form.objects.none()
+        return Form.objects.filter(organizer=organizer)
     
     def perform_create(self, serializer):
+        organizer = self._get_user_organizer()
+        if not organizer:
+            raise PermissionDenied("No organizer associated with current user.")
         serializer.save(
-            organizer=self.request.user.organizer,
+            organizer=organizer,
             created_by=self.request.user
         )
     
@@ -77,7 +79,7 @@ class FormViewSet(viewsets.ModelViewSet):
             new_form = Form.objects.create(
                 name=f"Copy of {original_form.name}",
                 description=original_form.description,
-                organizer=self.request.user.organizer,
+                organizer=self._get_user_organizer(),
                 created_by=self.request.user,
                 status=original_form.status
             )
@@ -149,3 +151,9 @@ class FormViewSet(viewsets.ModelViewSet):
         form.save()
         serializer = self.get_serializer(form)
         return Response(serializer.data)
+
+    def _get_user_organizer(self, required: bool = True):
+        organizer = self.request.user.get_primary_organizer() if hasattr(self.request.user, 'get_primary_organizer') else None
+        if not organizer and required:
+            raise PermissionDenied("No organizer associated with current user.")
+        return organizer

@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'apps.reservations',
     'apps.payments',
     'apps.forms',
+    'apps.satisfaction',  # 🚀 ENTERPRISE: Satisfaction Survey System
     'apps.ticket_validation',
     'apps.otp',  # 🔐 OTP Authentication System
     'apps.validation',  # 🚀 Enterprise Validation System

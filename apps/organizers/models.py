@@ -294,11 +294,10 @@ class OrganizerOnboarding(TimeStampedModel):
             self.is_completed = True
             self.save()
 
-            # Link the user to the organizer
-            user.organizer = organizer
+            # Link the user to the organizer via OrganizerUser and update flags
             user.is_organizer = True
-            user.is_staff = True # Or based on some logic
-            user.save()
+            user.is_staff = True  # Or based on some logic
+            user.save(update_fields=['is_organizer', 'is_staff'])
 
             # Create an admin role for the user in the organization
             OrganizerUser.objects.create(

@@ -42,16 +42,6 @@ class User(AbstractUser, TimeStampedModel):
         help_text=_("Designates whether this user can validate tickets."),
     )
     
-    # Relationship with organizer
-    organizer = models.ForeignKey(
-        'organizers.Organizer',
-        on_delete=models.SET_NULL,
-        related_name='users',
-        verbose_name=_("organizer"),
-        null=True,
-        blank=True
-    )
-
     # Track password changes
     last_password_change = models.DateTimeField(
         _("last password change"),
@@ -109,6 +99,46 @@ class User(AbstractUser, TimeStampedModel):
     def has_password(self):
         """Return True if the user has set a password."""
         return bool(self.password)
+
+    # --- Organizer helpers ---
+    def get_primary_organizer_role(self):
+        """
+        Return the OrganizerUser instance that should be considered this
+        user's primary organizer membership.
+        """
+        cached_role = getattr(self, '_cached_primary_organizer_role', None)
+        if cached_role is not None:
+            return cached_role
+
+        if not hasattr(self, 'organizer_roles'):
+            self._cached_primary_organizer_role = None
+            return None
+
+        organizer_user = (
+            self.organizer_roles.select_related('organizer')
+            .filter(is_admin=True)
+            .order_by('created_at')
+            .first()
+        )
+
+        if organizer_user is None:
+            organizer_user = (
+                self.organizer_roles.select_related('organizer')
+                .order_by('created_at')
+                .first()
+            )
+
+        self._cached_primary_organizer_role = organizer_user
+        return organizer_user
+
+    def get_primary_organizer(self):
+        """
+        Return the Organizer instance associated with this user via OrganizerUser.
+        """
+        organizer_role = self.get_primary_organizer_role()
+        organizer = organizer_role.organizer if organizer_role else None
+        setattr(self, '_cached_primary_organizer', organizer)
+        return organizer
     
     def mark_profile_complete(self):
         """Mark the profile as completed."""
