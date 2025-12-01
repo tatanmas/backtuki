@@ -1529,6 +1529,19 @@ class BookingSerializer(serializers.Serializer):
         
         print(f"🎯 [BookingSerializer] FINAL USER FOR ORDER: {user.email} (ID: {user.id}, is_guest: {user.is_guest})")
         
+        # 🚀 ENTERPRISE: Start platform flow tracking
+        from core.flow_logger import FlowLogger
+        flow = FlowLogger.start_flow(
+            'ticket_checkout',
+            user=user,
+            organizer=event.organizer if event else None,
+            event=event,
+            metadata={
+                'ip_address': self.context.get('request').META.get('REMOTE_ADDR') if self.context.get('request') else None,
+                'user_agent': self.context.get('request').META.get('HTTP_USER_AGENT', '')[:200] if self.context.get('request') else None,
+            }
+        )
+        
         # Create order - ALWAYS with user linked
         order = Order.objects.create(
             event=event,
@@ -1541,10 +1554,25 @@ class BookingSerializer(serializers.Serializer):
             service_fee=0,
             total=0,
             currency=event.ticket_tiers.first().currency if event.ticket_tiers.exists() else 'CLP',
-            status='pending'
+            status='pending',
+            flow=flow.flow if flow else None  # Link order to flow
         )
         
         print(f"📝 [BookingSerializer] Created order {order.order_number} linked to user {user.id} ({user.email})")
+        
+        # 🚀 ENTERPRISE: Log order creation event
+        if flow:
+            flow.log_event(
+                'ORDER_CREATED',
+                order=order,
+                message=f"Order {order.order_number} created",
+                metadata={
+                    'order_number': order.order_number,
+                    'event_id': str(event.id),
+                    'event_name': event.title,
+                    'user_email': user.email,
+                }
+            )
         
         # 🚀 ENTERPRISE: Build items either from reservation holds or from payload
         from apps.events.models import TicketHold
@@ -1699,25 +1727,76 @@ class BookingSerializer(serializers.Serializer):
             order.save()
             print(f"🚀 DEBUG - Order status after save: {order.status}")
             
+            # 🚀 ENTERPRISE: Log order marked as paid
+            if flow:
+                flow.log_event(
+                    'ORDER_MARKED_PAID',
+                    order=order,
+                    status='success',
+                    message=f"Free order {order.order_number} marked as paid",
+                    metadata={'total': float(order.total), 'reason': 'free_order'}
+                )
+            
             # 🚀 ENTERPRISE: Confirm coupon usage for free orders
             if order.coupon:
                 try:
                     order.coupon.confirm_usage_for_order(order)
                     print(f"🎫 COUPON: Confirmed usage of {order.coupon.code} for order {order.id}")
+                    if flow:
+                        flow.log_event(
+                            'COUPON_APPLIED',
+                            order=order,
+                            status='success',
+                            message=f"Coupon {order.coupon.code} applied",
+                            metadata={'coupon_code': order.coupon.code, 'discount': float(order.discount)}
+                        )
                 except Exception as e:
                     print(f"⚠️ COUPON: Error confirming usage: {e}")
             
             # ✅ CREAR TICKETS INMEDIATAMENTE para eventos gratuitos
             self._create_tickets_from_holders(order, validated_data.get('ticketHolders', []), customer_info)
             
+            # 🚀 ENTERPRISE: Log tickets created
+            if flow:
+                tickets_count = order.items.aggregate(total=models.Sum('quantity'))['total'] or 0
+                flow.log_event(
+                    'TICKETS_CREATED',
+                    order=order,
+                    status='success',
+                    message=f"{tickets_count} tickets created for order {order.order_number}",
+                    metadata={'tickets_count': tickets_count}
+                )
+            
             # Send confirmation email for free orders
             try:
                 from apps.events.tasks import send_order_confirmation_email
                 print(f"📧 QUEUE: Enqueuing order confirmation email for order {order.id} -> queue 'emails'")
-                send_order_confirmation_email.apply_async(args=[str(order.id)], queue='emails')
+                task = send_order_confirmation_email.apply_async(
+                    args=[str(order.id)],
+                    kwargs={'flow_id': str(flow.flow_id) if flow else None},
+                    queue='emails'
+                )
                 print(f"📧 QUEUE: Successfully enqueued order confirmation email for order {order.id}")
+                
+                # 🚀 ENTERPRISE: Log email task enqueued
+                if flow:
+                    flow.log_event(
+                        'EMAIL_TASK_ENQUEUED',
+                        order=order,
+                        status='success',
+                        message=f"Email task enqueued for order {order.order_number}",
+                        metadata={'task_id': task.id if task else None}
+                    )
             except Exception as e:
                 print(f'📧 ERROR: Could not queue order confirmation email: {e}')
+                if flow:
+                    flow.log_event(
+                        'EMAIL_TASK_ENQUEUED',
+                        order=order,
+                        status='failure',
+                        message=f"Failed to enqueue email: {str(e)}",
+                        metadata={'error': str(e)}
+                    )
                 # Fallback to old function
                 try:
                     from apps.events.tasks import send_ticket_confirmation_email
@@ -1725,6 +1804,10 @@ class BookingSerializer(serializers.Serializer):
                     send_ticket_confirmation_email.apply_async(args=[str(order.id)], queue='emails')
                 except Exception as fallback_e:
                     print(f'📧 FALLBACK ERROR: Could not queue any confirmation email: {fallback_e}')
+            
+            # 🚀 ENTERPRISE: Complete flow for free orders
+            if flow:
+                flow.complete(message=f"Free order {order.order_number} completed successfully")
             
             return {
                 'bookingId': str(order.id),
@@ -1739,9 +1822,34 @@ class BookingSerializer(serializers.Serializer):
         else:
             # ✅ EVENTOS PAGADOS: Almacenar holder data para creación posterior
             print(f"🚀 DEBUG - Paid order detected! Storing holder reservations - Payment required")
+            
+            # 🚀 ENTERPRISE: Log payment required
+            if flow:
+                flow.log_event(
+                    'PAYMENT_REQUIRED',
+                    order=order,
+                    status='info',
+                    message=f"Payment required for order {order.order_number}",
+                    metadata={
+                        'total': float(order.total),
+                        'subtotal': float(subtotal),
+                        'service_fee': float(service_fee),
+                        'discount': float(order.discount)
+                    }
+                )
             self._store_ticket_holder_reservations(order, validated_data.get('ticketHolders', []))
             order.save()
             print(f"🚀 DEBUG - Order status after save: {order.status}")
+            
+            # 🚀 ENTERPRISE: Log holder data stored
+            if flow:
+                flow.log_event(
+                    'HOLDER_DATA_STORED',
+                    order=order,
+                    status='success',
+                    message=f"Ticket holder data stored for order {order.order_number}",
+                    metadata={'holders_count': len(validated_data.get('ticketHolders', []))}
+                )
             
             return {
                 'bookingId': str(order.id),

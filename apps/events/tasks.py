@@ -613,7 +613,7 @@ def cleanup_abandoned_orders(self, hours_old=48):
 
 
 @shared_task(bind=True, max_retries=3)
-def send_order_confirmation_email(self, order_id, to_email=None):
+def send_order_confirmation_email(self, order_id, to_email=None, flow_id=None):
     """
     🚀 ENTERPRISE: Send consolidated order confirmation email to customer.
     
@@ -622,6 +622,7 @@ def send_order_confirmation_email(self, order_id, to_email=None):
     Args:
         order_id: UUID of the order
         to_email: Optional email address to send to (overrides ticket emails)
+        flow_id: Optional UUID of the platform flow (for tracking)
     """
     try:
         from django.conf import settings

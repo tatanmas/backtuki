@@ -1044,6 +1044,17 @@ class Order(BaseModel):
         default=0
     )
     
+    # 🚀 ENTERPRISE: Platform Flow Tracking
+    flow = models.ForeignKey(
+        'core.PlatformFlow',
+        on_delete=models.SET_NULL,
+        related_name='orders',
+        verbose_name=_("platform flow"),
+        null=True,
+        blank=True,
+        help_text=_("Platform flow that created this order (for tracking and debugging)")
+    )
+    
     class Meta:
         verbose_name = _("order")
         verbose_name_plural = _("orders")

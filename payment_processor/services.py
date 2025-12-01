@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 from django.conf import settings
 from django.utils import timezone
-from django.db import transaction
+from django.db import transaction, models
 from .models import Payment, PaymentProvider, PaymentMethod, PaymentTransaction
 import logging
 
@@ -345,11 +345,54 @@ class TransbankWebPayPlusService(BasePaymentService):
                 
             # Update order status if payment successful
             if payment.status == 'completed':
+                # 🚀 ENTERPRISE: Get flow from order for tracking
+                from core.flow_logger import FlowLogger
+                flow = FlowLogger.from_flow_id(payment.order.flow_id) if payment.order.flow_id else None
+                
+                # Log payment authorized
+                if flow:
+                    flow.log_event(
+                        'PAYMENT_AUTHORIZED',
+                        source='payment_gateway',
+                        status='success',
+                        order=payment.order,
+                        payment=payment,
+                        message=f"Payment {payment.buy_order} authorized successfully",
+                        metadata={
+                            'amount': float(payment.amount),
+                            'buy_order': payment.buy_order,
+                            'authorization_code': data.get('authorization_code'),
+                            'payment_type_code': data.get('payment_type_code')
+                        }
+                    )
+                
                 payment.order.status = 'paid'
                 payment.order.save()
                 
+                # Log order marked as paid
+                if flow:
+                    flow.log_event(
+                        'ORDER_MARKED_PAID',
+                        order=payment.order,
+                        payment=payment,
+                        status='success',
+                        message=f"Order {payment.order.order_number} marked as paid",
+                        metadata={'total': float(payment.order.total)}
+                    )
+                
                 # ✅ CREAR TICKETS desde reservations almacenadas (ENTERPRISE PATTERN)
                 self._create_tickets_from_reservations(payment.order)
+                
+                # Log tickets created
+                if flow:
+                    tickets_count = payment.order.items.aggregate(total=models.Sum('quantity'))['total'] or 0
+                    flow.log_event(
+                        'TICKETS_CREATED',
+                        order=payment.order,
+                        status='success',
+                        message=f"{tickets_count} tickets created for order {payment.order.order_number}",
+                        metadata={'tickets_count': tickets_count}
+                    )
                 
                 # ✅ CLEANUP: Limpiar holds y reservations
                 self._cleanup_order_reservations(payment.order)
@@ -358,13 +401,32 @@ class TransbankWebPayPlusService(BasePaymentService):
                 try:
                     from apps.events.tasks import send_order_confirmation_email
                     logger.info(f"📧 [EMAIL] Enqueuing order confirmation email for order {payment.order.id}")
-                    send_order_confirmation_email.apply_async(
-                        args=[str(payment.order.id)], 
+                    task = send_order_confirmation_email.apply_async(
+                        args=[str(payment.order.id)],
+                        kwargs={'flow_id': str(flow.flow_id) if flow else None},
                         queue='emails'
                     )
                     logger.info(f"📧 [EMAIL] Successfully enqueued order confirmation email for order {payment.order.id}")
+                    
+                    # Log email task enqueued
+                    if flow:
+                        flow.log_event(
+                            'EMAIL_TASK_ENQUEUED',
+                            order=payment.order,
+                            status='success',
+                            message=f"Email task enqueued for order {payment.order.order_number}",
+                            metadata={'task_id': task.id if task else None}
+                        )
                 except Exception as e:
                     logger.error(f"📧 [EMAIL] Failed to enqueue order confirmation email for order {payment.order.id}: {e}")
+                    if flow:
+                        flow.log_event(
+                            'EMAIL_TASK_ENQUEUED',
+                            order=payment.order,
+                            status='failure',
+                            message=f"Failed to enqueue email: {str(e)}",
+                            metadata={'error': str(e)}
+                        )
                     # Fallback to old function if new one fails
                     try:
                         from apps.events.tasks import send_ticket_confirmation_email
@@ -375,6 +437,10 @@ class TransbankWebPayPlusService(BasePaymentService):
                         )
                     except Exception as fallback_e:
                         logger.error(f"📧 [EMAIL] Fallback also failed for order {payment.order.id}: {fallback_e}")
+                
+                # Complete flow
+                if flow:
+                    flow.complete(message=f"Order {payment.order.order_number} completed successfully")
                 
                 return {
                     'success': True,

@@ -13,6 +13,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Count, Sum, Q
 from django.utils import timezone
+from datetime import timedelta
 from rest_framework_simplejwt.tokens import RefreshToken
 import logging
 
@@ -918,5 +919,551 @@ def update_organizer_template(request, organizer_id):
         return Response({
             'success': False,
             'message': f'Error updating template: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# 🚀 ENTERPRISE: Platform Flow Monitoring Endpoints
+
+@api_view(['GET'])
+@permission_classes([AllowAny])  # TODO: Cambiar a IsAdminUser en producción
+def ticket_delivery_funnel(request):
+    """
+    Get ticket delivery funnel metrics.
+    
+    Returns counts and conversion rates for:
+    - Paid orders
+    - Emails enqueued
+    - Emails sent
+    - Emails failed
+    """
+    try:
+        from core.models import PlatformFlow, PlatformFlowEvent, CeleryTaskLog
+        from django.db.models import Count, Q
+        from datetime import timedelta
+        
+        # Get date range from query params
+        days = int(request.GET.get('days', 7))
+        start_date = timezone.now() - timedelta(days=days)
+        
+        # Get flow type filter
+        flow_type = request.GET.get('flow_type', 'ticket_checkout')
+        
+        # Count paid orders
+        paid_orders = Order.objects.filter(
+            status='paid',
+            created_at__gte=start_date
+        ).count()
+        
+        # Count flows
+        flows = PlatformFlow.objects.filter(
+            flow_type=flow_type,
+            created_at__gte=start_date
+        )
+        
+        total_flows = flows.count()
+        completed_flows = flows.filter(status='completed').count()
+        failed_flows = flows.filter(status='failed').count()
+        in_progress_flows = flows.filter(status='in_progress').count()
+        
+        # Count email events
+        email_enqueued = PlatformFlowEvent.objects.filter(
+            flow__created_at__gte=start_date,
+            step='EMAIL_TASK_ENQUEUED'
+        ).count()
+        
+        email_sent = PlatformFlowEvent.objects.filter(
+            flow__created_at__gte=start_date,
+            step='EMAIL_SENT',
+            status='success'
+        ).count()
+        
+        email_failed = PlatformFlowEvent.objects.filter(
+            flow__created_at__gte=start_date,
+            step='EMAIL_FAILED',
+            status='failure'
+        ).count()
+        
+        # Calculate conversion rates
+        enqueue_rate = (email_enqueued / paid_orders * 100) if paid_orders > 0 else 0
+        success_rate = (email_sent / email_enqueued * 100) if email_enqueued > 0 else 0
+        failure_rate = (email_failed / email_enqueued * 100) if email_enqueued > 0 else 0
+        completion_rate = (completed_flows / total_flows * 100) if total_flows > 0 else 0
+        
+        return Response({
+            'success': True,
+            'period': {
+                'days': days,
+                'start_date': start_date.isoformat(),
+                'end_date': timezone.now().isoformat()
+            },
+            'funnel': {
+                'paid_orders': paid_orders,
+                'emails_enqueued': email_enqueued,
+                'emails_sent': email_sent,
+                'emails_failed': email_failed,
+                'enqueue_rate': round(enqueue_rate, 2),
+                'success_rate': round(success_rate, 2),
+                'failure_rate': round(failure_rate, 2)
+            },
+            'flows': {
+                'total': total_flows,
+                'completed': completed_flows,
+                'failed': failed_flows,
+                'in_progress': in_progress_flows,
+                'completion_rate': round(completion_rate, 2)
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ [SuperAdmin] Error getting funnel: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'message': f'Error getting funnel: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def ticket_delivery_issues(request):
+    """
+    Get list of flows with delivery issues.
+    
+    Returns flows that:
+    - Failed
+    - Have email failures
+    - Are stuck in progress for too long
+    """
+    try:
+        from core.models import PlatformFlow, PlatformFlowEvent
+        from datetime import timedelta
+        
+        # Get filters
+        days = int(request.GET.get('days', 7))
+        limit = int(request.GET.get('limit', 20))
+        start_date = timezone.now() - timedelta(days=days)
+        
+        # Get failed flows
+        failed_flows = PlatformFlow.objects.filter(
+            status='failed',
+            created_at__gte=start_date
+        ).select_related('user', 'organizer', 'primary_order', 'event').order_by('-created_at')[:limit]
+        
+        # Get flows with email failures
+        flows_with_email_failures = PlatformFlow.objects.filter(
+            created_at__gte=start_date,
+            events__step='EMAIL_FAILED'
+        ).distinct().select_related('user', 'organizer', 'primary_order', 'event').order_by('-created_at')[:limit]
+        
+        # Get stuck flows (in progress for more than 1 hour)
+        stuck_threshold = timezone.now() - timedelta(hours=1)
+        stuck_flows = PlatformFlow.objects.filter(
+            status='in_progress',
+            created_at__lt=stuck_threshold
+        ).select_related('user', 'organizer', 'primary_order', 'event').order_by('-created_at')[:limit]
+        
+        def serialize_flow(flow):
+            # Get last event
+            last_event = flow.events.order_by('-created_at').first()
+            
+            # Get email logs
+            email_events = flow.events.filter(
+                step__in=['EMAIL_TASK_ENQUEUED', 'EMAIL_SENT', 'EMAIL_FAILED']
+            ).order_by('-created_at')
+            
+            return {
+                'id': str(flow.id),
+                'flow_type': flow.flow_type,
+                'status': flow.status,
+                'created_at': flow.created_at.isoformat(),
+                'completed_at': flow.completed_at.isoformat() if flow.completed_at else None,
+                'failed_at': flow.failed_at.isoformat() if flow.failed_at else None,
+                'user': {
+                    'id': str(flow.user.id) if flow.user else None,
+                    'email': flow.user.email if flow.user else None
+                } if flow.user else None,
+                'organizer': {
+                    'id': str(flow.organizer.id) if flow.organizer else None,
+                    'name': flow.organizer.name if flow.organizer else None
+                } if flow.organizer else None,
+                'order': {
+                    'id': str(flow.primary_order.id) if flow.primary_order else None,
+                    'order_number': flow.primary_order.order_number if flow.primary_order else None,
+                    'total': float(flow.primary_order.total) if flow.primary_order else None
+                } if flow.primary_order else None,
+                'event': {
+                    'id': str(flow.event.id) if flow.event else None,
+                    'title': flow.event.title if flow.event else None
+                } if flow.event else None,
+                'last_event': {
+                    'step': last_event.step,
+                    'status': last_event.status,
+                    'message': last_event.message,
+                    'created_at': last_event.created_at.isoformat()
+                } if last_event else None,
+                'email_status': {
+                    'enqueued': email_events.filter(step='EMAIL_TASK_ENQUEUED').exists(),
+                    'sent': email_events.filter(step='EMAIL_SENT').exists(),
+                    'failed': email_events.filter(step='EMAIL_FAILED').exists(),
+                    'last_attempt': email_events.first().created_at.isoformat() if email_events.exists() else None
+                }
+            }
+        
+        return Response({
+            'success': True,
+            'issues': {
+                'failed_flows': [serialize_flow(f) for f in failed_flows],
+                'email_failures': [serialize_flow(f) for f in flows_with_email_failures],
+                'stuck_flows': [serialize_flow(f) for f in stuck_flows]
+            },
+            'counts': {
+                'failed': failed_flows.count(),
+                'email_failures': flows_with_email_failures.count(),
+                'stuck': stuck_flows.count()
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ [SuperAdmin] Error getting issues: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'message': f'Error getting issues: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def all_flows(request):
+    """
+    🚀 ENTERPRISE: Get ALL platform flows with filters and pagination.
+    
+    Query params:
+    - days: Number of days to look back (default: 7)
+    - status: Filter by status (completed, failed, in_progress, etc.)
+    - flow_type: Filter by flow type (ticket_checkout, etc.)
+    - search: Search by order_number, email, event title
+    - page: Page number (default: 1)
+    - page_size: Items per page (default: 20, max: 100)
+    """
+    try:
+        from core.models import PlatformFlow
+        from django.db.models import Q
+        
+        logger.info("📊 [SuperAdmin] Getting all flows")
+        
+        # Get query parameters
+        days = int(request.GET.get('days', 7))
+        status_filter = request.GET.get('status', '')
+        flow_type_filter = request.GET.get('flow_type', '')
+        search = request.GET.get('search', '')
+        page = int(request.GET.get('page', 1))
+        page_size = min(int(request.GET.get('page_size', 20)), 100)
+        
+        # Calculate date range
+        start_date = timezone.now() - timedelta(days=days)
+        
+        # Base queryset
+        queryset = PlatformFlow.objects.filter(
+            created_at__gte=start_date
+        ).select_related('user', 'organizer', 'primary_order', 'event')
+        
+        # Apply filters
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        if flow_type_filter:
+            queryset = queryset.filter(flow_type=flow_type_filter)
+        
+        # Apply search
+        if search:
+            queryset = queryset.filter(
+                Q(primary_order__order_number__icontains=search) |
+                Q(primary_order__email__icontains=search) |
+                Q(user__email__icontains=search) |
+                Q(event__title__icontains=search)
+            )
+        
+        # Order by most recent
+        queryset = queryset.order_by('-created_at')
+        
+        # Get total count
+        total_count = queryset.count()
+        
+        # Paginate
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        flows = queryset[start_idx:end_idx]
+        
+        # Serialize flows
+        def serialize_flow(flow):
+            # Get last event
+            last_event = flow.events.order_by('-created_at').first()
+            
+            # Get email events
+            email_events = flow.events.filter(
+                step__in=['EMAIL_TASK_ENQUEUED', 'EMAIL_SENT', 'EMAIL_FAILED']
+            ).order_by('-created_at')
+            
+            # Calculate duration
+            duration = None
+            if flow.completed_at and flow.created_at:
+                duration_delta = flow.completed_at - flow.created_at
+                duration = str(duration_delta)
+            elif flow.failed_at and flow.created_at:
+                duration_delta = flow.failed_at - flow.created_at
+                duration = str(duration_delta)
+            
+            return {
+                'id': str(flow.id),
+                'flow_type': flow.flow_type,
+                'status': flow.status,
+                'created_at': flow.created_at.isoformat(),
+                'completed_at': flow.completed_at.isoformat() if flow.completed_at else None,
+                'failed_at': flow.failed_at.isoformat() if flow.failed_at else None,
+                'duration': duration,
+                'user': {
+                    'id': str(flow.user.id) if flow.user else None,
+                    'email': flow.user.email if flow.user else None
+                } if flow.user else None,
+                'organizer': {
+                    'id': str(flow.organizer.id) if flow.organizer else None,
+                    'name': flow.organizer.name if flow.organizer else None
+                } if flow.organizer else None,
+                'order': {
+                    'id': str(flow.primary_order.id) if flow.primary_order else None,
+                    'order_number': flow.primary_order.order_number if flow.primary_order else None,
+                    'total': float(flow.primary_order.total) if flow.primary_order else None,
+                    'email': flow.primary_order.email if flow.primary_order else None
+                } if flow.primary_order else None,
+                'event': {
+                    'id': str(flow.event.id) if flow.event else None,
+                    'title': flow.event.title if flow.event else None
+                } if flow.event else None,
+                'last_event': {
+                    'step': last_event.step,
+                    'status': last_event.status,
+                    'message': last_event.message,
+                    'created_at': last_event.created_at.isoformat()
+                } if last_event else None,
+                'email_status': {
+                    'enqueued': email_events.filter(step='EMAIL_TASK_ENQUEUED').exists(),
+                    'sent': email_events.filter(step='EMAIL_SENT').exists(),
+                    'failed': email_events.filter(step='EMAIL_FAILED').exists(),
+                    'last_attempt': email_events.first().created_at.isoformat() if email_events.exists() else None
+                }
+            }
+        
+        # Calculate pagination info
+        total_pages = (total_count + page_size - 1) // page_size
+        has_next = page < total_pages
+        has_prev = page > 1
+        
+        logger.info(f"✅ [SuperAdmin] Found {total_count} flows (page {page}/{total_pages})")
+        
+        return Response({
+            'success': True,
+            'flows': [serialize_flow(f) for f in flows],
+            'pagination': {
+                'page': page,
+                'page_size': page_size,
+                'total_count': total_count,
+                'total_pages': total_pages,
+                'has_next': has_next,
+                'has_prev': has_prev
+            },
+            'filters': {
+                'days': days,
+                'status': status_filter,
+                'flow_type': flow_type_filter,
+                'search': search
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ [SuperAdmin] Error getting all flows: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'message': f'Error getting flows: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def flow_detail(request, flow_id):
+    """
+    Get detailed information about a specific flow.
+    
+    Returns:
+    - Flow information
+    - All events in timeline
+    - Related Celery tasks
+    - Related email logs
+    """
+    try:
+        from core.models import PlatformFlow, CeleryTaskLog
+        from apps.events.models import EmailLog
+        
+        flow = PlatformFlow.objects.select_related(
+            'user', 'organizer', 'primary_order', 'event', 'experience'
+        ).get(id=flow_id)
+        
+        # Get all events
+        events = flow.events.select_related(
+            'order', 'payment', 'email_log', 'celery_task_log'
+        ).order_by('created_at')
+        
+        # Get Celery logs
+        celery_logs = CeleryTaskLog.objects.filter(flow=flow).order_by('created_at')
+        
+        # Get email logs if order exists
+        email_logs = []
+        if flow.primary_order:
+            email_logs = EmailLog.objects.filter(order=flow.primary_order).order_by('created_at')
+        
+        return Response({
+            'success': True,
+            'flow': {
+                'id': str(flow.id),
+                'flow_type': flow.flow_type,
+                'status': flow.status,
+                'created_at': flow.created_at.isoformat(),
+                'completed_at': flow.completed_at.isoformat() if flow.completed_at else None,
+                'failed_at': flow.failed_at.isoformat() if flow.failed_at else None,
+                'metadata': flow.metadata,
+                'user': {
+                    'id': str(flow.user.id) if flow.user else None,
+                    'email': flow.user.email if flow.user else None,
+                    'name': f"{flow.user.first_name} {flow.user.last_name}" if flow.user else None
+                } if flow.user else None,
+                'organizer': {
+                    'id': str(flow.organizer.id) if flow.organizer else None,
+                    'name': flow.organizer.name if flow.organizer else None
+                } if flow.organizer else None,
+                'order': {
+                    'id': str(flow.primary_order.id) if flow.primary_order else None,
+                    'order_number': flow.primary_order.order_number if flow.primary_order else None,
+                    'status': flow.primary_order.status if flow.primary_order else None,
+                    'total': float(flow.primary_order.total) if flow.primary_order else None,
+                    'email': flow.primary_order.email if flow.primary_order else None
+                } if flow.primary_order else None,
+                'event': {
+                    'id': str(flow.event.id) if flow.event else None,
+                    'title': flow.event.title if flow.event else None
+                } if flow.event else None
+            },
+            'events': [{
+                'id': str(e.id),
+                'step': e.step,
+                'status': e.status,
+                'source': e.source,
+                'message': e.message,
+                'created_at': e.created_at.isoformat(),
+                'metadata': e.metadata,
+                'order_id': str(e.order.id) if e.order else None,
+                'payment_id': str(e.payment.id) if e.payment else None,
+                'email_log_id': str(e.email_log.id) if e.email_log else None,
+                'celery_task_log_id': str(e.celery_task_log.id) if e.celery_task_log else None
+            } for e in events],
+            'celery_logs': [{
+                'id': str(log.id),
+                'task_id': log.task_id,
+                'task_name': log.task_name,
+                'status': log.status,
+                'queue': log.queue,
+                'created_at': log.created_at.isoformat(),
+                'duration_ms': log.duration_ms,
+                'error': log.error,
+                'args': log.args,
+                'kwargs': log.kwargs
+            } for log in celery_logs],
+            'email_logs': [{
+                'id': str(log.id),
+                'to_email': log.to_email,
+                'subject': log.subject,
+                'template': log.template,
+                'status': log.status,
+                'attempts': log.attempts,
+                'error': log.error,
+                'sent_at': log.sent_at.isoformat() if log.sent_at else None,
+                'created_at': log.created_at.isoformat()
+            } for log in email_logs]
+        })
+        
+    except PlatformFlow.DoesNotExist:
+        return Response({
+            'success': False,
+            'message': 'Flow not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"❌ [SuperAdmin] Error getting flow detail: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'message': f'Error getting flow detail: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def celery_tasks_list(request):
+    """
+    Get list of Celery task logs.
+    
+    Supports filtering by:
+    - task_name
+    - status
+    - date range
+    """
+    try:
+        from core.models import CeleryTaskLog
+        from datetime import timedelta
+        
+        # Get filters
+        task_name = request.GET.get('task_name')
+        task_status = request.GET.get('status')
+        days = int(request.GET.get('days', 7))
+        limit = int(request.GET.get('limit', 50))
+        
+        start_date = timezone.now() - timedelta(days=days)
+        
+        # Build query
+        query = CeleryTaskLog.objects.filter(created_at__gte=start_date)
+        
+        if task_name:
+            query = query.filter(task_name__icontains=task_name)
+        
+        if task_status:
+            query = query.filter(status=task_status)
+        
+        # Get logs
+        logs = query.select_related('flow', 'order', 'user').order_by('-created_at')[:limit]
+        
+        # Get counts by status
+        status_counts = CeleryTaskLog.objects.filter(
+            created_at__gte=start_date
+        ).values('status').annotate(count=Count('id'))
+        
+        return Response({
+            'success': True,
+            'logs': [{
+                'id': str(log.id),
+                'task_id': log.task_id,
+                'task_name': log.task_name,
+                'status': log.status,
+                'queue': log.queue,
+                'created_at': log.created_at.isoformat(),
+                'duration_ms': log.duration_ms,
+                'error': log.error[:200] if log.error else None,  # Truncate error
+                'flow_id': str(log.flow.id) if log.flow else None,
+                'order_id': str(log.order.id) if log.order else None,
+                'order_number': log.order.order_number if log.order else None
+            } for log in logs],
+            'status_counts': {item['status']: item['count'] for item in status_counts},
+            'total': query.count()
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ [SuperAdmin] Error getting celery tasks: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'message': f'Error getting celery tasks: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

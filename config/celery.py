@@ -121,4 +121,9 @@ app.conf.update(
 @app.task(bind=True, ignore_result=True)
 def debug_task(self):
     """Task to debug Celery worker."""
-    print(f'🔍 DEBUG: Celery task executed - Request: {self.request!r}') 
+    print(f'🔍 DEBUG: Celery task executed - Request: {self.request!r}')
+
+
+# 🚀 ENTERPRISE: Import Celery signals for automatic task logging
+# This registers signal handlers that log ALL task executions to the database
+from core import celery_signals  # noqa 
