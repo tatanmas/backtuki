@@ -175,17 +175,56 @@ class FormViewSet(viewsets.ModelViewSet):
     def get_organizer(self):
         """Obtener el organizador asociado al usuario actual."""
         if not self.request.user.is_authenticated:
+            print(f"[FormViewSet.get_organizer] User not authenticated")
             return None
         if hasattr(self.request.user, 'get_primary_organizer'):
-            return self.request.user.get_primary_organizer()
+            organizer = self.request.user.get_primary_organizer()
+            print(f"[FormViewSet.get_organizer] Organizer found: {organizer}")
+            return organizer
+        print(f"[FormViewSet.get_organizer] User has no get_primary_organizer method")
         return None
     
     def get_queryset(self):
         # Filter by organizer if authenticated
         organizer = self.get_organizer()
         if organizer:
-            return Form.objects.filter(organizer=organizer)
+            queryset = Form.objects.filter(organizer=organizer)
+            print(f"[FormViewSet.get_queryset] Found {queryset.count()} forms for organizer {organizer}")
+            return queryset
+        print(f"[FormViewSet.get_queryset] No organizer, returning empty queryset")
         return Form.objects.none()
+    
+    def retrieve(self, request, *args, **kwargs):
+        """Retrieve a single form with debugging."""
+        form_id = kwargs.get('pk')
+        print(f"[FormViewSet.retrieve] Attempting to retrieve form ID: {form_id}")
+        print(f"[FormViewSet.retrieve] User: {request.user}")
+        print(f"[FormViewSet.retrieve] User authenticated: {request.user.is_authenticated}")
+        
+        try:
+            instance = self.get_object()
+            print(f"[FormViewSet.retrieve] Form found: {instance.name} (ID: {instance.id})")
+            print(f"[FormViewSet.retrieve] Form status: {instance.status}")
+            print(f"[FormViewSet.retrieve] Form organizer: {instance.organizer}")
+            
+            # Count fields
+            fields_count = instance.fields.count()
+            print(f"[FormViewSet.retrieve] Form has {fields_count} fields")
+            
+            # Serialize
+            serializer = self.get_serializer(instance)
+            serialized_data = serializer.data
+            print(f"[FormViewSet.retrieve] Serialized data keys: {serialized_data.keys()}")
+            print(f"[FormViewSet.retrieve] Serialized fields count: {len(serialized_data.get('fields', []))}")
+            print(f"[FormViewSet.retrieve] Serialized fields: {serialized_data.get('fields', [])}")
+            
+            return Response(serialized_data)
+        except Exception as e:
+            print(f"[FormViewSet.retrieve] ERROR retrieving form {form_id}: {str(e)}")
+            print(f"[FormViewSet.retrieve] Exception type: {type(e)}")
+            import traceback
+            print(f"[FormViewSet.retrieve] Traceback: {traceback.format_exc()}")
+            raise
     
     def perform_create(self, serializer):
         """🚀 ENTERPRISE: Auto-assign organizer and created_by when creating forms."""

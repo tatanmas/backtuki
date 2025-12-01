@@ -7,6 +7,7 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import AllowAny
+from rest_framework.exceptions import NotFound, PermissionDenied as DRFPermissionDenied
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from django.utils import timezone
 from django.db.models import F, Sum, Count, Q
@@ -23,6 +24,7 @@ from django.http import Http404, JsonResponse
 from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 from datetime import timedelta
+from decimal import Decimal, ROUND_HALF_UP
 import csv
 import io
 from openpyxl import Workbook
@@ -525,13 +527,38 @@ class EventViewSet(viewsets.ModelViewSet):
         # 🚀 ENTERPRISE: EFFECTIVE REVENUE CALCULATION
         # Sum the actual 'total' field from orders (what customers actually paid)
         revenue_data = orders_queryset.aggregate(
-            total_revenue=Sum('total'),  # Effective revenue (after discounts, fees, etc.)
-            gross_revenue=Sum('subtotal'),  # Revenue before service fees
-            total_service_fees=Sum('service_fee'),
+            total_revenue=Sum('total'),  # Lo que realmente pagó el cliente (después de descuentos)
+            total_subtotal=Sum('subtotal'),  # Subtotal original (sin descuento)
+            total_service_fees=Sum('service_fee'),  # Service fees originales (sin descuento)
             total_taxes=Sum('taxes'),
             total_discount=Sum('discount'),
             total_orders=Count('id')
         )
+        
+        total_revenue = float(revenue_data['total_revenue'] or 0)
+        total_subtotal_original = float(revenue_data['total_subtotal'] or 0)
+        total_service_fees_original = float(revenue_data['total_service_fees'] or 0)
+        total_original = total_subtotal_original + total_service_fees_original
+        
+        # 🚀 ENTERPRISE: Calcular revenue efectivo del organizador
+        # Distribuir el descuento proporcionalmente entre subtotal y service_fee
+        # 🚀 ENTERPRISE: Todos los valores deben ser enteros (sin decimales para CLP)
+        if total_original > 0:
+            # Ratio de lo que realmente se pagó vs lo original
+            payment_ratio = Decimal(str(total_revenue)) / Decimal(str(total_original))
+            
+            # Revenue efectivo del organizador (subtotal después del descuento proporcional)
+            gross_revenue_effective = (Decimal(str(total_subtotal_original)) * payment_ratio).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+            
+            # Service fees efectivos (después del descuento proporcional)
+            service_fees_effective = (Decimal(str(total_service_fees_original)) * payment_ratio).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+            
+            # Convertir a float para la respuesta
+            gross_revenue_effective = float(gross_revenue_effective)
+            service_fees_effective = float(service_fees_effective)
+        else:
+            gross_revenue_effective = 0
+            service_fees_effective = 0
         
         # Calculate total tickets sold (from order items)
         tickets_data = OrderItem.objects.filter(
@@ -542,7 +569,6 @@ class EventViewSet(viewsets.ModelViewSet):
             avg_unit_price=Avg('unit_price')  # Average actual price paid per ticket
         )
         
-        total_revenue = float(revenue_data['total_revenue'] or 0)
         total_tickets = tickets_data['total_tickets'] or 0
         total_orders = revenue_data['total_orders'] or 0
         
@@ -565,8 +591,9 @@ class EventViewSet(viewsets.ModelViewSet):
             )
             
             daily_stats = daily_orders.aggregate(
-                revenue=Sum('total'),  # Effective revenue
-                gross_revenue=Sum('subtotal'),
+                revenue=Sum('total'),  # Effective revenue (lo que pagó el cliente)
+                subtotal=Sum('subtotal'),  # Subtotal original
+                service_fees=Sum('service_fee'),  # Service fees originales
                 orders=Count('id')
             )
             
@@ -574,28 +601,71 @@ class EventViewSet(viewsets.ModelViewSet):
                 order__in=daily_orders
             ).aggregate(tickets=Sum('quantity'))
             
+            # Calcular revenue efectivo diario (distribuyendo descuentos proporcionalmente)
+            # 🚀 ENTERPRISE: Todos los valores deben ser enteros (sin decimales para CLP)
+            daily_revenue = float(daily_stats['revenue'] or 0)
+            daily_subtotal = float(daily_stats['subtotal'] or 0)
+            daily_service_fees = float(daily_stats['service_fees'] or 0)
+            daily_original = daily_subtotal + daily_service_fees
+            
+            if daily_original > 0:
+                daily_ratio = Decimal(str(daily_revenue)) / Decimal(str(daily_original))
+                daily_gross_revenue = (Decimal(str(daily_subtotal)) * daily_ratio).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+                daily_gross_revenue = float(daily_gross_revenue)
+            else:
+                daily_gross_revenue = 0
+            
             chart_data.append({
                 'date': current_date.strftime('%d/%m/%Y'),
                 'sales': daily_tickets['tickets'] or 0,
-                'revenue': float(daily_stats['revenue'] or 0),
-                'gross_revenue': float(daily_stats['gross_revenue'] or 0),
+                'revenue': daily_revenue,
+                'gross_revenue': daily_gross_revenue,  # Revenue efectivo del organizador
                 'orders': daily_stats['orders'] or 0
             })
         
-        # 🚀 ENTERPRISE: Ticket categories with effective revenue
+        # 🚀 ENTERPRISE: Ticket categories with effective revenue (considering discounts)
         category_data = []
         if event_id:
             # For specific event - group by ticket tiers
             event = Event.objects.get(id=event_id)
             for tier in event.ticket_tiers.all():
+                # Get orders that have this tier
+                tier_orders = Order.objects.filter(
+                    items__ticket_tier=tier,
+                    status='paid',
+                    created_at__gte=start_date
+                ).distinct()
+                
+                # Calculate totals for orders with this tier
+                tier_order_stats = tier_orders.aggregate(
+                    total_revenue=Sum('total'),
+                    total_subtotal=Sum('subtotal'),
+                    total_service_fees=Sum('service_fee')
+                )
+                
+                tier_revenue = float(tier_order_stats['total_revenue'] or 0)
+                tier_subtotal = float(tier_order_stats['total_subtotal'] or 0)
+                tier_service_fees = float(tier_order_stats['total_service_fees'] or 0)
+                tier_original = tier_subtotal + tier_service_fees
+                
+                # Calculate effective revenue (distributing discounts proportionally)
+                # 🚀 ENTERPRISE: Todos los valores deben ser enteros (sin decimales para CLP)
+                if tier_original > 0:
+                    tier_ratio = Decimal(str(tier_revenue)) / Decimal(str(tier_original))
+                    tier_effective_revenue = (Decimal(str(tier_subtotal)) * tier_ratio).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+                    tier_effective_service_fees = (Decimal(str(tier_service_fees)) * tier_ratio).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+                    tier_effective_revenue = float(tier_effective_revenue)
+                    tier_effective_service_fees = float(tier_effective_service_fees)
+                else:
+                    tier_effective_revenue = 0
+                    tier_effective_service_fees = 0
+                
                 tier_items = OrderItem.objects.filter(
                     ticket_tier=tier,
                     order__status='paid',
                     order__created_at__gte=start_date
                 ).aggregate(
-                    tickets=Sum('quantity'),
-                    effective_revenue=Sum(F('unit_price') * F('quantity')),  # Actual price paid
-                    service_fees=Sum(F('unit_service_fee') * F('quantity'))
+                    tickets=Sum('quantity')
                 )
                 
                 tickets_sold = tier_items['tickets'] or 0
@@ -603,18 +673,17 @@ class EventViewSet(viewsets.ModelViewSet):
                     category_data.append({
                         'name': tier.name,
                         'value': tickets_sold,
-                        'effective_revenue': float(tier_items['effective_revenue'] or 0),
-                        'service_fees': float(tier_items['service_fees'] or 0),
+                        'effective_revenue': round(tier_effective_revenue, 2),
+                        'service_fees': round(tier_effective_service_fees, 2),
                         'base_price': float(tier.price),
                         'fill': f"#{hash(tier.name) % 16777215:06x}"
                     })
         else:
-            # For all events - aggregate by tier names
+            # For all events - aggregate by tier names with effective revenue
             tier_stats = defaultdict(lambda: {
-                'tickets': 0, 
-                'effective_revenue': 0, 
-                'service_fees': 0,
-                'orders': set()
+                'tickets': 0,
+                'orders': set(),
+                'order_ids': set()
             })
             
             order_items = OrderItem.objects.filter(
@@ -623,21 +692,47 @@ class EventViewSet(viewsets.ModelViewSet):
                 order__created_at__gte=start_date
             ).select_related('ticket_tier', 'order')
             
+            # First pass: collect tier info and order IDs
             for item in order_items:
                 tier_name = item.ticket_tier.name
                 tier_stats[tier_name]['tickets'] += item.quantity
-                tier_stats[tier_name]['effective_revenue'] += float(item.unit_price * item.quantity)
-                tier_stats[tier_name]['service_fees'] += float(item.unit_service_fee * item.quantity)
-                tier_stats[tier_name]['orders'].add(item.order_id)
+                tier_stats[tier_name]['order_ids'].add(item.order_id)
             
+            # Second pass: calculate effective revenue per tier (considering discounts)
             for tier_name, stats in tier_stats.items():
                 if stats['tickets'] > 0:
+                    # Get orders for this tier
+                    tier_orders = Order.objects.filter(
+                        id__in=stats['order_ids']
+                    ).aggregate(
+                        total_revenue=Sum('total'),
+                        total_subtotal=Sum('subtotal'),
+                        total_service_fees=Sum('service_fee')
+                    )
+                    
+                    tier_revenue = float(tier_orders['total_revenue'] or 0)
+                    tier_subtotal = float(tier_orders['total_subtotal'] or 0)
+                    tier_service_fees = float(tier_orders['total_service_fees'] or 0)
+                    tier_original = tier_subtotal + tier_service_fees
+                    
+                    # Calculate effective revenue (distributing discounts proportionally)
+                    # 🚀 ENTERPRISE: Todos los valores deben ser enteros (sin decimales para CLP)
+                    if tier_original > 0:
+                        tier_ratio = Decimal(str(tier_revenue)) / Decimal(str(tier_original))
+                        tier_effective_revenue = (Decimal(str(tier_subtotal)) * tier_ratio).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+                        tier_effective_service_fees = (Decimal(str(tier_service_fees)) * tier_ratio).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+                        tier_effective_revenue = float(tier_effective_revenue)
+                        tier_effective_service_fees = float(tier_effective_service_fees)
+                    else:
+                        tier_effective_revenue = 0
+                        tier_effective_service_fees = 0
+                    
                     category_data.append({
                         'name': tier_name,
                         'value': stats['tickets'],
-                        'effective_revenue': stats['effective_revenue'],
-                        'service_fees': stats['service_fees'],
-                        'orders_count': len(stats['orders']),
+                        'effective_revenue': round(tier_effective_revenue, 2),
+                        'service_fees': round(tier_effective_service_fees, 2),
+                        'orders_count': len(stats['order_ids']),
                         'fill': f"#{hash(tier_name) % 16777215:06x}"
                     })
         
@@ -659,9 +754,9 @@ class EventViewSet(viewsets.ModelViewSet):
         response_data = {
             'kpis': {
                 'totalSales': total_tickets,
-                'totalRevenue': total_revenue,  # Effective revenue (what was actually paid)
-                'grossRevenue': float(revenue_data['gross_revenue'] or 0),
-                'totalServiceFees': float(revenue_data['total_service_fees'] or 0),
+                'totalRevenue': total_revenue,  # Lo que pagó el cliente (después de descuentos)
+                'grossRevenue': round(gross_revenue_effective, 2),  # Revenue efectivo del organizador (después de descuentos proporcionales)
+                'totalServiceFees': round(service_fees_effective, 2),  # Service fees efectivos (después de descuentos proporcionales)
                 'totalDiscounts': float(revenue_data['total_discount'] or 0),
                 'averageTicketPrice': round(effective_avg_price, 2),  # Effective average
                 'totalOrders': total_orders,
@@ -2244,10 +2339,15 @@ class TicketTierViewSet(viewsets.ModelViewSet):
             transformed_data = self._transform_request_data(request.data.copy())
             
             # 🚀 ENTERPRISE FIX: Handle structured price object while preserving ALL other fields
+            # 🔧 FIX: Handle price object with both camelCase and snake_case keys
             if 'price' in transformed_data and isinstance(transformed_data['price'], dict):
                 price_obj = transformed_data['price']
-                base_price = price_obj.get('basePrice', 0)
-                print(f"💰 DEBUG - Extracting price from object: {base_price}")
+                # Try both camelCase and snake_case (after transformation, it's snake_case)
+                base_price = price_obj.get('base_price') or price_obj.get('basePrice') or 0
+                print(f"💰 DEBUG - Extracting price from object: base_price={base_price}, keys={list(price_obj.keys())}")
+                
+                if base_price == 0:
+                    print(f"⚠️ WARNING - Price extracted as 0! Original object: {price_obj}")
                 
                 # Replace price object with extracted base price
                 transformed_data['price'] = base_price
@@ -2271,8 +2371,27 @@ class TicketTierViewSet(viewsets.ModelViewSet):
             serializer.is_valid(raise_exception=True)
             print(f"✅ DEBUG - Serializer validation passed")
             
+            # 🔧 FIX: Recalcular available automáticamente si capacity cambió
+            save_kwargs = {}
+            if 'capacity' in transformed_data:
+                new_capacity = transformed_data['capacity']
+                # Obtener tickets vendidos del tier actual
+                tickets_sold = instance.tickets_sold
+                # Calcular nuevo available: capacity - tickets_sold
+                new_available = max(0, new_capacity - tickets_sold)
+                
+                print(f"🔧 FIX - Recalculating available: capacity={new_capacity}, tickets_sold={tickets_sold}, new_available={new_available}")
+                
+                # Forzar actualización de available aunque sea read_only
+                # Pasamos available directamente al save() para evitar la restricción de read_only
+                save_kwargs['available'] = new_available
+            
             # Perform the update
-            self.perform_update(serializer)
+            if save_kwargs:
+                # Si hay campos adicionales (como available), pasarlos al save()
+                serializer.save(**save_kwargs)
+            else:
+                self.perform_update(serializer)
             print(f"✅ DEBUG - Update completed successfully")
             
             # Log the final saved data
@@ -2323,10 +2442,16 @@ class TicketTierViewSet(viewsets.ModelViewSet):
         transformed_data = self._transform_request_data(request.data.copy())
         
         # Handle structured price object
+        # 🔧 FIX: Try both camelCase and snake_case
         if 'price' in transformed_data and isinstance(transformed_data['price'], dict):
             price_obj = transformed_data['price']
-            base_price = price_obj.get('basePrice', 0)
-            print(f"💰 DEBUG - Extracting price from object: {base_price}")
+            # Try both camelCase and snake_case (after transformation, it's snake_case)
+            base_price = price_obj.get('base_price') or price_obj.get('basePrice') or 0
+            print(f"💰 CREATE DEBUG - Extracting price from object: base_price={base_price}, keys={list(price_obj.keys())}")
+            
+            if base_price == 0:
+                print(f"⚠️ WARNING - Price extracted as 0! Original object: {price_obj}")
+            
             transformed_data['price'] = base_price
         
         # Log PWYW fields for debugging
@@ -2717,6 +2842,38 @@ class OrderViewSet(viewsets.ModelViewSet):
             return OrderDetailSerializer
         return OrderSerializer
     
+    def get_object(self):
+        """
+        Override get_object to handle detail actions (resend_email, timeline, etc.)
+        that don't have event_id in query params.
+        """
+        # For detail actions, get the order directly by pk
+        lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
+        pk = self.kwargs[lookup_url_kwarg]
+        
+        try:
+            order = Order.objects.get(id=pk)
+        except Order.DoesNotExist:
+            raise NotFound("Order not found.")
+        
+        # Check permissions
+        if self.request.user.is_authenticated:
+            # Regular users can only access their own orders
+            if not hasattr(self.request.user, 'organizer_roles'):
+                if order.user != self.request.user:
+                    raise DRFPermissionDenied("You don't have permission to access this order.")
+                return order
+            
+            # Organizers can access orders from their events
+            organizer = self.get_organizer()
+            if organizer:
+                if order.event.organizer != organizer:
+                    raise DRFPermissionDenied("You don't have permission to access this order.")
+                return order
+        
+        # No access for unauthenticated users
+        raise DRFPermissionDenied("Authentication required.")
+    
     def get_queryset(self):
         """
         Get orders based on permissions with STRICT event isolation.
@@ -2784,6 +2941,115 @@ class OrderViewSet(viewsets.ModelViewSet):
                 ticket.save()
         
         return Response({"detail": "Order refunded successfully."})
+    
+    @action(detail=True, methods=['post'])
+    def resend_email(self, request, pk=None):
+        """
+        Resend order confirmation email.
+        """
+        order = self.get_object()
+        
+        # Get email from request (defaults to order email)
+        to_email = request.data.get('email', order.email)
+        
+        if not to_email:
+            return Response(
+                {"detail": "Email address is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate email format
+        from django.core.validators import validate_email
+        from django.core.exceptions import ValidationError
+        try:
+            validate_email(to_email)
+        except ValidationError:
+            return Response(
+                {"detail": "Invalid email address."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Queue email sending task
+        try:
+            from apps.events.tasks import send_order_confirmation_email
+            send_order_confirmation_email.apply_async(
+                args=[str(order.id)],
+                kwargs={'to_email': to_email},
+                queue='emails'
+            )
+            return Response({
+                "detail": "Email queued for sending.",
+                "email": to_email
+            })
+        except Exception as e:
+            return Response(
+                {"detail": f"Failed to queue email: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['get'])
+    def timeline(self, request, pk=None):
+        """
+        Get order timeline/history.
+        """
+        from django.utils import timezone
+        from apps.events.models import EmailLog
+        
+        order = self.get_object()
+        timeline_events = []
+        
+        # 1. Order created
+        timeline_events.append({
+            'type': 'order_created',
+            'title': 'Pedido generado',
+            'description': f'Pedido {order.order_number} creado',
+            'timestamp': order.created_at.isoformat(),
+            'status': 'pending'
+        })
+        
+        # 2. Order status changes (if status changed from pending)
+        if order.status == 'paid' and order.updated_at != order.created_at:
+            timeline_events.append({
+                'type': 'status_changed',
+                'title': 'Pedido confirmado',
+                'description': f'El pedido cambió a estado confirmado',
+                'timestamp': order.updated_at.isoformat(),
+                'status': 'confirmed'
+            })
+        
+        # 3. Email history
+        email_logs = EmailLog.objects.filter(order=order).order_by('created_at')
+        for email_log in email_logs:
+            timeline_events.append({
+                'type': 'email_sent',
+                'title': 'Email enviado',
+                'description': f'Email de confirmación enviado a {email_log.to_email}',
+                'timestamp': (email_log.sent_at or email_log.created_at).isoformat(),
+                'status': email_log.status,
+                'email': email_log.to_email,
+                'subject': email_log.subject
+            })
+        
+        # 4. Refund (if applicable)
+        if order.refunded_amount and order.refunded_amount > 0:
+            timeline_events.append({
+                'type': 'refunded',
+                'title': 'Pedido reembolsado',
+                'description': f'Reembolso de {order.refunded_amount} {order.currency}',
+                'timestamp': order.updated_at.isoformat(),
+                'status': 'refunded',
+                'amount': str(order.refunded_amount),
+                'reason': order.refund_reason
+            })
+        
+        # Sort by timestamp
+        timeline_events.sort(key=lambda x: x['timestamp'])
+        
+        return Response({
+            'order_id': str(order.id),
+            'order_number': order.order_number,
+            'timeline': timeline_events
+        })
     
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):

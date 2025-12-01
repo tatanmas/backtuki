@@ -66,6 +66,19 @@ class Organizer(TimeStampedModel):
     has_accommodation_module = models.BooleanField(_("has accommodation module"), default=False)
     has_experience_module = models.BooleanField(_("has experience module"), default=False)
     
+    # Experience dashboard template (only for organizers with experience module)
+    EXPERIENCE_DASHBOARD_TEMPLATE_CHOICES = (
+        ('standard', _('Standard')),
+        ('free_tours', _('Free Tours')),
+    )
+    experience_dashboard_template = models.CharField(
+        _("experience dashboard template"),
+        max_length=20,
+        choices=EXPERIENCE_DASHBOARD_TEMPLATE_CHOICES,
+        default='standard',
+        help_text=_("Template to use for experience dashboard (only applies if has_experience_module=True)")
+    )
+    
     # Representative contact information
     representative_name = models.CharField(_("representative name"), max_length=255, blank=True)
     representative_email = models.EmailField(_("representative email"), blank=True)

@@ -66,18 +66,17 @@ class CheckUserView(APIView):
             is_organizer = hasattr(user, 'organizer_roles') and user.organizer_roles.exists()
             
             # Si es organizador, verificar si necesita configuración inicial
+            # REGLA DE NEGOCIO: Solo verificar onboarding_completed
             needs_setup = False
             if is_organizer:
                 try:
-                    organizer_user = user.organizer_roles.first()
+                    organizer_user = user.get_primary_organizer_role()
                     if organizer_user and organizer_user.organizer:
                         organizer = organizer_user.organizer
-                        # Necesita setup si no tiene nombre de organización o es temporal
-                        needs_setup = (not organizer.name or 
-                                     organizer.name.startswith('Organizador ') or 
-                                     organizer.is_temporary or 
-                                     not organizer.email_validated)
-                except:
+                        needs_setup = not organizer.onboarding_completed
+                except Exception as e:
+                    logger.warning(f"[CheckUser] Error checking organizer setup for {user.email}: {str(e)}")
+                    # Si hay error, asumir que necesita setup
                     needs_setup = True
             
             return Response({
@@ -748,19 +747,18 @@ class OrganizerOTPValidateView(APIView):
             refresh = RefreshToken.for_user(user)
             access_token = str(refresh.access_token)
             
-            # Obtener datos del organizador
-            organizer_user = user.organizer_roles.first()
+            # Obtener datos del organizador principal
+            organizer_user = user.get_primary_organizer_role()
             organizer = organizer_user.organizer if organizer_user else None
             
-            # Verificar si necesita configuración inicial
-            needs_setup = False
+            # REGLA DE NEGOCIO: Solo verificar onboarding_completed
             if organizer:
-                needs_setup = (not organizer.name or 
-                             organizer.name.startswith('Organizador ') or 
-                             organizer.is_temporary or 
-                             not organizer.email_validated)
-            else:
+                needs_setup = not organizer.onboarding_completed
+            elif is_organizer:
+                # Si es organizador pero no tiene organizador principal, necesita setup
                 needs_setup = True
+            else:
+                needs_setup = False
             
             return Response({
                 'success': True,
@@ -802,27 +800,44 @@ class OrganizerProfileSetupView(APIView):
     renderer_classes = [JSONRenderer]
     
     def get(self, request):
-        """Verificar si el perfil del organizador está completo"""
+        """
+        Verificar si el perfil del organizador está completo.
+        
+        REGLA DE NEGOCIO SIMPLE:
+        - Si onboarding_completed = False → needs_setup = True (modal aparece)
+        - Si onboarding_completed = True → needs_setup = False (modal NO aparece)
+        """
         try:
+            user = request.user
+            logger.info(f"[ProfileSetup] Checking profile status for user: {user.email} (ID: {user.id})")
+            
             # Verificar que el usuario es organizador
-            if not (hasattr(request.user, 'organizer_roles') and request.user.organizer_roles.exists()):
+            if not (hasattr(user, 'organizer_roles') and user.organizer_roles.exists()):
+                logger.info(f"[ProfileSetup] User {user.email} is not an organizer")
                 return Response({
                     'is_organizer': False,
                     'needs_setup': False,
                     'message': 'Usuario no es organizador'
                 }, status=status.HTTP_200_OK)
             
-            organizer_user = request.user.organizer_roles.first()
+            # Obtener el organizador principal del usuario
+            organizer_user = user.get_primary_organizer_role()
+            if not organizer_user:
+                logger.error(f"[ProfileSetup] User {user.email} has organizer_roles but get_primary_organizer_role() returned None")
+                return Response({
+                    'is_organizer': False,
+                    'needs_setup': False,
+                    'message': 'Error al obtener organizador principal'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
             organizer = organizer_user.organizer
             
-            # Verificar si necesita configuración inicial
-            needs_setup = (
-                not organizer.name or 
-                organizer.name.startswith('Organizador ') or 
-                organizer.is_temporary or 
-                not organizer.email_validated or
-                not organizer.onboarding_completed or
-                not organizer.representative_name
+            # REGLA DE NEGOCIO: Solo verificar onboarding_completed
+            needs_setup = not organizer.onboarding_completed
+            
+            logger.info(
+                f"[ProfileSetup] Organizer: {organizer.name} (ID: {organizer.id}) | "
+                f"onboarding_completed: {organizer.onboarding_completed} | needs_setup: {needs_setup}"
             )
             
             return Response({
@@ -842,7 +857,10 @@ class OrganizerProfileSetupView(APIView):
             }, status=status.HTTP_200_OK)
             
         except Exception as e:
-            logger.error(f"Error checking organizer profile status: {str(e)}")
+            logger.error(
+                f"[ProfileSetup] Error checking organizer profile status for user {request.user.email}: {str(e)}",
+                exc_info=True
+            )
             return Response({
                 'is_organizer': False,
                 'needs_setup': False,
@@ -850,14 +868,21 @@ class OrganizerProfileSetupView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def post(self, request):
-        """Completar configuración inicial del perfil de organizador"""
-        # Verificar que el usuario es organizador
+        """
+        Completar configuración inicial del perfil de organizador.
+        
+        REGLA DE NEGOCIO:
+        - Al completar este endpoint, SIEMPRE se marca onboarding_completed = True
+        - Esto asegura que el modal NO aparezca nuevamente
+        """
+        # Validación: Verificar que el usuario es organizador
         if not (hasattr(request.user, 'organizer_roles') and request.user.organizer_roles.exists()):
             return Response({
                 'success': False,
                 'message': 'Usuario no es organizador'
             }, status=status.HTTP_403_FORBIDDEN)
         
+        # Validación: Verificar datos del serializer
         serializer = OrganizerProfileSetupSerializer(data=request.data)
         if not serializer.is_valid():
             return Response({
@@ -869,61 +894,97 @@ class OrganizerProfileSetupView(APIView):
         try:
             with transaction.atomic():
                 user = request.user
-                organizer_user = user.organizer_roles.first()
+                logger.info(f"[ProfileSetup] Starting profile setup for user: {user.email} (ID: {user.id})")
+                
+                # Obtener el organizador principal
+                organizer_user = user.get_primary_organizer_role()
+                if not organizer_user:
+                    logger.error(f"[ProfileSetup] User {user.email} has organizer_roles but get_primary_organizer_role() returned None")
+                    return Response({
+                        'success': False,
+                        'message': 'Error al obtener organizador principal'
+                    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
                 organizer = organizer_user.organizer
+                logger.info(f"[ProfileSetup] Updating organizer: {organizer.name} (ID: {organizer.id})")
                 
-                # Actualizar datos del organizador
+                # ============================================================
+                # ACTUALIZACIÓN DE DATOS DEL ORGANIZADOR
+                # ============================================================
+                
+                # Actualizar nombre de organización
                 organization_name = serializer.validated_data.get('organization_name')
-                contact_name = serializer.validated_data.get('contact_name')
-                contact_phone = serializer.validated_data.get('contact_phone')
-                password = serializer.validated_data.get('password')
-                
                 if organization_name:
-                    organizer.name = organization_name
-                    # Generar slug único
+                    organizer.name = organization_name.strip()
+                    # Generar slug único basado en el nombre
                     from django.utils.text import slugify
-                    base_slug = slugify(organization_name)
+                    base_slug = slugify(organizer.name)
                     counter = 1
                     final_slug = base_slug
                     while organizer.__class__.objects.filter(slug=final_slug).exclude(id=organizer.id).exists():
                         final_slug = f"{base_slug}-{counter}"
                         counter += 1
                     organizer.slug = final_slug
+                    logger.info(f"[ProfileSetup] Updated organization name: '{organizer.name}' (slug: {organizer.slug})")
                 
+                # Actualizar nombre del representante
+                contact_name = serializer.validated_data.get('contact_name')
                 if contact_name:
-                    organizer.representative_name = contact_name
+                    organizer.representative_name = contact_name.strip()
                     # También actualizar el usuario
                     if ' ' in contact_name:
-                        first_name, last_name = contact_name.split(' ', 1)
+                        first_name, last_name = contact_name.strip().split(' ', 1)
                         user.first_name = first_name
                         user.last_name = last_name
                     else:
-                        user.first_name = contact_name
+                        user.first_name = contact_name.strip()
+                    logger.info(f"[ProfileSetup] Updated representative name: '{contact_name}'")
                 
+                # Actualizar teléfono de contacto
+                contact_phone = serializer.validated_data.get('contact_phone')
                 if contact_phone:
-                    organizer.contact_phone = contact_phone
-                    organizer.representative_phone = contact_phone
-                    user.phone_number = contact_phone
+                    organizer.contact_phone = contact_phone.strip()
+                    organizer.representative_phone = contact_phone.strip()
+                    user.phone_number = contact_phone.strip()
+                    logger.info(f"[ProfileSetup] Updated contact phone: '{contact_phone}'")
                 
-                # Marcar como configurado
+                # ============================================================
+                # MARCAR ONBOARDING COMO COMPLETADO
+                # ============================================================
+                # CRÍTICO: Siempre marcar onboarding_completed = True
+                # Esto asegura que el modal NO aparezca nuevamente
                 organizer.is_temporary = False
                 organizer.email_validated = True
                 organizer.onboarding_completed = True
                 
                 organizer.save()
+                logger.info(
+                    f"[ProfileSetup] Onboarding marked as completed - "
+                    f"onboarding_completed: {organizer.onboarding_completed}"
+                )
                 
-                # Actualizar contraseña del usuario si se proporciona
+                # ============================================================
+                # ACTUALIZACIÓN DE DATOS DEL USUARIO
+                # ============================================================
+                
+                # Actualizar contraseña si se proporciona
+                password = serializer.validated_data.get('password')
                 if password:
                     user.set_password(password)
                     user.last_password_change = timezone.now()
+                    logger.info(f"[ProfileSetup] Password updated for user")
                 
-                # Marcar perfil de usuario como completo si no lo está
+                # Marcar perfil de usuario como completo
                 if user.is_guest or not user.profile_completed_at:
                     user.mark_profile_complete()
+                    logger.info(f"[ProfileSetup] User profile marked as complete")
                 else:
                     user.save()
                 
-                logger.info(f"✅ Organizer profile setup completed for {user.email} - Organization: {organizer.name}")
+                logger.info(
+                    f"[ProfileSetup] ✅ Profile setup completed successfully for {user.email} - "
+                    f"Organization: {organizer.name} (ID: {organizer.id})"
+                )
                 
                 return Response({
                     'success': True,
@@ -940,7 +1001,10 @@ class OrganizerProfileSetupView(APIView):
                 }, status=status.HTTP_200_OK)
                 
         except Exception as e:
-            logger.error(f"Error in organizer profile setup: {str(e)}")
+            logger.error(
+                f"[ProfileSetup] ❌ Error in organizer profile setup for user {request.user.email}: {str(e)}",
+                exc_info=True
+            )
             return Response({
                 'success': False,
                 'message': 'Error al configurar perfil'

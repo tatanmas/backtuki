@@ -4,6 +4,7 @@ from rest_framework import serializers
 from django.utils import timezone
 from django.utils.text import slugify
 from django.db import transaction, models
+from decimal import Decimal, ROUND_HALF_UP
 import uuid
 from typing import List, Optional, Dict, Any, Union
 
@@ -225,10 +226,43 @@ class TicketTierSerializer(serializers.ModelSerializer):
                 print(f"⚠️ VALIDATION - Setting price to 0 for PWYW ticket (was: {data['price']})")
                 data['price'] = 0
         
-        # Validate capacity and availability
+        # 🔧 FIX: Validate price allows 0 (free tickets)
+        # El precio puede ser 0 para tickets gratuitos
+        # Solo validar que no sea negativo
+        if 'price' in data:
+            price_value = data['price']
+            if price_value is not None and price_value < 0:
+                raise serializers.ValidationError({
+                    'price': 'Price cannot be negative.'
+                })
+            # ✅ Allow price 0 for free tickets
+            print(f"✅ VALIDATION - Price value: {price_value} (0 is allowed for free tickets)")
+        
+        # 🔧 FIX: Validate capacity and availability with business logic
         capacity = data.get('capacity')
         available = data.get('available')
         
+        # Si estamos actualizando (instance existe), obtener tickets vendidos
+        instance = self.instance
+        if instance:
+            tickets_sold = instance.tickets_sold
+            
+            # Validar que capacity no sea menor que tickets vendidos
+            if capacity is not None and capacity < tickets_sold:
+                raise serializers.ValidationError({
+                    'capacity': f'Capacity cannot be reduced below {tickets_sold} (tickets already sold).'
+                })
+            
+            # Si capacity cambió, recalcular available automáticamente
+            if capacity is not None and capacity != instance.capacity:
+                # Calcular nuevo available: capacity - tickets_sold
+                calculated_available = max(0, capacity - tickets_sold)
+                # Si available no fue proporcionado o es diferente, usar el calculado
+                if available is None or available != calculated_available:
+                    data['available'] = calculated_available
+                    print(f"🔧 SERIALIZER FIX - Auto-calculated available: {calculated_available} (capacity: {capacity}, sold: {tickets_sold})")
+        
+        # Validación general: available no puede exceder capacity
         if capacity is not None and available is not None:
             if available > capacity:
                 raise serializers.ValidationError({
@@ -559,12 +593,35 @@ class OrderSerializer(serializers.ModelSerializer):
                            'coupon_code', 'created_at', 'updated_at', 'payment_details']
     
     def get_payment_details(self, obj):
-        """Get detailed payment information from the payment processor."""
+        """🚀 ENTERPRISE: Get detailed payment information including coupon details."""
+        
+        # 🚀 ENTERPRISE: Build base coupon info
+        has_coupon = obj.coupon is not None
+        coupon_info = {
+            'coupon_applied': has_coupon,
+            'coupon_code': obj.coupon.code if has_coupon else None,
+            'discount_amount': float(obj.discount) if obj.discount else 0,
+            'original_total': float(obj.subtotal + obj.service_fee) if has_coupon else None,
+            'final_total': float(obj.total)
+        }
+        
+        # 🚀 ENTERPRISE: Si el total es $0 y hay cupón, fue pagado completamente con cupón
+        if has_coupon and obj.total == 0:
+            return {
+                'payment_method': f'Cupón: {obj.coupon.code}',
+                'payment_provider': 'Cupón de descuento',
+                'payment_status': 'completed' if obj.status == 'paid' else 'pending',
+                **coupon_info
+            }
+        
+        # Try to get payment processor details
         if Payment is None:
             # Payment processor not available
             return {
                 'payment_method': obj.payment_method or 'Método desconocido',
-                'payment_status': 'unknown'
+                'payment_provider': 'Desconocido',
+                'payment_status': 'unknown',
+                **coupon_info
             }
         
         try:
@@ -582,7 +639,8 @@ class OrderSerializer(serializers.ModelSerializer):
                     'metadata': payment.metadata,
                     'authorized_at': payment.authorized_at,
                     'completed_at': payment.completed_at,
-                    'expires_at': payment.expires_at
+                    'expires_at': payment.expires_at,
+                    **coupon_info
                 }
         except Exception as e:
             # Log error but don't fail the serializer
@@ -591,7 +649,9 @@ class OrderSerializer(serializers.ModelSerializer):
         # Fallback to basic payment info
         return {
             'payment_method': obj.payment_method or 'Método desconocido',
-            'payment_status': 'unknown'
+            'payment_provider': 'Desconocido',
+            'payment_status': 'unknown',
+            **coupon_info
         }
 
 
@@ -1616,7 +1676,9 @@ class BookingSerializer(serializers.Serializer):
                 if discount_amount > 0:
                     order.coupon = validated_coupon
                     order.discount = discount_amount
-                    order.total = max(0, order.total - discount_amount)
+                    # 🚀 ENTERPRISE: Round total to integer (no decimals for CLP)
+                    order.total = (order.total - discount_amount).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+                    order.total = max(Decimal('0'), order.total)
                     
                     # Reserve coupon usage
                     coupon_hold = validated_coupon.reserve_usage_for_order(order)

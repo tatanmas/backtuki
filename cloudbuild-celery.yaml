@@ -2,10 +2,12 @@
 # Builds both Celery Worker and Beat images for Cloud Run
 
 steps:
-  # Build Celery Worker Image
+  # Build Celery Worker Image (SIN CACHE para código fresco)
   - name: 'gcr.io/cloud-builders/docker'
     args: [
       'build',
+      '--no-cache',
+      '--pull',
       '-f', 'Dockerfile.celery-worker',
       '-t', 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-celery-worker:${_IMAGE_TAG}',
       '-t', 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-celery-worker:latest',
@@ -13,10 +15,12 @@ steps:
     ]
     id: 'build-celery-worker'
 
-  # Build Celery Beat Image  
+  # Build Celery Beat Image (SIN CACHE para código fresco)
   - name: 'gcr.io/cloud-builders/docker'
     args: [
       'build', 
+      '--no-cache',
+      '--pull',
       '-f', 'Dockerfile.celery-beat',
       '-t', 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-celery-beat:${_IMAGE_TAG}',
       '-t', 'us-central1-docker.pkg.dev/tukiprod/tuki-repo/tuki-celery-beat:latest',
@@ -57,7 +61,7 @@ steps:
 
 # Substitutions
 substitutions:
-  _IMAGE_TAG: 'v1-production'
+  _IMAGE_TAG: 'v7-production'
 
 # Options
 options:

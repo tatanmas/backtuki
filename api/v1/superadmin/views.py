@@ -860,3 +860,63 @@ def organizer_sales(request):
             'message': f'Error al obtener ventas por organizador: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+@api_view(['PATCH'])
+@permission_classes([AllowAny])  # TODO: Cambiar a IsAdminUser en producción
+def update_organizer_template(request, organizer_id):
+    """
+    🚀 ENTERPRISE: Update experience dashboard template for an organizer.
+    
+    PATCH /api/v1/superadmin/organizers/{id}/template/
+    
+    Body:
+        {
+            "experience_dashboard_template": "free_tours" | "standard"
+        }
+    """
+    try:
+        from apps.organizers.models import Organizer
+        
+        organizer = Organizer.objects.get(id=organizer_id)
+        template = request.data.get('experience_dashboard_template')
+        
+        if template not in ['standard', 'free_tours']:
+            return Response({
+                'success': False,
+                'message': 'Template must be "standard" or "free_tours"'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Only allow if organizer has experience module
+        if not organizer.has_experience_module:
+            return Response({
+                'success': False,
+                'message': 'Organizer does not have experience module enabled'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        organizer.experience_dashboard_template = template
+        organizer.save()
+        
+        logger.info(f"✅ [SuperAdmin] Updated template for organizer {organizer_id}: {template}")
+        
+        return Response({
+            'success': True,
+            'message': 'Template updated successfully',
+            'organizer': {
+                'id': str(organizer.id),
+                'name': organizer.name,
+                'experience_dashboard_template': organizer.experience_dashboard_template
+            }
+        }, status=status.HTTP_200_OK)
+        
+    except Organizer.DoesNotExist:
+        return Response({
+            'success': False,
+            'message': 'Organizer not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"❌ [SuperAdmin] Error updating template: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'message': f'Error updating template: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+

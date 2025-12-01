@@ -277,19 +277,36 @@ def send_ticket_confirmation_email(self, order_id):
     try:
         from django.conf import settings
         
-        # ✅ NO enviar emails durante migración
-        if getattr(settings, 'MIGRATION_MODE', False):
-            logger.info(f"📧 [EMAIL] Skipping email for order {order_id} - MIGRATION MODE active")
-            return {'status': 'skipped', 'reason': 'migration_mode'}
-        
         from apps.events.models import Order
         
         logger.info(f"📧 [EMAIL] Starting ticket confirmation email for order: {order_id}")
         
         # Get the order with related data
-        order = Order.objects.select_related(
-            'event', 'user', 'event__organizer'
-        ).prefetch_related('items__tickets').get(id=order_id)
+        logger.info(
+            "📧 [EMAIL] DEBUG: About to execute query - "
+            "select_related('event', 'event__organizer'), NO 'user'"
+        )
+        try:
+            order = Order.objects.select_related(
+                'event',
+                'event__organizer',
+            ).prefetch_related('items__tickets').get(id=order_id)
+            logger.info(
+                f"📧 [EMAIL] DEBUG: ✅ Order fetched successfully - Status: {order.status}"
+            )
+        except Exception as query_error:
+            logger.error(
+                f"📧 [EMAIL] DEBUG: ❌ ERROR in query execution: {type(query_error).__name__}: {query_error}"
+            )
+            logger.error(
+                f"📧 [EMAIL] DEBUG: Query error details: {str(query_error)}"
+            )
+            import traceback
+
+            logger.error(
+                f"📧 [EMAIL] DEBUG: Traceback: {traceback.format_exc()}"
+            )
+            raise
         
         if order.status != 'paid':
             logger.warning(f"📧 [EMAIL] Order {order_id} not paid (status: {order.status}), skipping email")
@@ -341,7 +358,6 @@ def send_ticket_confirmation_email(self, order_id):
                 context = {
                     'order': order,
                     'event': order.event,
-                    'user': order.user,
                     'ticket': ticket,  # Single ticket (what template expects)
                     'attendee_name': f"{ticket.first_name} {ticket.last_name}".strip(),
                     'organizer': order.event.organizer,
@@ -597,32 +613,80 @@ def cleanup_abandoned_orders(self, hours_old=48):
 
 
 @shared_task(bind=True, max_retries=3)
-def send_order_confirmation_email(self, order_id):
+def send_order_confirmation_email(self, order_id, to_email=None):
     """
     🚀 ENTERPRISE: Send consolidated order confirmation email to customer.
     
     Sends a single confirmation email with all tickets for the order.
+    
+    Args:
+        order_id: UUID of the order
+        to_email: Optional email address to send to (overrides ticket emails)
     """
     try:
         from django.conf import settings
+        from django.utils import timezone
+        from apps.events.models import Order, EmailLog
         
-        # ✅ NO enviar emails durante migración
-        if getattr(settings, 'MIGRATION_MODE', False):
-            logger.info(f"📧 [EMAIL] Skipping order email for {order_id} - MIGRATION MODE active")
-            return {'status': 'skipped', 'reason': 'migration_mode'}
-        
-        from apps.events.models import Order
         import tempfile
         import os
         
         logger.info(f"📧 [EMAIL] Starting order confirmation email for order: {order_id}")
         
-        # Get the order with related data
+        # DEBUG: Verify User model doesn't have organizer field
+        from apps.users.models import User
+        has_organizer_field = hasattr(User, 'organizer') or 'organizer' in [f.name for f in User._meta.get_fields()]
+        logger.info(f"📧 [EMAIL] DEBUG: User model has 'organizer' field: {has_organizer_field}")
+        if has_organizer_field:
+            logger.error(f"📧 [EMAIL] DEBUG: ⚠️⚠️⚠️ PROBLEM: User model still has 'organizer' field defined! This will cause SQL errors!")
+            logger.error(f"📧 [EMAIL] DEBUG: User model fields: {[f.name for f in User._meta.get_fields() if hasattr(f, 'name')]}")
+        
+        # DEBUG: Log Django query that will be executed
+        from django.db import connection
+        connection.queries_log.clear()
+        
         logger.info(f"📧 [EMAIL] DEBUG: Fetching order data for {order_id}")
-        order = Order.objects.select_related(
-            'event', 'user', 'event__organizer'
-        ).prefetch_related('items__tickets', 'event__images').get(id=order_id)
-        logger.info(f"📧 [EMAIL] DEBUG: Order fetched successfully - Status: {order.status}, Event: {order.event.title}")
+        logger.info(f"📧 [EMAIL] DEBUG: About to execute query - select_related('event', 'event__organizer'), NO 'user'")
+        logger.info(f"📧 [EMAIL] DEBUG: Code version check - select_related does NOT include 'user'")
+        
+        # DEBUG: Verify Order model user field
+        from apps.events.models import Order
+        order_user_field = Order._meta.get_field('user')
+        logger.info(f"📧 [EMAIL] DEBUG: Order.user field type: {type(order_user_field)}, related_model: {order_user_field.related_model}")
+        
+        try:
+            # Build queryset
+            queryset = Order.objects.select_related('event', 'event__organizer').prefetch_related('items__tickets', 'event__images')
+            logger.info(f"📧 [EMAIL] DEBUG: Queryset built, about to execute .get(id={order_id})")
+            
+            # Execute query
+            order = queryset.get(id=order_id)
+            
+            # Log SQL queries executed
+            if connection.queries:
+                logger.info(f"📧 [EMAIL] DEBUG: SQL queries executed ({len(connection.queries)} queries):")
+                for i, query in enumerate(connection.queries[-3:], 1):  # Last 3 queries
+                    logger.info(f"📧 [EMAIL] DEBUG:   Query {i}: {query['sql'][:200]}...")
+            
+            logger.info(f"📧 [EMAIL] DEBUG: ✅ Order fetched successfully - Status: {order.status}, Event: {order.event.title}")
+            logger.info(f"📧 [EMAIL] DEBUG: Order.user_id (FK): {order.user_id if hasattr(order, 'user_id') else 'NO ATTR'}")
+            
+            # CRITICAL: Do NOT access order.user here, it would trigger lazy loading
+            logger.info(f"📧 [EMAIL] DEBUG: NOT accessing order.user to avoid lazy loading")
+            
+        except Exception as query_error:
+            logger.error(f"📧 [EMAIL] DEBUG: ❌ ERROR in query execution: {type(query_error).__name__}: {query_error}")
+            logger.error(f"📧 [EMAIL] DEBUG: Query error details: {str(query_error)}")
+            
+            # Log SQL queries that were attempted
+            if connection.queries:
+                logger.error(f"📧 [EMAIL] DEBUG: SQL queries attempted before error ({len(connection.queries)} queries):")
+                for i, query in enumerate(connection.queries[-5:], 1):  # Last 5 queries
+                    logger.error(f"📧 [EMAIL] DEBUG:   Failed Query {i}: {query['sql'][:300]}...")
+            
+            import traceback
+            logger.error(f"📧 [EMAIL] DEBUG: Full traceback: {traceback.format_exc()}")
+            raise
         
         if order.status != 'paid':
             logger.warning(f"📧 [EMAIL] Order {order_id} not paid (status: {order.status}), skipping email")
@@ -643,7 +707,8 @@ def send_order_confirmation_email(self, order_id):
         logger.info(f"📧 [EMAIL] DEBUG: Grouping tickets by email")
         tickets_by_email = {}
         for ticket in tickets:
-            email = ticket.email
+            # Use provided email or ticket email
+            email = to_email or ticket.email
             if email not in tickets_by_email:
                 tickets_by_email[email] = []
             tickets_by_email[email].append(ticket)
@@ -690,7 +755,6 @@ def send_order_confirmation_email(self, order_id):
                 context = {
                     'order': order,
                     'event': order.event,
-                    'user': order.user,
                     'tickets': recipient_tickets,  # All tickets for this recipient
                     'attendee_name': f"{recipient_tickets[0].first_name} {recipient_tickets[0].last_name}".strip(),
                     'organizer': order.event.organizer,
@@ -768,14 +832,38 @@ def send_order_confirmation_email(self, order_id):
                         isotipo_azul.add_header('Content-Disposition', 'inline', filename='isotipo-azul.png')
                         email.attach(isotipo_azul)
                 
+                # Create EmailLog entry before sending
+                email_log = EmailLog.objects.create(
+                    order=order,
+                    to_email=recipient_email,
+                    subject=subject,
+                    template='order_confirmation',
+                    status='pending',
+                    attempts=1,
+                    metadata={'ticket_count': len(recipient_tickets), 'ticket_numbers': [t.ticket_number for t in recipient_tickets]}
+                )
+                
                 # Send email
                 logger.info(f"📧 [EMAIL] Attempting to send email to {recipient_email}")
                 logger.info(f"📧 [EMAIL] DEBUG: About to call email.send()")
-                email.send()
-                logger.info(f"📧 [EMAIL] DEBUG: email.send() completed successfully")
-                emails_sent += 1
-                
-                logger.info(f"📧 [EMAIL] ✅ Order confirmation sent to {recipient_email} for {len(recipient_tickets)} tickets")
+                try:
+                    email.send()
+                    logger.info(f"📧 [EMAIL] DEBUG: email.send() completed successfully")
+                    
+                    # Update EmailLog on success
+                    email_log.status = 'sent'
+                    email_log.sent_at = timezone.now()
+                    email_log.save()
+                    
+                    emails_sent += 1
+                    logger.info(f"📧 [EMAIL] ✅ Order confirmation sent to {recipient_email} for {len(recipient_tickets)} tickets")
+                except Exception as send_error:
+                    # Update EmailLog on failure
+                    email_log.status = 'failed'
+                    email_log.error = str(send_error)
+                    email_log.attempts += 1
+                    email_log.save()
+                    raise send_error
                 
             except Exception as e:
                 logger.error(f"📧 [EMAIL] Failed to send order confirmation to {recipient_email}: {e}")

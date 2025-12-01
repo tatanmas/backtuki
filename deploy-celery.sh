@@ -9,7 +9,8 @@ set -e
 # Configuration
 PROJECT_ID="tukiprod"
 REGION="us-central1"
-IMAGE_TAG="v1-production"
+# Usar el mismo tag que el backend para alinearlos
+IMAGE_TAG="v7-production"
 WORKER_SERVICE_NAME="tuki-celery-worker"
 BEAT_SERVICE_NAME="tuki-celery-beat"
 WORKER_IMAGE="us-central1-docker.pkg.dev/${PROJECT_ID}/tuki-repo/tuki-celery-worker:${IMAGE_TAG}"
@@ -56,6 +57,9 @@ fi
 # Step 2: Deploy Celery Worker
 print_step "PASO 2: Deploying Celery Worker..."
 
+# 🚀 ENTERPRISE: Deploy with Dockerfile CMD (no command override)
+# This ensures we use the CMD from Dockerfile: ["python", "/app/celery_health_server.py"]
+# Reset any previously set command to use Dockerfile default
 gcloud run deploy ${WORKER_SERVICE_NAME} \
   --image ${WORKER_IMAGE} \
   --region ${REGION} \
@@ -71,7 +75,9 @@ gcloud run deploy ${WORKER_SERVICE_NAME} \
   --env-vars-file cloud-run-env.yaml \
   --vpc-connector serverless-conn \
   --vpc-egress private-ranges-only \
-  --service-account 187635794409-compute@developer.gserviceaccount.com
+  --service-account 187635794409-compute@developer.gserviceaccount.com \
+  --command="" \
+  --args=""
 
 if [ $? -eq 0 ]; then
     print_success "Celery Worker deployed successfully!"
@@ -83,6 +89,9 @@ fi
 # Step 3: Deploy Celery Beat
 print_step "PASO 3: Deploying Celery Beat..."
 
+# 🚀 ENTERPRISE: Deploy with Dockerfile CMD (no command override)
+# This ensures we use the CMD from Dockerfile
+# Reset any previously set command to use Dockerfile default
 gcloud run deploy ${BEAT_SERVICE_NAME} \
   --image ${BEAT_IMAGE} \
   --region ${REGION} \
@@ -98,7 +107,9 @@ gcloud run deploy ${BEAT_SERVICE_NAME} \
   --env-vars-file cloud-run-env.yaml \
   --vpc-connector serverless-conn \
   --vpc-egress private-ranges-only \
-  --service-account 187635794409-compute@developer.gserviceaccount.com
+  --service-account 187635794409-compute@developer.gserviceaccount.com \
+  --command="" \
+  --args=""
 
 if [ $? -eq 0 ]; then
     print_success "Celery Beat deployed successfully!"

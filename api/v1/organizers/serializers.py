@@ -24,6 +24,7 @@ class OrganizerSerializer(serializers.ModelSerializer):
             'address', 'city', 'country', 'organization_size',
             'representative_name', 'representative_email', 'representative_phone',
             'has_events_module', 'has_accommodation_module', 'has_experience_module',
+            'experience_dashboard_template',
             'onboarding_completed', 'status', 'created_at'
         ]
         read_only_fields = ['id', 'slug', 'created_at']

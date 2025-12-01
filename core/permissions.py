@@ -154,57 +154,22 @@ class HasEventModule(permissions.BasePermission):
         """Check if organizer has the event module activated for this object."""
         from apps.organizers.models import OrganizerUser
         
-        print(f"DEBUG - HasEventModule.has_object_permission - User ID: {request.user.id if request.user.is_authenticated else 'Anonymous'}")
-        print(f"DEBUG - HasEventModule.has_object_permission - Object: {obj}")
-        print(f"DEBUG - HasEventModule.has_object_permission - Object type: {type(obj)}")
-        
         if not request.user.is_authenticated:
-            print(f"DEBUG - HasEventModule.has_object_permission - FAIL: User not authenticated")
             return False
             
         try:
             organizer_user = OrganizerUser.objects.get(user=request.user)
-            print(f"DEBUG - HasEventModule.has_object_permission - OrganizerUser found")
             
             # First, check if the object belongs to the organizer
             if hasattr(obj, 'organizer'):
-                print(f"DEBUG - HasEventModule.has_object_permission - Checking object.organizer: {obj.organizer.id}")
                 if obj.organizer != organizer_user.organizer:
-                    print(f"DEBUG - HasEventModule.has_object_permission - FAIL: Object belongs to a different organizer")
                     return False
             
             has_module = organizer_user.organizer.has_events_module
             can_manage = organizer_user.can_manage_events
             
-            print(f"DEBUG - HasEventModule.has_object_permission - has_events_module: {has_module}")
-            print(f"DEBUG - HasEventModule.has_object_permission - can_manage_events: {can_manage}")
-            
-            if not has_module:
-                print(f"DEBUG - HasEventModule.has_object_permission - FAIL: Organizer does not have events module")
-            
-            if not can_manage:
-                print(f"DEBUG - HasEventModule.has_object_permission - FAIL: User cannot manage events")
-            
             return has_module and can_manage
             
-        except OrganizerUser.DoesNotExist:
-            print(f"DEBUG - HasEventModule.has_object_permission - FAIL: OrganizerUser not found")
-            return False
-
-
-class HasAccommodationModule(permissions.BasePermission):
-    """Permission to check if organizer has the accommodation module activated."""
-    
-    def has_permission(self, request, view):
-        """Check if organizer has the accommodation module activated."""
-        from apps.organizers.models import OrganizerUser
-        
-        if not request.user.is_authenticated:
-            return False
-            
-        try:
-            organizer_user = OrganizerUser.objects.get(user=request.user)
-            return organizer_user.organizer.has_accommodation_module and organizer_user.can_manage_accommodations
         except OrganizerUser.DoesNotExist:
             return False
 
@@ -221,7 +186,59 @@ class HasExperienceModule(permissions.BasePermission):
             
         try:
             organizer_user = OrganizerUser.objects.get(user=request.user)
-            return organizer_user.organizer.has_experience_module and organizer_user.can_manage_experiences
+            has_module = organizer_user.organizer.has_experience_module
+            can_manage = organizer_user.can_manage_experiences if hasattr(organizer_user, 'can_manage_experiences') else True
+            
+            return has_module and can_manage
+            
+        except OrganizerUser.DoesNotExist:
+            return False
+        except Exception as e:
+            logger.error(f"HasExperienceModule.has_permission - Error: {str(e)}")
+            return False
+    
+    def has_object_permission(self, request, view, obj):
+        """Check if organizer has the experience module activated for this object."""
+        from apps.organizers.models import OrganizerUser
+        
+        if not request.user.is_authenticated:
+            return False
+        
+        try:
+            organizer_user = OrganizerUser.objects.get(user=request.user)
+            has_module = organizer_user.organizer.has_experience_module
+            
+            if not has_module:
+                return False
+            
+            # Check if object belongs to organizer
+            if hasattr(obj, 'organizer'):
+                return obj.organizer == organizer_user.organizer
+            if hasattr(obj, 'experience') and hasattr(obj.experience, 'organizer'):
+                return obj.experience.organizer == organizer_user.organizer
+            
+            return False
+            
+        except OrganizerUser.DoesNotExist:
+            return False
+        except Exception as e:
+            logger.error(f"HasExperienceModule.has_object_permission - Error: {str(e)}")
+            return False
+
+
+class HasAccommodationModule(permissions.BasePermission):
+    """Permission to check if organizer has the accommodation module activated."""
+    
+    def has_permission(self, request, view):
+        """Check if organizer has the accommodation module activated."""
+        from apps.organizers.models import OrganizerUser
+        
+        if not request.user.is_authenticated:
+            return False
+            
+        try:
+            organizer_user = OrganizerUser.objects.get(user=request.user)
+            return organizer_user.organizer.has_accommodation_module and organizer_user.can_manage_accommodations
         except OrganizerUser.DoesNotExist:
             return False
 

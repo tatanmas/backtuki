@@ -338,7 +338,9 @@ class PublicEventViewSet(viewsets.ModelViewSet):
                 organizer.status = 'active'
                 organizer.is_temporary = False
                 organizer.email_validated = True
-                organizer.onboarding_completed = True  # Marcar como completado para eventos públicos
+                # IMPORTANTE: onboarding_completed = False para que el usuario complete el modal de perfil
+                # El modal aparecerá cuando el usuario inicie sesión hasta que complete sus datos
+                organizer.onboarding_completed = False
                 
                 # Generar slug definitivo
                 base_slug = slugify(organizer.name)

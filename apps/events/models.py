@@ -1759,13 +1759,17 @@ class Coupon(BaseModel):
         return delta.days
     
     def calculate_discount_amount(self, amount):
-        """🚀 ENTERPRISE: Calculate discount amount for a given purchase amount."""
+        """🚀 ENTERPRISE: Calculate discount amount for a given purchase amount.
+        Returns integer values (no decimals) for CLP currency.
+        """
+        from decimal import Decimal, ROUND_HALF_UP
+        
         if not self.is_currently_valid:
-            return 0
+            return Decimal('0')
         
         # Check minimum purchase requirement
         if self.min_purchase and amount < self.min_purchase:
-            return 0
+            return Decimal('0')
         
         if self.discount_type == 'percentage':
             discount = amount * (self.discount_value / 100)
@@ -1777,7 +1781,10 @@ class Coupon(BaseModel):
             discount = min(discount, self.max_discount)
         
         # Ensure discount doesn't exceed the purchase amount
-        return min(discount, amount)
+        discount = min(discount, amount)
+        
+        # 🚀 ENTERPRISE: Round to integer (no decimals for CLP)
+        return discount.quantize(Decimal('1'), rounding=ROUND_HALF_UP)
     
     def can_be_used_for_order(self, order_total, event_id):
         """

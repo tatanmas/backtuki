@@ -181,6 +181,15 @@ class OrganizerProfileSetupSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, required=False, min_length=6)
     password_confirm = serializers.CharField(write_only=True, required=False)
     
+    def validate_organization_name(self, value):
+        """Validar que el nombre no empiece con 'Organizador ' (nombre genérico)"""
+        if value and value.strip().startswith('Organizador '):
+            raise serializers.ValidationError(
+                "El nombre de la organización no puede empezar con 'Organizador '. "
+                "Por favor, ingresa un nombre personalizado para tu organización."
+            )
+        return value.strip() if value else value
+    
     def validate(self, attrs):
         """Validate passwords if provided."""
         password = attrs.get('password')

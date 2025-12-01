@@ -58,6 +58,7 @@ urlpatterns = [
     path('superadmin/', include('api.v1.superadmin.urls')),  # 🚀 ENTERPRISE: Super Admin management
     path('satisfaction/', include('apps.satisfaction.urls')),  # 🚀 ENTERPRISE: Satisfaction Survey System
     path('', include('api.v1.events.urls')),  # ✅ NUEVO: Incluir URLs de eventos (incluye endpoints públicos)
+    path('', include('api.v1.experiences.urls')),  # 🚀 ENTERPRISE: Experiences/Tours endpoints
     # Onboarding URLs
     path('organizers/onboarding/start/', CurrentOnboardingView.as_view(), name='onboarding-start'),
     path('organizers/onboarding/step/', OnboardingStepView.as_view(), name='onboarding-step'),
