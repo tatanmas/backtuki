@@ -4805,10 +4805,13 @@ def send_order_email_sync(request, order_number):
         JSON response with send status and metrics
     """
     import time
+    import logging
     from apps.events.models import Order
     from apps.events.email_sender import send_order_confirmation_email_optimized
     from core.models import PlatformFlow
+    from core.flow_logger import FlowLogger
     
+    logger = logging.getLogger(__name__)
     start_time = time.time()
     
     try:
@@ -4835,24 +4838,29 @@ def send_order_email_sync(request, order_number):
             }, status=status.HTTP_404_NOT_FOUND)
         
         # 3. Get flow for logging and idempotency check
-        flow = None
+        flow_obj = None
+        flow_logger = None
         try:
-            flow = PlatformFlow.objects.filter(
+            flow_obj = PlatformFlow.objects.filter(
                 primary_order=order,
                 flow_type='ticket_checkout'
             ).first()
             
             # If not found by primary_order, search in events
-            if not flow:
+            if not flow_obj:
                 flow_event = order.flow_events.first()
                 if flow_event:
-                    flow = flow_event.flow
+                    flow_obj = flow_event.flow
+            
+            # Convert PlatformFlow to FlowLogger for logging
+            if flow_obj:
+                flow_logger = FlowLogger(flow_obj)
         except Exception as e:
             logger.warning(f"📧 [EMAIL_SYNC] Could not find flow for order {order_number}: {e}")
         
         # 🚀 ENTERPRISE: IDEMPOTENCY CHECK - Verify if email already sent
-        if flow:
-            email_sent_exists = flow.events.filter(step='EMAIL_SENT').exists()
+        if flow_obj:
+            email_sent_exists = flow_obj.events.filter(step='EMAIL_SENT').exists()
             if email_sent_exists:
                 logger.info(f"📧 [EMAIL_SYNC] ✅ Email already sent for order {order_number} (idempotency check)")
                 return Response({
@@ -4863,8 +4871,8 @@ def send_order_email_sync(request, order_number):
                 }, status=status.HTTP_200_OK)
         
         # 4. Log EMAIL_SYNC_ATTEMPT
-        if flow:
-            flow.log_event(
+        if flow_logger:
+            flow_logger.log_event(
                 'EMAIL_SYNC_ATTEMPT',
                 order=order,
                 source='api',
@@ -4885,7 +4893,7 @@ def send_order_email_sync(request, order_number):
         result = send_order_confirmation_email_optimized(
             order_id=str(order.id),
             to_email=to_email,
-            flow_id=str(flow.flow_id) if flow else None
+            flow_id=str(flow_obj.id) if flow_obj else None
         )
         
         total_time_ms = int((time.time() - start_time) * 1000)
@@ -4895,8 +4903,8 @@ def send_order_email_sync(request, order_number):
             # ✅ SUCCESS
             logger.info(f"📧 [EMAIL_SYNC] ✅ Email sent successfully for order {order_number} in {total_time_ms}ms")
             
-            if flow:
-                flow.log_event(
+            if flow_logger:
+                flow_logger.log_event(
                     'EMAIL_SENT',
                     order=order,
                     source='api',
@@ -4910,20 +4918,45 @@ def send_order_email_sync(request, order_number):
                     }
                 )
             
-            return Response({
+            # Get EmailLog details for confirmation
+            from apps.events.models import EmailLog
+            email_logs = EmailLog.objects.filter(
+                order=order,
+                status='sent'
+            ).order_by('-sent_at')[:1]
+            
+            response_data = {
                 'success': True,
                 'message': 'Email sent successfully',
                 'emails_sent': result.get('emails_sent', 0),
                 'metrics': result.get('metrics', {}),
-                'fallback_to_celery': False
-            }, status=status.HTTP_200_OK)
+                'fallback_to_celery': False,
+                'recipients': []
+            }
+            
+            # Add recipient details
+            if email_logs:
+                for email_log in email_logs:
+                    response_data['recipients'].append({
+                        'email': email_log.to_email,
+                        'sent_at': email_log.sent_at.isoformat() if email_log.sent_at else None,
+                        'subject': email_log.subject
+                    })
+            
+            logger.info(
+                f"📧 [EMAIL_SYNC] ✅ Success response for order {order_number}: "
+                f"{result.get('emails_sent', 0)} emails sent, "
+                f"recipients: {[r.get('email', 'N/A') for r in response_data.get('recipients', [])]}"
+            )
+            
+            return Response(response_data, status=status.HTTP_200_OK)
         
         else:
             # ❌ FAILED - Fallback to Celery
             logger.warning(f"📧 [EMAIL_SYNC] ⚠️ Synchronous send failed for order {order_number}, falling back to Celery")
             
-            if flow:
-                flow.log_event(
+            if flow_logger:
+                flow_logger.log_event(
                     'EMAIL_FAILED',
                     order=order,
                     source='api',
@@ -4941,12 +4974,12 @@ def send_order_email_sync(request, order_number):
                 from apps.events.tasks import send_order_confirmation_email
                 task = send_order_confirmation_email.apply_async(
                     args=[str(order.id)],
-                    kwargs={'flow_id': str(flow.flow_id) if flow else None},
+                    kwargs={'flow_id': str(flow_obj.id) if flow_obj else None},
                     queue='emails'
                 )
                 
-                if flow:
-                    flow.log_event(
+                if flow_logger:
+                    flow_logger.log_event(
                         'EMAIL_TASK_ENQUEUED',
                         order=order,
                         source='api',
@@ -4970,8 +5003,8 @@ def send_order_email_sync(request, order_number):
             except Exception as celery_error:
                 logger.error(f"📧 [EMAIL_SYNC] Failed to enqueue in Celery: {celery_error}")
                 
-                if flow:
-                    flow.log_event(
+                if flow_logger:
+                    flow_logger.log_event(
                         'EMAIL_FAILED',
                         order=order,
                         source='api',
