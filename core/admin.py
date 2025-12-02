@@ -38,7 +38,7 @@ class PlatformFlowAdmin(admin.ModelAdmin):
     search_fields = [
         'id',
         'user__email',
-        'organizer__business_name',
+        'organizer__name',
         'primary_order__order_number',
     ]
     
@@ -104,7 +104,7 @@ class PlatformFlowAdmin(admin.ModelAdmin):
         """Display link to organizer."""
         if obj.organizer:
             url = reverse('admin:organizers_organizer_change', args=[obj.organizer.id])
-            return format_html('<a href="{}">{}</a>', url, obj.organizer.business_name)
+            return format_html('<a href="{}">{}</a>', url, obj.organizer.name)
         return '-'
     organizer_link.short_description = 'Organizer'
     

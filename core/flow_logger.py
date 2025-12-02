@@ -235,15 +235,19 @@ class FlowLogger:
                 exc_info=True
             )
     
-    def complete(self, message='Flow completed successfully'):
+    def complete(self, message='Flow completed successfully', metadata=None):
         """
-        Mark flow as completed.
+        Mark flow as completed with duration tracking.
         
         Args:
             message: Completion message
+            metadata: Additional completion metadata (optional)
         
         Example:
-            flow.complete(message="Order paid and tickets sent")
+            flow.complete(
+                message="Order paid and tickets sent",
+                metadata={'total_duration_ms': 8500}
+            )
         """
         if not self.flow:
             return
@@ -251,10 +255,20 @@ class FlowLogger:
         try:
             self.flow.status = 'completed'
             self.flow.completed_at = timezone.now()
-            self.flow.save(update_fields=['status', 'completed_at'])
             
-            self.log_event('FLOW_COMPLETED', status='success', message=message)
-            logger.info(f"✅ [FLOW {str(self.flow.id)[:8]}] Completed: {message}")
+            # 🚀 ENTERPRISE: Calculate duration in milliseconds
+            if self.flow.created_at and self.flow.completed_at:
+                duration = self.flow.completed_at - self.flow.created_at
+                self.flow.duration_ms = int(duration.total_seconds() * 1000)
+            
+            # Merge metadata with duration
+            if metadata:
+                self.flow.metadata.update(metadata)
+            
+            self.flow.save(update_fields=['status', 'completed_at', 'duration_ms', 'metadata'])
+            
+            self.log_event('FLOW_COMPLETED', status='success', message=message, metadata=metadata)
+            logger.info(f"✅ [FLOW {str(self.flow.id)[:8]}] Completed in {self.flow.duration_ms}ms: {message}")
         except Exception as e:
             logger.error(
                 f"❌ [FLOW {str(self.flow.id)[:8]}] Failed to mark as completed: {e}",

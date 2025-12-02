@@ -73,12 +73,25 @@ app.conf.beat_schedule = {
             'routing_key': 'maintenance.cleanup_syncs',
         }
     },
+    
+    # 🚀 ENTERPRISE: Fallback automático para emails pendientes
+    # Garantiza que TODOS los emails se envíen, incluso si el frontend falla
+    'ensure-pending-emails-sent': {
+        'task': 'apps.events.tasks.ensure_pending_emails_sent',
+        'schedule': crontab(minute='*/5'),  # Every 5 minutes
+        'options': {
+            'queue': 'emails',
+            'routing_key': 'emails.fallback',
+        }
+    },
 }
 
 # 🚀 ENTERPRISE TASK ROUTING
 app.conf.task_routes = {
     'apps.events.tasks.cleanup_expired_ticket_holds': {'queue': 'critical'},
     'apps.events.tasks.send_ticket_confirmation_email': {'queue': 'emails'},
+    'apps.events.tasks.send_order_confirmation_email': {'queue': 'emails'},  # 🚀 ENTERPRISE: Routing explícito para emails instantáneos
+    'apps.events.tasks.ensure_pending_emails_sent': {'queue': 'emails'},  # 🚀 ENTERPRISE: Fallback automático
     'apps.events.tasks.send_event_reminder_email': {'queue': 'emails'},
     'apps.events.tasks.send_welcome_organizer_email': {'queue': 'emails'},
     'apps.events.tasks.schedule_event_reminders': {'queue': 'emails'},
@@ -110,6 +123,13 @@ app.conf.update(
     worker_max_tasks_per_child=1000,  # Restart worker after 1000 tasks
     worker_disable_rate_limits=False,
     
+    # 🚀 ENTERPRISE: Broker connection retry (CRITICAL para evitar pérdida de tareas)
+    # Esto asegura que los workers se reconecten automáticamente después de reinicios
+    # Sin esto, las tareas pueden quedarse en Redis sin procesar
+    broker_connection_retry_on_startup=True,  # Reconexión automática al iniciar
+    broker_connection_retry=True,  # Reconexión automática en caso de desconexión
+    broker_connection_max_retries=10,  # Máximo de intentos de reconexión
+    
     # Queue priorities (enterprise-grade)
     task_default_queue='default',
     task_default_exchange='default',
@@ -121,7 +141,7 @@ app.conf.update(
 @app.task(bind=True, ignore_result=True)
 def debug_task(self):
     """Task to debug Celery worker."""
-    print(f'🔍 DEBUG: Celery task executed - Request: {self.request!r}')
+    print(f'🔍 DEBUG: Celery task executed - Request: {self.request!r}') 
 
 
 # 🚀 ENTERPRISE: Import Celery signals for automatic task logging

@@ -1,0 +1,42 @@
+# 🚀 ENTERPRISE: Cloud Build for Unified Celery Worker
+# Builds single image with multiple internal workers
+
+steps:
+  # Build Unified Worker
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '--no-cache'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/${PROJECT_ID}/tuki-repo/tuki-celery-unified:${_IMAGE_TAG}'
+      - '-f'
+      - 'Dockerfile.celery-unified'
+      - '.'
+    timeout: '1200s'
+
+  # Build Beat (unchanged)
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '--no-cache'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/${PROJECT_ID}/tuki-repo/tuki-celery-beat:${_IMAGE_TAG}'
+      - '-f'
+      - 'Dockerfile.celery-beat'
+      - '.'
+    timeout: '1200s'
+
+# Push images
+images:
+  - 'us-central1-docker.pkg.dev/${PROJECT_ID}/tuki-repo/tuki-celery-unified:${_IMAGE_TAG}'
+  - 'us-central1-docker.pkg.dev/${PROJECT_ID}/tuki-repo/tuki-celery-beat:${_IMAGE_TAG}'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: '2400s'
+
+substitutions:
+  _IMAGE_TAG: 'latest'
+

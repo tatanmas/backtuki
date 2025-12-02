@@ -5,6 +5,7 @@ from .views import (
     TicketTierViewSet,
     generate_ticket_qr,
     validate_ticket_qr,
+    send_order_email_sync,
 )
 from .public_views import PublicEventViewSet
 
@@ -33,4 +34,7 @@ urlpatterns = [
     # 🎫 ENTERPRISE QR CODE ENDPOINTS
     path('tickets/<str:ticket_number>/qr/', generate_ticket_qr, name='generate-ticket-qr'),
     path('tickets/validate-qr/', validate_ticket_qr, name='validate-ticket-qr'),
+    
+    # 📧 ENTERPRISE EMAIL ENDPOINTS
+    path('orders/<str:order_number>/send-email/', send_order_email_sync, name='send-order-email-sync'),
 ] 

@@ -2988,6 +2988,118 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
     
     @action(detail=True, methods=['get'])
+    def conversion_metrics(self, request, pk=None):
+        """
+        🚀 ENTERPRISE: Get conversion metrics for this order vs historical averages.
+        
+        Returns step-by-step conversion rates comparing this order's flow
+        against historical platform averages.
+        """
+        try:
+            from core.conversion_metrics import ConversionMetricsService
+            
+            order = self.get_object()
+            
+            if not order.order_number:
+                return Response({
+                    'success': False,
+                    'message': 'Order does not have an order number'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            metrics = ConversionMetricsService.get_order_conversion_comparison(order.order_number)
+            
+            if not metrics.get('success'):
+                return Response(metrics, status=status.HTTP_404_NOT_FOUND)
+            
+            return Response(metrics, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"❌ [ORDER] Error getting conversion metrics: {e}", exc_info=True)
+            return Response({
+                'success': False,
+                'message': f'Error getting conversion metrics: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['get'])
+    def historical_conversion_rates(self, request):
+        """
+        🚀 ENTERPRISE: Get historical conversion rates for all steps.
+        
+        Query params:
+            - from_date: ISO format start date (optional)
+            - to_date: ISO format end date (optional)
+            - organizer_id: Filter by organizer (optional)
+            - event_id: Filter by event (optional)
+        
+        Returns step-by-step historical conversion rates.
+        """
+        try:
+            from core.conversion_metrics import ConversionMetricsService
+            from django.utils.dateparse import parse_datetime
+            
+            # Parse date parameters
+            from_date = None
+            to_date = None
+            if request.query_params.get('from_date'):
+                from_date = parse_datetime(request.query_params.get('from_date'))
+                if from_date and not timezone.is_aware(from_date):
+                    from_date = timezone.make_aware(from_date)
+            
+            if request.query_params.get('to_date'):
+                to_date = parse_datetime(request.query_params.get('to_date'))
+                if to_date and not timezone.is_aware(to_date):
+                    to_date = timezone.make_aware(to_date)
+            
+            organizer_id = request.query_params.get('organizer_id')
+            event_id = request.query_params.get('event_id')
+            
+            # Get historical rates
+            historical_rates = ConversionMetricsService.get_historical_conversion_rates(
+                flow_type='ticket_checkout',
+                from_date=from_date,
+                to_date=to_date,
+                organizer_id=organizer_id,
+                event_id=event_id
+            )
+            
+            # Format response with step display names
+            from core.models import PlatformFlowEvent
+            from core.conversion_metrics import TICKET_CHECKOUT_STEPS
+            step_display_map = dict(PlatformFlowEvent.STEP_CHOICES)
+            
+            steps_data = []
+            for step in TICKET_CHECKOUT_STEPS:
+                step_data = historical_rates.get(step, {})
+                steps_data.append({
+                    'step': step,
+                    'step_display': step_display_map.get(step, step),
+                    'conversion_rate': step_data.get('conversion_rate', 0.0),
+                    'conversion_percentage': step_data.get('conversion_percentage', 0.0),
+                    'reached_count': step_data.get('reached_count', 0),
+                    'previous_count': step_data.get('previous_count'),
+                    'previous_step': step_data.get('previous_step')
+                })
+            
+            # Calculate overall average
+            overall_avg = sum(s.get('conversion_rate', 0.0) for s in historical_rates.values()) / len(historical_rates) if historical_rates else 0.0
+            
+            return Response({
+                'success': True,
+                'steps': steps_data,
+                'overall_average': round(overall_avg, 4),
+                'overall_average_percentage': round(overall_avg * 100, 2),
+                'from_date': from_date.isoformat() if from_date else None,
+                'to_date': to_date.isoformat() if to_date else None,
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"❌ [ORDER] Error getting historical conversion rates: {e}", exc_info=True)
+            return Response({
+                'success': False,
+                'message': f'Error getting historical conversion rates: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=True, methods=['get'])
     def timeline(self, request, pk=None):
         """
         Get order timeline/history.
@@ -4349,6 +4461,138 @@ def generate_ticket_qr(request, ticket_number):
 
 
 @extend_schema(
+    summary="Get Order Tickets",
+    description="Get all tickets for an order by order number. Returns complete ticket data for PDF generation.",
+    parameters=[
+        OpenApiParameter(name='order_number', type=str, location=OpenApiParameter.PATH, required=True, description='Order number (e.g., ORD-123456)'),
+    ],
+    responses={
+        200: {
+            "description": "Order tickets data",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": True,
+                        "order_number": "ORD-123456",
+                        "event": {
+                            "id": "uuid",
+                            "title": "Event Title",
+                            "start_date": "2026-01-08T19:00:00Z",
+                            "location": {"name": "Location Name", "address": "Address"}
+                        },
+                        "tickets": [
+                            {
+                                "ticket_number": "TUKI-ABC123",
+                                "first_name": "Flo",
+                                "last_name": "mas",
+                                "email": "email@example.com",
+                                "tier_name": "Entrada Gratuita"
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
+)
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_order_tickets(request, order_number):
+    """
+    🎫 ENTERPRISE: Get all tickets for an order by order number and access token
+    
+    Authentication: Requires access_token as query parameter (public access)
+    Returns complete ticket data including:
+    - Real ticket numbers (not temporary)
+    - First name and last name
+    - Email
+    - Tier name
+    - Event information
+    """
+    try:
+        from apps.events.models import Order, Ticket
+        
+        # Get access token from query parameters
+        access_token = request.query_params.get('token')
+        
+        if not access_token:
+            return Response({
+                'success': False,
+                'error': 'TOKEN_REQUIRED',
+                'message': 'Access token is required. Please use the link from your confirmation email.'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+        
+        # Get order by order_number and validate token
+        try:
+            order = Order.objects.select_related(
+                'event',
+                'event__location',
+                'event__organizer'
+            ).prefetch_related(
+                'items__tickets',
+                'items__ticket_tier',
+                'event__images'
+            ).get(order_number=order_number, access_token=access_token)
+        except Order.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'INVALID_TOKEN_OR_ORDER',
+                'message': 'Invalid access token or order not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Get all tickets for this order
+        tickets = Ticket.objects.filter(
+            order_item__order=order
+        ).select_related(
+            'order_item__ticket_tier'
+        ).order_by('created_at')
+        
+        # Build event data
+        event = order.event
+        event_data = {
+            'id': str(event.id),
+            'title': event.title,
+            'start_date': event.start_date.isoformat() if event.start_date else None,
+            'location': {
+                'name': event.location.name if event.location else 'Ubicación no disponible',
+                'address': event.location.address if event.location and hasattr(event.location, 'address') else '',
+            },
+            'image_url': event.images.first().image.url if event.images.exists() else None,
+        }
+        
+        # Build tickets data
+        tickets_data = []
+        for ticket in tickets:
+            tickets_data.append({
+                'ticket_number': ticket.ticket_number,  # Real ticket number
+                'first_name': ticket.first_name,
+                'last_name': ticket.last_name,
+                'email': ticket.email,
+                'tier_name': ticket.order_item.ticket_tier.name if ticket.order_item and ticket.order_item.ticket_tier else 'General',
+                'tier_id': str(ticket.order_item.ticket_tier.id) if ticket.order_item and ticket.order_item.ticket_tier else None,
+            })
+        
+        return Response({
+            'success': True,
+            'order_number': order.order_number,
+            'order_created_at': order.created_at.isoformat(),
+            'event': event_data,
+            'tickets': tickets_data,
+            'ticket_count': len(tickets_data),
+        })
+        
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"❌ [ORDER_TICKETS] Error getting tickets for order {order_number}: {e}", exc_info=True)
+        return Response({
+            'success': False,
+            'error': 'SERVER_ERROR',
+            'message': f'Error getting tickets: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@extend_schema(
     summary="Validate Ticket QR Code",
     description="Validate a ticket using QR code data. Professional validation with security checks.",
     responses={
@@ -4467,4 +4711,289 @@ def validate_ticket_qr(request):
             'valid': False,
             'error': 'INTERNAL_ERROR',
             'message': 'Internal server error'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@extend_schema(
+    summary="🚀 ENTERPRISE: Send Order Confirmation Email Synchronously",
+    description="""
+    Send order confirmation email synchronously from frontend confirmation page.
+    
+    **Features**:
+    - <10s latency (similar to OTP emails)
+    - Automatic fallback to Celery if fails
+    - Complete flow logging
+    - Security via access_token
+    
+    **Flow**:
+    1. Frontend reaches confirmation page
+    2. Calls this endpoint with order_number + access_token
+    3. Email sent synchronously
+    4. If fails → automatically enqueued in Celery
+    5. All events logged in PlatformFlow
+    
+    **Security**: Requires valid access_token (same as ticket download)
+    """,
+    request={
+        "application/json": {
+            "example": {
+                "to_email": "customer@example.com"
+            }
+        }
+    },
+    responses={
+        200: {
+            "description": "Email sent successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": True,
+                        "message": "Email sent successfully",
+                        "emails_sent": 1,
+                        "metrics": {
+                            "fetch_time_ms": 45,
+                            "context_time_ms": 120,
+                            "render_time_ms": 85,
+                            "smtp_time_ms": 1450,
+                            "total_time_ms": 1700
+                        },
+                        "fallback_to_celery": False
+                    }
+                }
+            }
+        },
+        202: {
+            "description": "Email failed but enqueued in Celery",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": False,
+                        "message": "Email failed but enqueued in Celery for retry",
+                        "fallback_to_celery": True,
+                        "task_id": "abc123-def456"
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Missing required parameters"
+        },
+        404: {
+            "description": "Order not found or invalid token"
+        }
+    }
+)
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def send_order_email_sync(request, order_number):
+    """
+    🚀 ENTERPRISE: Send order confirmation email synchronously.
+    
+    This endpoint is called from the frontend confirmation page to send
+    the order confirmation email immediately, reducing latency from 5+ minutes
+    to <10 seconds.
+    
+    If the synchronous send fails, it automatically falls back to Celery
+    for retry, ensuring no emails are lost.
+    
+    Args:
+        order_number: Order number from URL
+        access_token: Security token from query params
+        to_email: Optional email override from request body
+        
+    Returns:
+        JSON response with send status and metrics
+    """
+    import time
+    from apps.events.models import Order
+    from apps.events.email_sender import send_order_confirmation_email_optimized
+    from core.models import PlatformFlow
+    
+    start_time = time.time()
+    
+    try:
+        # 1. Get and validate access_token
+        access_token = request.query_params.get('access_token')
+        if not access_token:
+            logger.warning(f"📧 [EMAIL_SYNC] Missing access_token for order {order_number}")
+            return Response({
+                'success': False,
+                'message': 'Missing access_token'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 2. Get order with access_token validation
+        try:
+            order = Order.objects.select_related('event', 'user').get(
+                order_number=order_number,
+                access_token=access_token
+            )
+        except Order.DoesNotExist:
+            logger.warning(f"📧 [EMAIL_SYNC] Order not found or invalid token: {order_number}")
+            return Response({
+                'success': False,
+                'message': 'Order not found or invalid token'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # 3. Get flow for logging and idempotency check
+        flow = None
+        try:
+            flow = PlatformFlow.objects.filter(
+                primary_order=order,
+                flow_type='ticket_checkout'
+            ).first()
+            
+            # If not found by primary_order, search in events
+            if not flow:
+                flow_event = order.flow_events.first()
+                if flow_event:
+                    flow = flow_event.flow
+        except Exception as e:
+            logger.warning(f"📧 [EMAIL_SYNC] Could not find flow for order {order_number}: {e}")
+        
+        # 🚀 ENTERPRISE: IDEMPOTENCY CHECK - Verify if email already sent
+        if flow:
+            email_sent_exists = flow.events.filter(step='EMAIL_SENT').exists()
+            if email_sent_exists:
+                logger.info(f"📧 [EMAIL_SYNC] ✅ Email already sent for order {order_number} (idempotency check)")
+                return Response({
+                    'success': True,
+                    'message': 'Email already sent',
+                    'already_sent': True,
+                    'emails_sent': 1
+                }, status=status.HTTP_200_OK)
+        
+        # 4. Log EMAIL_SYNC_ATTEMPT
+        if flow:
+            flow.log_event(
+                'EMAIL_SYNC_ATTEMPT',
+                order=order,
+                source='api',
+                status='info',
+                message=f"Attempting synchronous email send for order {order_number}",
+                metadata={
+                    'strategy': 'frontend_sync',
+                    'triggered_by': 'confirmation_page'
+                }
+            )
+        
+        logger.info(f"📧 [EMAIL_SYNC] Starting synchronous email send for order {order_number}")
+        
+        # 5. Get optional email override
+        to_email = request.data.get('to_email')
+        
+        # 6. Send email synchronously
+        result = send_order_confirmation_email_optimized(
+            order_id=str(order.id),
+            to_email=to_email,
+            flow_id=str(flow.flow_id) if flow else None
+        )
+        
+        total_time_ms = int((time.time() - start_time) * 1000)
+        
+        # 7. Check if send was successful
+        if result.get('status') == 'completed' and result.get('emails_sent', 0) > 0:
+            # ✅ SUCCESS
+            logger.info(f"📧 [EMAIL_SYNC] ✅ Email sent successfully for order {order_number} in {total_time_ms}ms")
+            
+            if flow:
+                flow.log_event(
+                    'EMAIL_SENT',
+                    order=order,
+                    source='api',
+                    status='success',
+                    message=f"Email sent successfully in {total_time_ms}ms",
+                    metadata={
+                        'strategy': 'frontend_sync',
+                        'emails_sent': result.get('emails_sent', 0),
+                        'metrics': result.get('metrics', {}),
+                        'total_time_ms': total_time_ms
+                    }
+                )
+            
+            return Response({
+                'success': True,
+                'message': 'Email sent successfully',
+                'emails_sent': result.get('emails_sent', 0),
+                'metrics': result.get('metrics', {}),
+                'fallback_to_celery': False
+            }, status=status.HTTP_200_OK)
+        
+        else:
+            # ❌ FAILED - Fallback to Celery
+            logger.warning(f"📧 [EMAIL_SYNC] ⚠️ Synchronous send failed for order {order_number}, falling back to Celery")
+            
+            if flow:
+                flow.log_event(
+                    'EMAIL_FAILED',
+                    order=order,
+                    source='api',
+                    status='warning',
+                    message=f"Synchronous email send failed, falling back to Celery",
+                    metadata={
+                        'strategy': 'frontend_sync',
+                        'result': result,
+                        'total_time_ms': total_time_ms
+                    }
+                )
+            
+            # Enqueue in Celery as fallback
+            try:
+                from apps.events.tasks import send_order_confirmation_email
+                task = send_order_confirmation_email.apply_async(
+                    args=[str(order.id)],
+                    kwargs={'flow_id': str(flow.flow_id) if flow else None},
+                    queue='emails'
+                )
+                
+                if flow:
+                    flow.log_event(
+                        'EMAIL_TASK_ENQUEUED',
+                        order=order,
+                        source='api',
+                        status='success',
+                        message=f"Email enqueued in Celery as fallback",
+                        metadata={
+                            'task_id': task.id if task else None,
+                            'reason': 'sync_send_failed'
+                        }
+                    )
+                
+                logger.info(f"📧 [EMAIL_SYNC] Email enqueued in Celery for order {order_number}")
+                
+                return Response({
+                    'success': False,
+                    'message': 'Email failed but enqueued in Celery for retry',
+                    'fallback_to_celery': True,
+                    'task_id': task.id if task else None
+                }, status=status.HTTP_202_ACCEPTED)
+                
+            except Exception as celery_error:
+                logger.error(f"📧 [EMAIL_SYNC] Failed to enqueue in Celery: {celery_error}")
+                
+                if flow:
+                    flow.log_event(
+                        'EMAIL_FAILED',
+                        order=order,
+                        source='api',
+                        status='failure',
+                        message=f"Both sync send and Celery fallback failed",
+                        metadata={
+                            'sync_error': str(result),
+                            'celery_error': str(celery_error)
+                        }
+                    )
+                
+                return Response({
+                    'success': False,
+                    'message': 'Email send failed and could not enqueue in Celery',
+                    'error': str(celery_error)
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    except Exception as e:
+        logger.error(f"📧 [EMAIL_SYNC] Unexpected error for order {order_number}: {e}", exc_info=True)
+        
+        return Response({
+            'success': False,
+            'message': 'Internal server error',
+            'error': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 

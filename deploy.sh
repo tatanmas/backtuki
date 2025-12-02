@@ -180,7 +180,85 @@ echo "6. ✅ Domain configured (if script ran successfully)"
 echo "7. 🔄 Update frontend to use https://prop.cl as backend URL"
 echo "8. 🧪 Test all functionality thoroughly (especially payments and email)"
 echo "9. 🔍 Monitor logs: gcloud run services logs read ${SERVICE_NAME} --region=${REGION}"
-echo "10. 📧 Monitor Celery: gcloud run services logs read tuki-celery-worker --region=${REGION}"
+echo ""
+
+# Step 11: Deploy Celery Workers (ENTERPRISE UNIFIED)
+print_step "PASO 11: Deploying Celery Unified Worker..."
+echo "🚀 Deploying single service with 4 internal workers"
+echo "   • EMAILS: 4 workers (instant delivery <10s)"
+echo "   • CRITICAL: 2 workers (high priority)"
+echo "   • GENERAL: 2 workers (default tasks)"
+echo "   • SYNC: 1 worker (heavy operations)"
+echo ""
+
+# Build Celery images
+print_step "Building Celery images..."
+gcloud builds submit \
+  --config=cloudbuild-celery-unified.yaml \
+  --substitutions=_IMAGE_TAG=${IMAGE_TAG} \
+  --project=${PROJECT_ID}
+
+if [ $? -eq 0 ]; then
+    print_success "Celery images built successfully"
+else
+    print_error "Failed to build Celery images"
+    exit 1
+fi
+
+# Deploy Unified Worker
+print_step "Deploying unified Celery worker..."
+gcloud run deploy tuki-celery-unified \
+  --image us-central1-docker.pkg.dev/${PROJECT_ID}/tuki-repo/tuki-celery-unified:${IMAGE_TAG} \
+  --region ${REGION} \
+  --platform managed \
+  --no-allow-unauthenticated \
+  --port 8080 \
+  --min-instances 2 \
+  --max-instances 10 \
+  --concurrency 1 \
+  --memory 8Gi \
+  --cpu 4 \
+  --timeout 3600 \
+  --env-vars-file cloud-run-env.yaml \
+  --vpc-connector serverless-conn \
+  --vpc-egress private-ranges-only \
+  --service-account 187635794409-compute@developer.gserviceaccount.com \
+  --command="" \
+  --args=""
+
+if [ $? -eq 0 ]; then
+    print_success "Unified worker deployed successfully"
+else
+    print_error "Failed to deploy unified worker"
+    exit 1
+fi
+
+# Deploy Beat
+print_step "Deploying Celery Beat..."
+gcloud run deploy tuki-celery-beat \
+  --image us-central1-docker.pkg.dev/${PROJECT_ID}/tuki-repo/tuki-celery-beat:${IMAGE_TAG} \
+  --region ${REGION} \
+  --platform managed \
+  --no-allow-unauthenticated \
+  --port 8080 \
+  --min-instances 1 \
+  --max-instances 1 \
+  --memory 512Mi \
+  --cpu 1 \
+  --timeout 3600 \
+  --env-vars-file cloud-run-env.yaml \
+  --vpc-connector serverless-conn \
+  --vpc-egress private-ranges-only \
+  --service-account 187635794409-compute@developer.gserviceaccount.com
+
+if [ $? -eq 0 ]; then
+    print_success "Beat deployed successfully"
+else
+    print_error "Failed to deploy beat"
+    exit 1
+fi
+
+print_success "Celery deployment completed!"
 echo ""
 print_success "Tuki Platform is now live and ready for production! 🚀"
 
@@ -189,7 +267,11 @@ echo ""
 print_step "RESUMEN FINAL:"
 echo "=============="
 echo "🌐 Backend URL: ${SERVICE_URL}"
-echo "📧 Celery services deployed for email processing"
+echo "📧 Celery Unified: 2-10 instances (8GB RAM, 4 vCPUs each)"
+echo "📊 Celery Beat: 1 instance (512MB RAM)"
 echo "🎯 All services ready for production use"
+echo ""
+echo "📋 Monitor Celery:"
+echo "   gcloud run services logs read tuki-celery-unified --region=${REGION}"
 echo ""
 print_success "Deployment completed successfully! 🎯"

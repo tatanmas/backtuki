@@ -180,18 +180,43 @@ class PaymentSerializer(serializers.ModelSerializer):
             return None
     
     def _get_ticket_holders(self, order):
-        """Get ticket holders information."""
+        """
+        Get ticket holders information including ticket numbers for PDF generation.
+        
+        Returns list of dicts with:
+        - name: Full name of ticket holder
+        - email: Email address
+        - tier_name: Ticket tier name
+        - ticket_number: Unique ticket identifier (for QR and PDF)
+        - ticket_id: UUID of ticket (optional, for future use)
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         holders = []
         try:
+            logger.info(f"🎫 [PDF] Getting ticket holders for order {order.order_number}")
+            items_count = order.items.count()
+            logger.info(f"🎫 [PDF] Order has {items_count} items")
+            
             for item in order.items.all():
+                tickets_count = item.tickets.count()
+                logger.info(f"🎫 [PDF] Item {item.id} has {tickets_count} tickets")
+                
                 for ticket in item.tickets.all():
-                    holders.append({
+                    holder_data = {
                         'name': f"{ticket.first_name} {ticket.last_name}".strip(),
                         'email': ticket.email,
-                        'tier_name': item.ticket_tier.name if item.ticket_tier else 'General'
-                    })
+                        'tier_name': item.ticket_tier.name if item.ticket_tier else 'General',
+                        'ticket_number': ticket.ticket_number,  # 🎫 NEW: For PDF QR generation
+                        'ticket_id': str(ticket.id),  # 🎫 NEW: For future features
+                    }
+                    holders.append(holder_data)
+                    logger.info(f"🎫 [PDF] Added holder: {holder_data['name']} ({holder_data['ticket_number']})")
+            
+            logger.info(f"🎫 [PDF] Total holders returned: {len(holders)}")
         except Exception as e:
-            print(f"Error getting ticket holders: {e}")
+            logger.error(f"❌ [PDF] Error getting ticket holders: {e}", exc_info=True)
         return holders
     
     class Meta:

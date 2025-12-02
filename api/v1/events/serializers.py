@@ -118,6 +118,8 @@ class TicketTierSerializer(serializers.ModelSerializer):
             'min_per_order', 'benefits', 'metadata', 'requires_approval',
             # ✅ Pay-What-You-Want fields
             'is_pay_what_you_want', 'min_price', 'max_price', 'suggested_price',
+            # 🎯 RAFFLE: Raffle field
+            'is_raffle',
             # 🚀 ENTERPRISE: Add enterprise fields
             'tickets_sold', 'tickets_on_hold', 'real_available', 'availability_summary'
         ]
@@ -293,6 +295,9 @@ class TicketTierSerializer(serializers.ModelSerializer):
             data['minPrice'] = instance.min_price
             data['maxPrice'] = instance.max_price
             data['suggestedPrice'] = instance.suggested_price
+        
+        # 🎯 RAFFLE: Add raffle field in camelCase for frontend
+        data['isRaffle'] = instance.is_raffle
         
         # Convert other snake_case fields to camelCase
         camel_case_mapping = {
@@ -1461,11 +1466,15 @@ class BookingSerializer(serializers.Serializer):
                 
                 # For validation, we need to calculate approximate total
                 # This is just for basic validation - actual total will be calculated in create()
+                # 🚀 ENTERPRISE: Handle PWYW tickets with customPrice
                 tickets_data = data.get('tickets') or []
-                estimated_total = sum(
-                    TicketTier.objects.get(id=t['tierId']).price * t['quantity'] 
-                    for t in tickets_data if t.get('tierId') and t.get('quantity')
-                ) if tickets_data else 0
+                estimated_total = 0
+                for t in tickets_data:
+                    if t.get('tierId') and t.get('quantity'):
+                        tier = TicketTier.objects.get(id=t['tierId'])
+                        # Use customPrice if provided (PWYW), otherwise use tier price
+                        price = t.get('customPrice', tier.price)
+                        estimated_total += price * t['quantity']
                 
                 can_use, message = coupon.can_be_used_for_order(estimated_total, event_id)
                 if not can_use:
@@ -1593,23 +1602,28 @@ class BookingSerializer(serializers.Serializer):
                     print(f"🔍 HOLD: tier={h.ticket_tier_id}, qty={h.quantity}, custom_price={h.custom_price}, expires={h.expires_at}, released={h.released}")
                 raise serializers.ValidationError({"detail": "Reservation has expired or is invalid."})
             
-            # 🚀 ENTERPRISE: Aggregate by tier, preserving custom_price for PWYW tickets
-            by_tier = {}
+            # 🚀 ENTERPRISE: Aggregate by tier AND custom_price for PWYW tickets
+            # Group by (tier_id, custom_price) to handle multiple holds with different prices
+            by_tier_and_price = {}
             for h in holds:
                 tier_id = h.ticket_tier_id
-                if tier_id not in by_tier:
-                    by_tier[tier_id] = {
+                custom_price = h.custom_price
+                # Use tuple as key to group by both tier and custom price
+                key = (tier_id, custom_price)
+                
+                if key not in by_tier_and_price:
+                    by_tier_and_price[key] = {
                         'quantity': 0,
-                        'custom_price': h.custom_price  # Preserve custom price from hold
+                        'custom_price': custom_price
                     }
-                by_tier[tier_id]['quantity'] += h.quantity
+                by_tier_and_price[key]['quantity'] += h.quantity
             
             # Build items_source with custom_price when available
             items_source = []
-            for tier_id, data in by_tier.items():
+            for (tier_id, custom_price), data in by_tier_and_price.items():
                 item = {'tierId': tier_id, 'quantity': data['quantity']}
-                if data['custom_price'] is not None:
-                    item['customPrice'] = float(data['custom_price'])
+                if custom_price is not None:
+                    item['customPrice'] = float(custom_price)
                 items_source.append(item)
         else:
             items_source = validated_data.get('tickets', [])
@@ -1767,50 +1781,32 @@ class BookingSerializer(serializers.Serializer):
                     metadata={'tickets_count': tickets_count}
                 )
             
-            # Send confirmation email for free orders
-            try:
-                from apps.events.tasks import send_order_confirmation_email
-                print(f"📧 QUEUE: Enqueuing order confirmation email for order {order.id} -> queue 'emails'")
-                task = send_order_confirmation_email.apply_async(
-                    args=[str(order.id)],
-                    kwargs={'flow_id': str(flow.flow_id) if flow else None},
-                    queue='emails'
+            # 🚀 ENTERPRISE: Email will be sent synchronously from frontend confirmation page
+            # This reduces latency from 5+ minutes to <10 seconds
+            # If frontend sync send fails, it will automatically fallback to Celery
+            if flow:
+                flow.log_event(
+                    'EMAIL_PENDING',
+                    order=order,
+                    status='info',
+                    message=f"Email pending - will be sent from confirmation page for order {order.order_number}",
+                    metadata={
+                        'email_strategy': 'frontend_sync',
+                        'fallback_to_celery': True,
+                        'flow_type': 'free_order'
+                    }
                 )
-                print(f"📧 QUEUE: Successfully enqueued order confirmation email for order {order.id}")
-                
-                # 🚀 ENTERPRISE: Log email task enqueued
-                if flow:
-                    flow.log_event(
-                        'EMAIL_TASK_ENQUEUED',
-                        order=order,
-                        status='success',
-                        message=f"Email task enqueued for order {order.order_number}",
-                        metadata={'task_id': task.id if task else None}
-                    )
-            except Exception as e:
-                print(f'📧 ERROR: Could not queue order confirmation email: {e}')
-                if flow:
-                    flow.log_event(
-                        'EMAIL_TASK_ENQUEUED',
-                        order=order,
-                        status='failure',
-                        message=f"Failed to enqueue email: {str(e)}",
-                        metadata={'error': str(e)}
-                    )
-                # Fallback to old function
-                try:
-                    from apps.events.tasks import send_ticket_confirmation_email
-                    print(f"📧 FALLBACK: Enqueuing ticket confirmation email for order {order.id}")
-                    send_ticket_confirmation_email.apply_async(args=[str(order.id)], queue='emails')
-                except Exception as fallback_e:
-                    print(f'📧 FALLBACK ERROR: Could not queue any confirmation email: {fallback_e}')
+            print(f"📧 [EMAIL] Email marked as pending for order {order.id} - will be sent from frontend")
             
             # 🚀 ENTERPRISE: Complete flow for free orders
             if flow:
                 flow.complete(message=f"Free order {order.order_number} completed successfully")
             
+            # 🎫 ENTERPRISE: Include access_token in response for free orders (needed for public ticket access)
             return {
                 'bookingId': str(order.id),
+                'orderNumber': order.order_number,  # Include order number for frontend redirect
+                'accessToken': order.access_token,  # 🎫 Include access token for public ticket access
                 'status': order.status,
                 'totalAmount': float(order.total),
                 'originalAmount': float(subtotal + service_fee),
@@ -1865,12 +1861,17 @@ class BookingSerializer(serializers.Serializer):
 
     def _create_tickets_from_holders(self, order, ticket_holders, customer_info):
         """
-        🚀 ENTERPRISE: Create tickets immediately for free orders with proper holder data
+        🚀 ENTERPRISE: Create tickets immediately for free orders with proper holder data.
+
+        IMPORTANTE:
+        - Aquí SOLO se crean los tickets en la base de datos.
+        - La generación de códigos QR se hace en el task de email (send_order_confirmation_email)
+          para evitar problemas de transacciones y threads.
         """
         from apps.events.models import Ticket
-        
+
         print(f"🎫 ENTERPRISE - Creating tickets for FREE order {order.id}")
-        
+
         for order_item in order.items.all():
             # Find ticket holders for this tier
             tier_holders = []
@@ -1878,11 +1879,11 @@ class BookingSerializer(serializers.Serializer):
                 if ticket_group.get('tierId') == str(order_item.ticket_tier.id):
                     tier_holders = ticket_group.get('holders', [])
                     break
-            
+
             # Create tickets with form data
             print(f"🎫 BOOKING DEBUG - Creating {order_item.quantity} tickets for tier {order_item.ticket_tier.name}")
             print(f"🎫 BOOKING DEBUG - Available holders: {len(tier_holders)}")
-            
+
             for i in range(order_item.quantity):
                 # Get holder data if available, otherwise use default
                 if i < len(tier_holders):
@@ -1896,7 +1897,7 @@ class BookingSerializer(serializers.Serializer):
                     ticket_last_name = customer_info.get('lastName', '')
                     ticket_form_data = {}
                     print(f"🎫 BOOKING DEBUG - Ticket {i+1}: Using default data - {ticket_first_name} {ticket_last_name}")
-                
+
                 created_ticket = Ticket.objects.create(
                     order_item=order_item,
                     first_name=ticket_first_name,

@@ -81,6 +81,7 @@ class Event(BaseModel):
         ('workshop', _('Workshop')),
         ('festival', _('Festival')),
         ('party', _('Party')),
+        ('rifa', _('Rifa')),
         ('other', _('Other')),
     )
     
@@ -744,6 +745,13 @@ class TicketTier(BaseModel):
         help_text=_("Suggested price to show users for pay-what-you-want tickets (optional)")
     )
     
+    # Raffle ticket configuration
+    is_raffle = models.BooleanField(
+        _("is raffle"),
+        default=False,
+        help_text=_("If true, this ticket is a raffle entry (no QR code generation)")
+    )
+    
     class Meta:
         verbose_name = _("ticket tier")
         verbose_name_plural = _("ticket tiers")
@@ -1055,6 +1063,17 @@ class Order(BaseModel):
         help_text=_("Platform flow that created this order (for tracking and debugging)")
     )
     
+    # 🎫 ENTERPRISE: Public access token for viewing tickets without authentication
+    access_token = models.CharField(
+        _("access token"),
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=_("Secure token for public access to order tickets (generated automatically)")
+    )
+    
     class Meta:
         verbose_name = _("order")
         verbose_name_plural = _("orders")
@@ -1062,6 +1081,14 @@ class Order(BaseModel):
     
     def __str__(self):
         return self.order_number
+    
+    def save(self, *args, **kwargs):
+        """Generate access token automatically if not set."""
+        if not self.access_token:
+            import secrets
+            # Generate a secure random token (64 characters)
+            self.access_token = secrets.token_urlsafe(48)  # 48 bytes = 64 chars in base64
+        super().save(*args, **kwargs)
     
     @property
     def buyer_name(self):
@@ -1172,7 +1199,7 @@ class OrderItem(BaseModel):
 
 def generate_ticket_number():
     """Generate a unique ticket number."""
-    return f"TIX-{str(uuid.uuid4())[:8].upper()}"
+    return f"TUKI-{str(uuid.uuid4())[:8].upper()}"
 
 
 class Ticket(BaseModel):
@@ -1285,6 +1312,13 @@ class Ticket(BaseModel):
         default=dict,
         blank=True,
         help_text=_("Form data collected for this ticket")
+    )
+    
+    # 🚀 ENTERPRISE: Pre-generated QR code for instant email delivery
+    qr_code = models.TextField(
+        _("QR code"),
+        blank=True,
+        help_text=_("Base64-encoded QR code image for instant email delivery")
     )
     
     class Meta:

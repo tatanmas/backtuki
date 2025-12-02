@@ -1065,9 +1065,10 @@ def ticket_delivery_issues(request):
             # Get last event
             last_event = flow.events.order_by('-created_at').first()
             
-            # Get email logs
+            # Get email events (incluyendo reenvíos manuales)
             email_events = flow.events.filter(
-                step__in=['EMAIL_TASK_ENQUEUED', 'EMAIL_SENT', 'EMAIL_FAILED']
+                step__in=['EMAIL_TASK_ENQUEUED', 'EMAIL_SENT', 'EMAIL_FAILED',
+                         'EMAIL_MANUAL_RESEND_SUCCESS', 'EMAIL_MANUAL_RESEND', 'EMAIL_MANUAL_RESEND_FAILED']
             ).order_by('-created_at')
             
             return {
@@ -1102,8 +1103,8 @@ def ticket_delivery_issues(request):
                 } if last_event else None,
                 'email_status': {
                     'enqueued': email_events.filter(step='EMAIL_TASK_ENQUEUED').exists(),
-                    'sent': email_events.filter(step='EMAIL_SENT').exists(),
-                    'failed': email_events.filter(step='EMAIL_FAILED').exists(),
+                    'sent': email_events.filter(step__in=['EMAIL_SENT', 'EMAIL_MANUAL_RESEND_SUCCESS']).exists(),
+                    'failed': email_events.filter(step__in=['EMAIL_FAILED', 'EMAIL_MANUAL_RESEND_FAILED']).exists(),
                     'last_attempt': email_events.first().created_at.isoformat() if email_events.exists() else None
                 }
             }
@@ -1127,6 +1128,34 @@ def ticket_delivery_issues(request):
         return Response({
             'success': False,
             'message': f'Error getting issues: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def events_list(request):
+    """
+    🚀 ENTERPRISE: Get list of events for filtering.
+    
+    Returns:
+    - List of events with id and title
+    """
+    try:
+        from apps.events.models import Event
+        
+        events = Event.objects.filter(
+            deleted_at__isnull=True
+        ).order_by('-created_at').values('id', 'title')[:100]  # Limit to 100 most recent
+        
+        return Response({
+            'success': True,
+            'events': list(events)
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"❌ [SuperAdmin] Error getting events list: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'message': f'Error getting events list: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -1161,10 +1190,10 @@ def all_flows(request):
         # Calculate date range
         start_date = timezone.now() - timedelta(days=days)
         
-        # Base queryset
+        # Base queryset - Prefetch events with order for efficient lookup
         queryset = PlatformFlow.objects.filter(
             created_at__gte=start_date
-        ).select_related('user', 'organizer', 'primary_order', 'event')
+        ).select_related('user', 'organizer', 'primary_order', 'event').prefetch_related('events__order')
         
         # Apply filters
         if status_filter:
@@ -1173,14 +1202,99 @@ def all_flows(request):
         if flow_type_filter:
             queryset = queryset.filter(flow_type=flow_type_filter)
         
-        # Apply search
+        # Apply event filter
+        event_filter = request.GET.get('event_id', '')
+        if event_filter:
+            queryset = queryset.filter(event_id=event_filter)
+        
+        # 🚀 ENTERPRISE: Búsqueda inteligente en múltiples campos relacionados
         if search:
+            from apps.events.models import Ticket, Order
+            from django.db.models import Value, CharField
+            from django.db.models.functions import Concat
+            search_term = search.strip()
+            search_words = search_term.split()
+            
+            # Construir Q objects para búsqueda en órdenes
+            order_q = Q(order_number__icontains=search_term) | Q(email__icontains=search_term) | Q(phone__icontains=search_term)
+            
+            # Si hay múltiples palabras, buscar combinación de nombre y apellido
+            if len(search_words) >= 2:
+                # Buscar "nombre apellido" o "apellido nombre"
+                first_word = search_words[0]
+                second_word = search_words[1]
+                
+                # Combinación: first_name contiene primera palabra Y last_name contiene segunda palabra
+                order_q |= (Q(first_name__icontains=first_word) & Q(last_name__icontains=second_word))
+                # Combinación inversa: first_name contiene segunda palabra Y last_name contiene primera palabra
+                order_q |= (Q(first_name__icontains=second_word) & Q(last_name__icontains=first_word))
+                
+                # También buscar cada palabra individualmente
+                for word in search_words:
+                    order_q |= Q(first_name__icontains=word) | Q(last_name__icontains=word)
+            else:
+                # Una sola palabra: buscar en first_name o last_name
+                order_q |= Q(first_name__icontains=search_term) | Q(last_name__icontains=search_term)
+            
+            # Buscar órdenes que coincidan
+            matching_order_ids = Order.objects.filter(order_q).values_list('id', flat=True)
+            
+            # Construir Q objects para búsqueda en tickets (asistentes)
+            ticket_q = Q(email__icontains=search_term) | Q(ticket_number__icontains=search_term)
+            
+            # Si hay múltiples palabras, buscar combinación de nombre y apellido en tickets
+            if len(search_words) >= 2:
+                first_word = search_words[0]
+                second_word = search_words[1]
+                
+                # Combinación: first_name contiene primera palabra Y last_name contiene segunda palabra
+                ticket_q |= (Q(first_name__icontains=first_word) & Q(last_name__icontains=second_word))
+                # Combinación inversa
+                ticket_q |= (Q(first_name__icontains=second_word) & Q(last_name__icontains=first_word))
+                
+                # También buscar cada palabra individualmente
+                for word in search_words:
+                    ticket_q |= Q(first_name__icontains=word) | Q(last_name__icontains=word)
+            else:
+                # Una sola palabra
+                ticket_q |= Q(first_name__icontains=search_term) | Q(last_name__icontains=search_term)
+            
+            # Buscar tickets que coincidan
+            matching_ticket_order_ids = Ticket.objects.filter(ticket_q).values_list('order_item__order_id', flat=True).distinct()
+            
+            # Combinar todos los IDs de órdenes que coinciden
+            all_matching_order_ids = set(list(matching_order_ids) + list(matching_ticket_order_ids))
+            
+            # Aplicar filtro en el queryset
             queryset = queryset.filter(
-                Q(primary_order__order_number__icontains=search) |
-                Q(primary_order__email__icontains=search) |
-                Q(user__email__icontains=search) |
-                Q(event__title__icontains=search)
-            )
+                Q(primary_order_id__in=all_matching_order_ids) |
+                Q(user__email__icontains=search_term) |
+                Q(event__title__icontains=search_term) |
+                # También buscar en eventos del flow que tengan order_id
+                Q(events__order_id__in=all_matching_order_ids)
+            ).distinct()
+        
+        # Apply email status filter
+        email_status_filter = request.GET.get('email_status', '')
+        if email_status_filter:
+            if email_status_filter == 'sent':
+                # Incluir EMAIL_SENT y EMAIL_MANUAL_RESEND_SUCCESS
+                queryset = queryset.filter(
+                    events__step__in=['EMAIL_SENT', 'EMAIL_MANUAL_RESEND_SUCCESS'],
+                    events__status='success'
+                ).distinct()
+            elif email_status_filter == 'failed':
+                queryset = queryset.filter(
+                    events__step__in=['EMAIL_FAILED', 'EMAIL_MANUAL_RESEND_FAILED']
+                ).distinct()
+            elif email_status_filter == 'enqueued':
+                queryset = queryset.filter(events__step='EMAIL_TASK_ENQUEUED').distinct()
+            elif email_status_filter == 'none':
+                # Flows sin ningún evento de email
+                queryset = queryset.exclude(
+                    events__step__in=['EMAIL_TASK_ENQUEUED', 'EMAIL_SENT', 'EMAIL_FAILED',
+                                    'EMAIL_MANUAL_RESEND', 'EMAIL_MANUAL_RESEND_SUCCESS', 'EMAIL_MANUAL_RESEND_FAILED']
+                ).distinct()
         
         # Order by most recent
         queryset = queryset.order_by('-created_at')
@@ -1198,10 +1312,43 @@ def all_flows(request):
             # Get last event
             last_event = flow.events.order_by('-created_at').first()
             
-            # Get email events
+            # Get email events (incluyendo reenvíos manuales)
             email_events = flow.events.filter(
-                step__in=['EMAIL_TASK_ENQUEUED', 'EMAIL_SENT', 'EMAIL_FAILED']
+                step__in=['EMAIL_TASK_ENQUEUED', 'EMAIL_SENT', 'EMAIL_FAILED', 
+                         'EMAIL_MANUAL_RESEND_SUCCESS', 'EMAIL_MANUAL_RESEND']
             ).order_by('-created_at')
+            
+            # 🚀 ENTERPRISE: Buscar orden en primary_order o en eventos si no está en primary_order
+            order = flow.primary_order
+            if not order:
+                # Buscar orden en los eventos del flow (prefetch ya cargado)
+                order_event = flow.events.filter(order__isnull=False).select_related('order').first()
+                if order_event and order_event.order:
+                    order = order_event.order
+                    # Actualizar primary_order para futuras consultas (sin bloquear)
+                    try:
+                        flow.primary_order = order
+                        flow.save(update_fields=['primary_order'])
+                        logger.info(f"📊 [SUPERADMIN] Found order {order.order_number} in flow {flow.id} events, updated primary_order")
+                    except Exception as e:
+                        logger.warning(f"⚠️ [SUPERADMIN] Could not update primary_order for flow {flow.id}: {e}")
+                else:
+                    # Debug: Log cuando no se encuentra orden
+                    logger.debug(f"🔍 [SUPERADMIN] Flow {flow.id} has no order in primary_order or events")
+            
+            # 🚀 ENTERPRISE: Obtener primer asistente (ticket holder) de la orden
+            attendee_name = None
+            if order:
+                try:
+                    from apps.events.models import Ticket
+                    # Optimizar: usar select_related para evitar N+1 queries
+                    first_ticket = Ticket.objects.filter(
+                        order_item__order=order
+                    ).select_related('order_item').order_by('created_at').first()
+                    if first_ticket:
+                        attendee_name = f"{first_ticket.first_name} {first_ticket.last_name}".strip()
+                except Exception as e:
+                    logger.debug(f"🔍 [SUPERADMIN] Could not get attendee for order {order.order_number if order else 'N/A'}: {e}")
             
             # Calculate duration
             duration = None
@@ -1229,11 +1376,12 @@ def all_flows(request):
                     'name': flow.organizer.name if flow.organizer else None
                 } if flow.organizer else None,
                 'order': {
-                    'id': str(flow.primary_order.id) if flow.primary_order else None,
-                    'order_number': flow.primary_order.order_number if flow.primary_order else None,
-                    'total': float(flow.primary_order.total) if flow.primary_order else None,
-                    'email': flow.primary_order.email if flow.primary_order else None
-                } if flow.primary_order else None,
+                    'id': str(order.id) if order else None,
+                    'order_number': order.order_number if order else None,
+                    'total': float(order.total) if order else None,
+                    'email': order.email if order else None
+                } if order else None,
+                'attendee_name': attendee_name,
                 'event': {
                     'id': str(flow.event.id) if flow.event else None,
                     'title': flow.event.title if flow.event else None
@@ -1246,8 +1394,8 @@ def all_flows(request):
                 } if last_event else None,
                 'email_status': {
                     'enqueued': email_events.filter(step='EMAIL_TASK_ENQUEUED').exists(),
-                    'sent': email_events.filter(step='EMAIL_SENT').exists(),
-                    'failed': email_events.filter(step='EMAIL_FAILED').exists(),
+                    'sent': email_events.filter(step__in=['EMAIL_SENT', 'EMAIL_MANUAL_RESEND_SUCCESS']).exists(),
+                    'failed': email_events.filter(step__in=['EMAIL_FAILED', 'EMAIL_MANUAL_RESEND_FAILED']).exists(),
                     'last_attempt': email_events.first().created_at.isoformat() if email_events.exists() else None
                 }
             }
@@ -1274,7 +1422,8 @@ def all_flows(request):
                 'days': days,
                 'status': status_filter,
                 'flow_type': flow_type_filter,
-                'search': search
+                'search': search,
+                'email_status': email_status_filter
             }
         })
         
@@ -1283,6 +1432,87 @@ def all_flows(request):
         return Response({
             'success': False,
             'message': f'Error getting flows: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def historical_conversion_rates(request):
+    """
+    🚀 ENTERPRISE: Get historical conversion rates for all steps.
+    
+    Query params:
+        - from_date: ISO format start date (optional)
+        - to_date: ISO format end date (optional)
+        - organizer_id: Filter by organizer (optional)
+        - event_id: Filter by event (optional)
+    
+    Returns step-by-step historical conversion rates.
+    """
+    try:
+        from core.conversion_metrics import ConversionMetricsService, TICKET_CHECKOUT_STEPS
+        from core.models import PlatformFlowEvent
+        from django.utils.dateparse import parse_datetime
+        from django.utils import timezone
+        
+        # Parse date parameters
+        from_date = None
+        to_date = None
+        if request.query_params.get('from_date'):
+            from_date = parse_datetime(request.query_params.get('from_date'))
+            if from_date and not timezone.is_aware(from_date):
+                from_date = timezone.make_aware(from_date)
+        
+        if request.query_params.get('to_date'):
+            to_date = parse_datetime(request.query_params.get('to_date'))
+            if to_date and not timezone.is_aware(to_date):
+                to_date = timezone.make_aware(to_date)
+        
+        organizer_id = request.query_params.get('organizer_id')
+        event_id = request.query_params.get('event_id')
+        
+        # Get historical rates
+        historical_rates = ConversionMetricsService.get_historical_conversion_rates(
+            flow_type='ticket_checkout',
+            from_date=from_date,
+            to_date=to_date,
+            organizer_id=organizer_id,
+            event_id=event_id
+        )
+        
+        # Format response with step display names
+        step_display_map = dict(PlatformFlowEvent.STEP_CHOICES)
+        
+        steps_data = []
+        for step in TICKET_CHECKOUT_STEPS:
+            step_data = historical_rates.get(step, {})
+            steps_data.append({
+                'step': step,
+                'step_display': step_display_map.get(step, step),
+                'conversion_rate': step_data.get('conversion_rate', 0.0),
+                'conversion_percentage': step_data.get('conversion_percentage', 0.0),
+                'reached_count': step_data.get('reached_count', 0),
+                'previous_count': step_data.get('previous_count'),
+                'previous_step': step_data.get('previous_step')
+            })
+        
+        # Calculate overall average
+        overall_avg = sum(s.get('conversion_rate', 0.0) for s in historical_rates.values()) / len(historical_rates) if historical_rates else 0.0
+        
+        return Response({
+            'success': True,
+            'steps': steps_data,
+            'overall_average': round(overall_avg, 4),
+            'overall_average_percentage': round(overall_avg * 100, 2),
+            'from_date': from_date.isoformat() if from_date else None,
+            'to_date': to_date.isoformat() if to_date else None,
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"❌ [SuperAdmin] Error getting historical conversion rates: {e}", exc_info=True)
+        return Response({
+            'success': False,
+            'message': f'Error getting historical conversion rates: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -1304,7 +1534,22 @@ def flow_detail(request, flow_id):
         
         flow = PlatformFlow.objects.select_related(
             'user', 'organizer', 'primary_order', 'event', 'experience'
-        ).get(id=flow_id)
+        ).prefetch_related('events__order').get(id=flow_id)
+        
+        # 🚀 ENTERPRISE: Buscar orden en primary_order o en eventos si no está en primary_order
+        order = flow.primary_order
+        if not order:
+            # Buscar orden en los eventos del flow
+            order_event = flow.events.filter(order__isnull=False).select_related('order').first()
+            if order_event and order_event.order:
+                order = order_event.order
+                # Actualizar primary_order para futuras consultas
+                try:
+                    flow.primary_order = order
+                    flow.save(update_fields=['primary_order'])
+                    logger.info(f"📊 [SUPERADMIN] Found order {order.order_number} in flow {flow_id} events, updated primary_order")
+                except Exception as e:
+                    logger.warning(f"⚠️ [SUPERADMIN] Could not update primary_order for flow {flow_id}: {e}")
         
         # Get all events
         events = flow.events.select_related(
@@ -1316,8 +1561,8 @@ def flow_detail(request, flow_id):
         
         # Get email logs if order exists
         email_logs = []
-        if flow.primary_order:
-            email_logs = EmailLog.objects.filter(order=flow.primary_order).order_by('created_at')
+        if order:
+            email_logs = EmailLog.objects.filter(order=order).order_by('created_at')
         
         return Response({
             'success': True,
@@ -1339,12 +1584,12 @@ def flow_detail(request, flow_id):
                     'name': flow.organizer.name if flow.organizer else None
                 } if flow.organizer else None,
                 'order': {
-                    'id': str(flow.primary_order.id) if flow.primary_order else None,
-                    'order_number': flow.primary_order.order_number if flow.primary_order else None,
-                    'status': flow.primary_order.status if flow.primary_order else None,
-                    'total': float(flow.primary_order.total) if flow.primary_order else None,
-                    'email': flow.primary_order.email if flow.primary_order else None
-                } if flow.primary_order else None,
+                    'id': str(order.id) if order else None,
+                    'order_number': order.order_number if order else None,
+                    'status': order.status if order else None,
+                    'total': float(order.total) if order else None,
+                    'email': order.email if order else None
+                } if order else None,
                 'event': {
                     'id': str(flow.event.id) if flow.event else None,
                     'title': flow.event.title if flow.event else None
@@ -1398,6 +1643,358 @@ def flow_detail(request, flow_id):
         return Response({
             'success': False,
             'message': f'Error getting flow detail: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])  # TODO: Cambiar a IsAdminUser en producción
+def resend_order_email(request, flow_id):
+    """
+    🚀 ENTERPRISE: Reenvía el email de confirmación de orden de forma SÍNCRONA (sin Celery).
+    
+    Similar a cómo se envían los OTP - instantáneo y directo.
+    
+    Body (opcional):
+    - to_email: Email alternativo para enviar (si no se proporciona, usa el email de la orden)
+    
+    Returns:
+    - success: bool
+    - message: str
+    - metrics: dict con tiempos de ejecución
+    """
+    try:
+        from core.models import PlatformFlow
+        from apps.events.email_sender import send_order_confirmation_email_optimized
+        from core.flow_logger import FlowLogger
+        
+        # Get flow
+        flow = PlatformFlow.objects.select_related('primary_order').prefetch_related('events__order').get(id=flow_id)
+        
+        # Si no hay orden en primary_order, intentar obtenerla de los eventos del flow
+        order = flow.primary_order
+        if not order:
+            # Buscar orden en los eventos del flow
+            order_event = flow.events.filter(order__isnull=False).select_related('order').first()
+            if order_event and order_event.order:
+                order = order_event.order
+                logger.info(f"📧 [SUPERADMIN] Found order {order.order_number} in flow events, updating primary_order")
+                # Actualizar el flow con la orden encontrada
+                flow.primary_order = order
+                flow.save(update_fields=['primary_order'])
+        
+        if not order:
+            logger.warning(f"📧 [SUPERADMIN] Flow {flow_id} has no associated order")
+            return Response({
+                'success': False,
+                'message': 'Este flow no tiene una orden asociada. No se puede reenviar el email de confirmación sin una orden.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get optional email override from request body
+        to_email = None
+        if request.data and isinstance(request.data, dict):
+            to_email = request.data.get('to_email')
+        
+        # Use order email if no override provided
+        if not to_email:
+            to_email = order.email
+        
+        if not to_email:
+            return Response({
+                'success': False,
+                'message': 'No email address available for order'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        logger.info(f"📧 [SUPERADMIN] Resending email for order {order.order_number} to {to_email} (synchronous)")
+        
+        # Log manual resend event BEFORE sending
+        flow_logger = FlowLogger(flow)
+        flow_logger.log_event(
+            'EMAIL_MANUAL_RESEND',
+            source='superadmin',
+            status='info',
+            message=f"Manual email resend initiated for order {order.order_number} to {to_email}",
+            order=order,
+            metadata={
+                'resend_to': to_email,
+                'resend_by': request.user.email if hasattr(request, 'user') and request.user.is_authenticated else 'superadmin',
+            }
+        )
+        
+        # Send email synchronously (like OTP)
+        result = send_order_confirmation_email_optimized(
+            order_id=str(order.id),
+            to_email=to_email,
+            flow_id=str(flow.id)
+        )
+        
+        # Log result - send_order_confirmation_email_optimized returns 'completed' on success
+        result_status = result.get('status')
+        emails_sent = result.get('emails_sent', 0)
+        failed_emails = result.get('failed_emails', [])
+        
+        if result_status == 'completed' and emails_sent > 0:
+            logger.info(f"✅ [SUPERADMIN] Email resent successfully for order {order.order_number} - {emails_sent} email(s) sent")
+            
+            # Log successful manual resend
+            flow_logger.log_event(
+                'EMAIL_MANUAL_RESEND_SUCCESS',
+                source='superadmin',
+                status='success',
+                message=f"Manual email resend completed successfully to {to_email}",
+                order=order,
+                metadata={
+                    'resend_to': to_email,
+                    'emails_sent': emails_sent,
+                    'metrics': result.get('metrics', {}),
+                }
+            )
+            
+            return Response({
+                'success': True,
+                'message': f'Email enviado exitosamente a {to_email}',
+                'metrics': result.get('metrics', {}),
+                'status': result_status,
+                'emails_sent': emails_sent
+            }, status=status.HTTP_200_OK)
+        elif result_status == 'completed' and emails_sent == 0:
+            # Completed but no emails sent (shouldn't happen, but handle gracefully)
+            error_msg = failed_emails[0].get('error', 'No emails sent') if failed_emails else 'No emails sent'
+            logger.warning(f"⚠️ [SUPERADMIN] Email resend completed but no emails sent: {error_msg}")
+            
+            flow_logger.log_event(
+                'EMAIL_MANUAL_RESEND_FAILED',
+                source='superadmin',
+                status='failure',
+                message=f"Manual email resend failed: {error_msg}",
+                order=order,
+                metadata={
+                    'resend_to': to_email,
+                    'error': error_msg,
+                    'failed_emails': failed_emails,
+                    'metrics': result.get('metrics', {}),
+                }
+            )
+            
+            return Response({
+                'success': False,
+                'message': f'Error al enviar el email: {error_msg}',
+                'metrics': result.get('metrics', {}),
+                'status': result_status,
+                'failed_emails': failed_emails
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        else:
+            # Error status
+            error_msg = result.get('error', 'Unknown error')
+            logger.warning(f"⚠️ [SUPERADMIN] Email resend returned status: {result_status} - {error_msg}")
+            
+            # Log failed manual resend
+            flow_logger.log_event(
+                'EMAIL_MANUAL_RESEND_FAILED',
+                source='superadmin',
+                status='failure',
+                message=f"Manual email resend failed: {error_msg}",
+                order=order,
+                metadata={
+                    'resend_to': to_email,
+                    'error': error_msg,
+                    'metrics': result.get('metrics', {}),
+                }
+            )
+            
+            return Response({
+                'success': False,
+                'message': f'Error al enviar el email: {error_msg}',
+                'metrics': result.get('metrics', {}),
+                'status': result_status
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+    except PlatformFlow.DoesNotExist:
+        return Response({
+            'success': False,
+            'message': 'Flow not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"❌ [SuperAdmin] Error resending email: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'message': f'Error al reenviar email: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])  # TODO: Cambiar a IsAdminUser en producción
+def bulk_resend_emails(request):
+    """
+    🚀 ENTERPRISE: Reenvía emails de múltiples flows de forma SÍNCRONA.
+    
+    Body:
+    - flow_ids: Lista de flow IDs para reenviar
+    
+    Returns:
+    - success: bool
+    - results: Lista con resultado de cada reenvío
+    - summary: Resumen de éxitos/fallos
+    """
+    try:
+        from core.models import PlatformFlow
+        from apps.events.email_sender import send_order_confirmation_email_optimized
+        from core.flow_logger import FlowLogger
+        import concurrent.futures
+        from threading import Lock
+        
+        flow_ids = request.data.get('flow_ids', [])
+        if not flow_ids or not isinstance(flow_ids, list):
+            return Response({
+                'success': False,
+                'message': 'flow_ids debe ser una lista de IDs'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if len(flow_ids) > 50:
+            return Response({
+                'success': False,
+                'message': 'Máximo 50 flows por lote'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        logger.info(f"📧 [SUPERADMIN] Bulk resend initiated for {len(flow_ids)} flows")
+        
+        results = []
+        results_lock = Lock()
+        
+        def process_flow(flow_id: str):
+            """Procesa un flow individual"""
+            try:
+                flow = PlatformFlow.objects.select_related('primary_order').prefetch_related('events__order').get(id=flow_id)
+                
+                # Buscar orden si no está en primary_order
+                order = flow.primary_order
+                if not order:
+                    order_event = flow.events.filter(order__isnull=False).select_related('order').first()
+                    if order_event and order_event.order:
+                        order = order_event.order
+                        flow.primary_order = order
+                        flow.save(update_fields=['primary_order'])
+                
+                if not order:
+                    return {
+                        'flow_id': flow_id,
+                        'success': False,
+                        'message': 'Flow no tiene orden asociada',
+                        'order_number': None
+                    }
+                
+                to_email = order.email
+                if not to_email:
+                    return {
+                        'flow_id': flow_id,
+                        'success': False,
+                        'message': 'Orden no tiene email',
+                        'order_number': order.order_number
+                    }
+                
+                # Log manual resend
+                flow_logger = FlowLogger(flow)
+                flow_logger.log_event(
+                    'EMAIL_MANUAL_RESEND',
+                    source='superadmin',
+                    status='info',
+                    message=f"Bulk manual email resend initiated for order {order.order_number}",
+                    order=order,
+                    metadata={'resend_to': to_email, 'bulk': True}
+                )
+                
+                # Send email
+                result = send_order_confirmation_email_optimized(
+                    order_id=str(order.id),
+                    to_email=to_email,
+                    flow_id=str(flow.id)
+                )
+                
+                result_status = result.get('status')
+                emails_sent = result.get('emails_sent', 0)
+                
+                if result_status == 'completed' and emails_sent > 0:
+                    flow_logger.log_event(
+                        'EMAIL_MANUAL_RESEND_SUCCESS',
+                        source='superadmin',
+                        status='success',
+                        message=f"Bulk manual email resend completed successfully",
+                        order=order,
+                        metadata={'resend_to': to_email, 'emails_sent': emails_sent, 'bulk': True}
+                    )
+                    
+                    return {
+                        'flow_id': flow_id,
+                        'success': True,
+                        'message': 'Email enviado exitosamente',
+                        'order_number': order.order_number,
+                        'email': to_email,
+                        'metrics': result.get('metrics', {})
+                    }
+                else:
+                    error_msg = result.get('error', 'No emails sent')
+                    flow_logger.log_event(
+                        'EMAIL_MANUAL_RESEND_FAILED',
+                        source='superadmin',
+                        status='failure',
+                        message=f"Bulk manual email resend failed: {error_msg}",
+                        order=order,
+                        metadata={'resend_to': to_email, 'error': error_msg, 'bulk': True}
+                    )
+                    
+                    return {
+                        'flow_id': flow_id,
+                        'success': False,
+                        'message': error_msg,
+                        'order_number': order.order_number,
+                        'email': to_email
+                    }
+                    
+            except PlatformFlow.DoesNotExist:
+                return {
+                    'flow_id': flow_id,
+                    'success': False,
+                    'message': 'Flow no encontrado',
+                    'order_number': None
+                }
+            except Exception as e:
+                logger.error(f"❌ [SUPERADMIN] Error processing flow {flow_id}: {str(e)}", exc_info=True)
+                return {
+                    'flow_id': flow_id,
+                    'success': False,
+                    'message': f'Error: {str(e)}',
+                    'order_number': None
+                }
+        
+        # Procesar en paralelo (máximo 5 simultáneos para no sobrecargar)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_flow = {executor.submit(process_flow, flow_id): flow_id for flow_id in flow_ids}
+            for future in concurrent.futures.as_completed(future_to_flow):
+                result = future.result()
+                with results_lock:
+                    results.append(result)
+        
+        # Calcular resumen
+        successful = sum(1 for r in results if r.get('success'))
+        failed = len(results) - successful
+        
+        logger.info(f"✅ [SUPERADMIN] Bulk resend completed: {successful} successful, {failed} failed")
+        
+        return Response({
+            'success': True,
+            'message': f'Procesados {len(results)} flows: {successful} exitosos, {failed} fallidos',
+            'results': results,
+            'summary': {
+                'total': len(results),
+                'successful': successful,
+                'failed': failed
+            }
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"❌ [SuperAdmin] Error in bulk resend: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'message': f'Error en reenvío masivo: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

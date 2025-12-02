@@ -16,6 +16,7 @@ from api.v1.events.views import (
     TicketViewSet,
     CouponViewSet,
     EventCommunicationViewSet,
+    get_order_tickets,  # 🎫 ENTERPRISE: Get order tickets endpoint
 )
 from api.v1.forms.views import FormViewSet, FormResponseViewSet
 
@@ -49,6 +50,10 @@ router.register(r'form-responses', FormResponseViewSet, basename='form-response'
 urlpatterns = [
     # ⚠️ IMPORTANTE: Incluir organizers.urls ANTES del router para que tenga prioridad
     path('', include('api.v1.organizers.urls')),  # 🚀 Organizer profile management (incluyendo PATCH a /organizers/current/)
+    
+    # 🎫 ENTERPRISE: Order tickets endpoint (ANTES del router para que tenga prioridad sobre OrderViewSet)
+    path('orders/<str:order_number>/tickets/', get_order_tickets, name='get-order-tickets'),
+    
     path('', include(router.urls)),
     path('auth/', include('api.v1.auth.urls')),
     path('user/', include('api.v1.users.urls')),

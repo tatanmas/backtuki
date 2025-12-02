@@ -397,46 +397,22 @@ class TransbankWebPayPlusService(BasePaymentService):
                 # ✅ CLEANUP: Limpiar holds y reservations
                 self._cleanup_order_reservations(payment.order)
                 
-                # Trigger email sending
-                try:
-                    from apps.events.tasks import send_order_confirmation_email
-                    logger.info(f"📧 [EMAIL] Enqueuing order confirmation email for order {payment.order.id}")
-                    task = send_order_confirmation_email.apply_async(
-                        args=[str(payment.order.id)],
-                        kwargs={'flow_id': str(flow.flow_id) if flow else None},
-                        queue='emails'
+                # 🚀 ENTERPRISE: Email will be sent synchronously from frontend confirmation page
+                # This reduces latency from 5+ minutes to <10 seconds
+                # If frontend sync send fails, it will automatically fallback to Celery
+                if flow:
+                    flow.log_event(
+                        'EMAIL_PENDING',
+                        order=payment.order,
+                        status='info',
+                        message=f"Email pending - will be sent from confirmation page for order {payment.order.order_number}",
+                        metadata={
+                            'email_strategy': 'frontend_sync',
+                            'fallback_to_celery': True,
+                            'flow_type': 'paid_order'
+                        }
                     )
-                    logger.info(f"📧 [EMAIL] Successfully enqueued order confirmation email for order {payment.order.id}")
-                    
-                    # Log email task enqueued
-                    if flow:
-                        flow.log_event(
-                            'EMAIL_TASK_ENQUEUED',
-                            order=payment.order,
-                            status='success',
-                            message=f"Email task enqueued for order {payment.order.order_number}",
-                            metadata={'task_id': task.id if task else None}
-                        )
-                except Exception as e:
-                    logger.error(f"📧 [EMAIL] Failed to enqueue order confirmation email for order {payment.order.id}: {e}")
-                    if flow:
-                        flow.log_event(
-                            'EMAIL_TASK_ENQUEUED',
-                            order=payment.order,
-                            status='failure',
-                            message=f"Failed to enqueue email: {str(e)}",
-                            metadata={'error': str(e)}
-                        )
-                    # Fallback to old function if new one fails
-                    try:
-                        from apps.events.tasks import send_ticket_confirmation_email
-                        logger.info(f"📧 [EMAIL] Fallback: Enqueuing ticket confirmation email for order {payment.order.id}")
-                        send_ticket_confirmation_email.apply_async(
-                            args=[str(payment.order.id)], 
-                            queue='emails'
-                        )
-                    except Exception as fallback_e:
-                        logger.error(f"📧 [EMAIL] Fallback also failed for order {payment.order.id}: {fallback_e}")
+                logger.info(f"📧 [EMAIL] Email marked as pending for order {payment.order.id} - will be sent from frontend")
                 
                 # Complete flow
                 if flow:
@@ -497,11 +473,15 @@ class TransbankWebPayPlusService(BasePaymentService):
             }
     
     def _get_return_url(self, payment: Payment) -> str:
-        """Generate return URL for payment"""
+        """Generate return URL for payment with access token"""
         base_url = settings.FRONTEND_URL or "http://localhost:8080"
+        # Get order access token for public ticket access
+        order = payment.order
+        if order and order.access_token:
+            return f"{base_url}/payment/return?token={order.access_token}"
         return f"{base_url}/payment/return"
 
-    def _create_tickets_from_reservations(self, order):
+    def _create_tickets_from_reservations(self, order, flow_logger=None):
         """
         🚀 ENTERPRISE: Create tickets from stored TicketHolderReservation data
         """

@@ -231,6 +231,7 @@ SITE_ID = 1
 AUTH_USER_MODEL = 'users.User'
 
 # 🚀 ENTERPRISE EMAIL SETTINGS for Tuki Platform
+# Optimizado para latencia <10s end-to-end
 EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
 EMAIL_HOST = config('EMAIL_HOST', default='mail.tuki.cl')
 EMAIL_PORT = config('EMAIL_PORT', default=465, cast=int)
@@ -241,8 +242,9 @@ EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='-W7)HsC<Hsfk')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Tuki <noreply@tuki.cl>')
 SERVER_EMAIL = DEFAULT_FROM_EMAIL
 
-# Email timeout settings for reliability
-EMAIL_TIMEOUT = 30
+# 🚀 ENTERPRISE: Email timeout optimizado para velocidad
+# Reducido de 30s a 10s para detectar problemas rápidamente
+EMAIL_TIMEOUT = 10  # 10 segundos (antes 30s)
 EMAIL_SSL_CERTFILE = None
 EMAIL_SSL_KEYFILE = None
 

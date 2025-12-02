@@ -28,8 +28,14 @@
         table { border-collapse: collapse !important; mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
         
         /* Base styles */
+        html {
+            height: auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        
         body {
-            height: 100% !important;
+            height: auto !important;
             margin: 0 !important;
             padding: 0 !important;
             width: 100% !important;
@@ -47,6 +53,14 @@
         }
         
         /* Container styles */
+        .email-wrapper {
+            width: 100%;
+            margin: 0;
+            padding: 40px 20px;
+            background-color: #f8fafc;
+            height: auto !important;
+        }
+        
         .email-container {
             max-width: 600px;
             margin: 0 auto;
@@ -54,6 +68,7 @@
             border-radius: 12px;
             overflow: hidden;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            height: auto !important;
         }
         
         /* Header styles */
@@ -159,6 +174,7 @@
             padding: 30px;
             text-align: center;
             border-top: 1px solid #e5e7eb;
+            margin-bottom: 0 !important;
         }
         
         .footer-text {
@@ -176,6 +192,10 @@
         
         /* Responsive styles */
         @media only screen and (max-width: 600px) {
+            .email-wrapper {
+                padding: 0 !important;
+            }
+            
             .email-container {
                 width: 100% !important;
                 margin: 0 !important;
@@ -196,11 +216,49 @@
                 padding: 16px !important;
             }
         }
+        
+        /* Prevent extra white space - Critical fix */
+        body > div:last-child {
+            margin-bottom: 0 !important;
+            padding-bottom: 0 !important;
+        }
+        
+        /* Remove any trailing spaces or empty elements */
+        .email-container::after,
+        .email-wrapper::after {
+            content: none !important;
+            display: none !important;
+        }
+        
+        /* Prevent inline attachments from showing after footer - CRITICAL FIX */
+        body::after,
+        html::after {
+            content: none !important;
+            display: none !important;
+            height: 0 !important;
+            width: 0 !important;
+            visibility: hidden !important;
+            overflow: hidden !important;
+        }
+        
+        /* Hide any content that appears after body closing tag */
+        body + * {
+            display: none !important;
+            visibility: hidden !important;
+            height: 0 !important;
+            width: 0 !important;
+            overflow: hidden !important;
+        }
     </style>
 </head>
 
 <body>
-    <div style="margin: 0; padding: 40px 20px; background-color: #f8fafc; min-height: 100vh;">
+    <!--[if mso]>
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color: #f8fafc;">
+        <tr>
+            <td style="padding: 40px 20px;">
+    <![endif]-->
+    <div class="email-wrapper">
         <div class="email-container">
             <!-- Header -->
             <div class="email-header">
@@ -240,6 +298,17 @@
             </div>
         </div>
     </div>
+    <!--[if mso]>
+            </td>
+        </tr>
+    </table>
+    <![endif]-->
+    
+    <!-- Email Content End Marker - Prevents attachment display -->
+    <div style="display: none !important; visibility: hidden !important; height: 0 !important; width: 0 !important; overflow: hidden !important; font-size: 0 !important; line-height: 0 !important; margin: 0 !important; padding: 0 !important; border: 0 !important;">
+        <!-- End of email content -->
+    </div>
 </body>
 </html>
+<!-- End of email HTML - Do not display any content after this comment -->
 

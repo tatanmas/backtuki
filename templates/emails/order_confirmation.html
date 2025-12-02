@@ -96,7 +96,8 @@
             {% endif %}
         </table>
 
-        <!-- Tabla Unificada: Asistentes y Tickets -->
+        <!-- Tabla Unificada: Asistentes y Tickets (solo para tickets regulares) -->
+        {% if tickets %}
         <h4 style="font-size: 16px; font-weight: 600; color: #1f2937; margin: 0 0 16px 0;">
             Tickets y Asistentes
         </h4>
@@ -148,6 +149,62 @@
                 {% endfor %}
             </tbody>
         </table>
+        {% endif %}
+        
+        <!-- Tabla para Rifas -->
+        {% if raffle_tickets %}
+        <h4 style="font-size: 16px; font-weight: 600; color: #1f2937; margin: 0 0 16px 0;">
+            Rifas Compradas
+        </h4>
+        
+        <table style="width: 100%; border-collapse: collapse; border: 1px solid #e5e7eb;">
+            <thead>
+                <tr style="background-color: #f9fafb;">
+                    <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Participante</th>
+                    <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Número de Rifa</th>
+                    <th style="padding: 12px; text-align: center; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Cantidad</th>
+                    <th style="padding: 12px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Precio</th>
+                    <th style="padding: 12px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Cargo</th>
+                    <th style="padding: 12px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; border-bottom: 1px solid #e5e7eb;">Subtotal</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for raffle in raffle_tickets %}
+                <tr>
+                    <td style="padding: 12px; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">
+                        <div>
+                            <p style="margin: 0; font-weight: 600;">{{ raffle.first_name }} {{ raffle.last_name }}</p>
+                            <p style="margin: 2px 0 0 0; font-size: 12px; color: #6b7280;">{{ raffle.email }}</p>
+                        </div>
+                    </td>
+                    <td style="padding: 12px; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6; font-family: monospace; font-weight: 600;">{{ raffle.ticket_number }}</td>
+                    <td style="padding: 12px; text-align: center; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">1</td>
+                    <td style="padding: 12px; text-align: right; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">
+                        {% if raffle.order_item.unit_price > 0 %}
+                            ${{ raffle.order_item.unit_price|floatformat:0 }} {{ order.currency }}
+                        {% else %}
+                            Gratuito
+                        {% endif %}
+                    </td>
+                    <td style="padding: 12px; text-align: right; font-size: 14px; color: #1f2937; border-bottom: 1px solid #f3f4f6;">
+                        {% if raffle.order_item.unit_service_fee > 0 %}
+                            ${{ raffle.order_item.unit_service_fee|floatformat:0 }} {{ order.currency }}
+                        {% else %}
+                            $0 {{ order.currency }}
+                        {% endif %}
+                    </td>
+                    <td style="padding: 12px; text-align: right; font-size: 14px; color: #1f2937; font-weight: 600; border-bottom: 1px solid #f3f4f6;">
+                        {% if raffle.order_item.unit_price > 0 %}
+                            ${{ raffle.order_item.unit_price|add:raffle.order_item.unit_service_fee|floatformat:0 }} {{ order.currency }}
+                        {% else %}
+                            Gratuito
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
 
         <!-- Resumen Financiero -->
         <table style="width: 100%; border-collapse: collapse; margin: 24px 0 0 0;">
@@ -196,6 +253,7 @@
 
 
     <!-- Tickets Individuales Completos -->
+    {% if tickets %}
     <div style="padding: 40px 0; text-align: center;">
         <h3 style="font-size: 18px; font-weight: 600; color: #1f2937; margin: 0 0 32px 0;">
             Tu{% if tickets|length > 1 %}s{% endif %} Ticket{% if tickets|length > 1 %}s{% endif %} de Entrada
@@ -259,7 +317,7 @@
             </div>
             
             <!-- QR Code -->
-            <div style="background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 20px 0;">
+            <div style="background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 20px auto; text-align: center; width: fit-content;">
                 <img src="cid:qr_code_{{ ticket.ticket_number }}" alt="QR Code para {{ ticket.ticket_number }}" style="width: 140px; height: 140px; display: block; margin: 0 auto;">
             </div>
             
@@ -280,12 +338,69 @@
         
         {% endfor %}
     </div>
+    {% endif %}
+
+    <!-- 🎯 RAFFLE: Sección de Rifas (sin QR) -->
+    {% if raffle_tickets %}
+    <div style="padding: 40px 0; text-align: center;">
+        <h3 style="font-size: 18px; font-weight: 600; color: #1f2937; margin: 0 0 16px 0;">
+            Tu{% if raffle_tickets|length > 1 %}s{% endif %} Número{% if raffle_tickets|length > 1 %}s{% endif %} de Rifa
+        </h3>
+        <p style="font-size: 14px; color: #6b7280; margin: 0 0 32px 0;">
+            Se compraron {{ raffle_tickets|length }} rifa{% if raffle_tickets|length > 1 %}s{% endif %}
+        </p>
+        
+        {% for raffle in raffle_tickets %}
+        
+        <div style="background: linear-gradient(135deg, #268078 0%, #572150 50%, #4CBED7 100%); border-radius: 12px; padding: 3px; margin: 0 auto 24px auto; max-width: 500px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);">
+            <div style="background-color: #ffffff; border-radius: 9px; padding: 24px;">
+            
+            <!-- Header del Número de Rifa -->
+            <div style="text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb;">
+                <img src="cid:logo_negro" alt="Tuki" style="height: 24px; width: auto; margin-bottom: 12px;">
+                <h2 style="font-size: 48px; font-weight: 700; color: #268078; margin: 0; font-family: monospace;">
+                    {{ raffle.ticket_number }}
+                </h2>
+                <p style="font-size: 12px; color: #6b7280; margin: 8px 0 0 0; text-transform: uppercase; letter-spacing: 1px;">
+                    Número de Rifa
+                </p>
+            </div>
+            
+            <!-- Información del Evento -->
+            <div style="background-color: #f8fafc; border-radius: 8px; padding: 16px; margin-bottom: 16px; text-align: left;">
+                <h4 style="font-size: 14px; font-weight: 600; color: #1f2937; margin: 0;">
+                    {{ event.title }}
+                </h4>
+            </div>
+            
+            <!-- Información del Participante -->
+            <div style="background-color: #f8fafc; border-radius: 8px; padding: 16px; text-align: left;">
+                <p style="font-size: 16px; font-weight: 600; color: #1f2937; margin: 0 0 4px 0;">
+                    {{ raffle.first_name }} {{ raffle.last_name }}
+                </p>
+                <p style="font-size: 13px; color: #6b7280; margin: 0;">
+                    {{ raffle.email }}
+                </p>
+            </div>
+            
+            </div>
+        </div>
+        
+        {% endfor %}
+    </div>
+    {% endif %}
 
     <!-- Acciones -->
     <div style="text-align: center; padding: 32px 0; border-bottom: 1px solid #f3f4f6;">
+        {% if tickets %}
         <a href="{{ frontend_url }}/tickets/{{ tickets.0.ticket_number }}" style="display: inline-block; background-color: #268078; color: white; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: 600; font-size: 14px; margin: 0 8px 8px 0;">
             Ver Ticket{% if tickets|length > 1 %}s{% endif %} Completo{% if tickets|length > 1 %}s{% endif %}
         </a>
+        {% elif raffle_tickets %}
+        <a href="{{ frontend_url }}/tickets/{{ raffle_tickets.0.ticket_number }}" style="display: inline-block; background-color: #268078; color: white; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: 600; font-size: 14px; margin: 0 8px 8px 0;">
+            Ver Número{% if raffle_tickets|length > 1 %}s{% endif %} de Rifa{% if raffle_tickets|length > 1 %}s{% endif %}
+        </a>
+        {% endif %}
         <a href="{{ frontend_url }}/events/{{ event.id }}" style="display: inline-block; background-color: transparent; color: #268078; text-decoration: none; padding: 12px 24px; border: 1px solid #268078; border-radius: 6px; font-weight: 600; font-size: 14px; margin: 0 8px 8px 0;">
             Detalles del Evento
         </a>

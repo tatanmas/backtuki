@@ -42,7 +42,7 @@ class SoftDeleteModel(models.Model):
     deleted_at = models.DateTimeField(_("Deleted at"), null=True, blank=True)
     
     class Meta:
-        abstract = True
+        abstract = True 
 
 
 # 🚀 ENTERPRISE: Platform Flow Monitoring Models
@@ -155,6 +155,13 @@ class PlatformFlow(BaseModel):
         help_text="Additional flow-specific data (totals, session info, etc.)"
     )
     
+    # 🚀 ENTERPRISE: Latency metrics (added for performance monitoring)
+    duration_ms = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Total duration of flow in milliseconds (for completed flows)"
+    )
+    
     class Meta:
         verbose_name = _("Platform Flow")
         verbose_name_plural = _("Platform Flows")
@@ -164,6 +171,7 @@ class PlatformFlow(BaseModel):
             models.Index(fields=['user', 'created_at']),
             models.Index(fields=['organizer', 'created_at']),
             models.Index(fields=['status', 'created_at']),
+            models.Index(fields=['duration_ms']),  # For performance queries
         ]
     
     def __str__(self):
@@ -203,10 +211,13 @@ class PlatformFlowEvent(BaseModel):
         ('BOOKING_CONFIRMED', 'Booking Confirmed'),
         
         # Email steps
+        ('EMAIL_PENDING', 'Email Pending - Will Send from Frontend'),
+        ('EMAIL_SYNC_ATTEMPT', 'Email Sync Send Attempt'),
         ('EMAIL_TASK_ENQUEUED', 'Email Task Enqueued'),
         ('EMAIL_TASK_STARTED', 'Email Task Started'),
         ('EMAIL_SENT', 'Email Sent Successfully'),
         ('EMAIL_FAILED', 'Email Failed'),
+        ('EMAIL_MANUAL_RESEND', 'Email Manual Resend'),
         
         # Coupon steps
         ('COUPON_APPLIED', 'Coupon Applied'),
