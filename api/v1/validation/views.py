@@ -110,6 +110,9 @@ def validate_ticket_enterprise(request):
     - Logs detallados
     - Sincronización offline/online
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
         with transaction.atomic():
             # 1. Obtener datos de entrada
@@ -119,7 +122,17 @@ def validate_ticket_enterprise(request):
             scan_time_ms = request.data.get('scan_time_ms', 0)
             device_location = request.data.get('device_location', {})
             
+            logger.info("=" * 60)
+            logger.info("🎫 BACKEND VALIDATION REQUEST")
+            logger.info("=" * 60)
+            logger.info(f"  ├─ Ticket Number: {ticket_number}")
+            logger.info(f"  ├─ Session ID: {session_id}")
+            logger.info(f"  ├─ QR Data: {qr_data}")
+            logger.info(f"  ├─ Scan Time: {scan_time_ms}ms")
+            logger.info(f"  └─ User: {request.user}")
+            
             if not ticket_number or not session_id:
+                logger.warning("  └─ ❌ MISSING DATA")
                 return Response({
                     'valid': False,
                     'error': 'MISSING_DATA',
@@ -133,7 +146,9 @@ def validate_ticket_enterprise(request):
                     user=request.user,
                     is_active=True
                 )
+                logger.info(f"  ├─ ✅ Session found: {session.event.title}")
             except ValidatorSession.DoesNotExist:
+                logger.warning("  └─ ❌ INVALID SESSION")
                 return Response({
                     'valid': False,
                     'error': 'INVALID_SESSION',
@@ -141,6 +156,7 @@ def validate_ticket_enterprise(request):
                 }, status=status.HTTP_401_UNAUTHORIZED)
             
             # 3. Buscar ticket
+            logger.info(f"  ├─ Searching ticket in event: {session.event.id}")
             try:
                 ticket = Ticket.objects.select_related(
                     'order_item__order__event',
@@ -149,7 +165,14 @@ def validate_ticket_enterprise(request):
                     ticket_number=ticket_number,
                     order_item__order__event=session.event
                 )
+                logger.info(f"  ├─ ✅ Ticket found!")
+                logger.info(f"  │  ├─ ID: {ticket.id}")
+                logger.info(f"  │  ├─ Number: {ticket.ticket_number}")
+                logger.info(f"  │  ├─ Name: {ticket.first_name} {ticket.last_name}")
+                logger.info(f"  │  ├─ Status: {ticket.status}")
+                logger.info(f"  │  └─ Check-in Status: {ticket.check_in_status}")
             except Ticket.DoesNotExist:
+                logger.warning(f"  └─ ❌ TICKET NOT FOUND: {ticket_number}")
                 # Log intento fallido
                 TicketValidationLog.objects.create(
                     ticket=None,
@@ -173,15 +196,20 @@ def validate_ticket_enterprise(request):
                 })
             
             # 4. Validaciones de business logic
+            logger.info("  ├─ Running business logic validations...")
             validation_errors = []
             
             # 4.1 Estado del ticket
             if ticket.status != 'active':
-                validation_errors.append(f'Ticket no activo (estado: {ticket.get_status_display()})')
+                error = f'Ticket no activo (estado: {ticket.get_status_display()})'
+                validation_errors.append(error)
+                logger.warning(f"  │  └─ ❌ {error}")
             
             # 4.2 Verificar si ya está checked-in
             if ticket.check_in_status == 'checked_in':
-                validation_errors.append(f'Ticket ya ingresado el {ticket.check_in_time}')
+                error = f'Ticket ya ingresado el {ticket.check_in_time}'
+                validation_errors.append(error)
+                logger.warning(f"  │  └─ ❌ {error}")
             
             # 4.3 Verificar fechas del evento
             now = timezone.now()
@@ -189,11 +217,15 @@ def validate_ticket_enterprise(request):
             
             # Verificar si el evento ya terminó
             if event.end_date and now > event.end_date:
-                validation_errors.append('El evento ya terminó')
+                error = 'El evento ya terminó'
+                validation_errors.append(error)
+                logger.warning(f"  │  └─ ❌ {error}")
             
             # Verificar si es muy temprano (más de 2 horas antes)
             if event.start_date and now < (event.start_date - timedelta(hours=2)):
-                validation_errors.append('Muy temprano para ingresar')
+                error = 'Muy temprano para ingresar'
+                validation_errors.append(error)
+                logger.warning(f"  │  └─ ❌ {error}")
             
             # 4.4 Verificar límites de capacidad (si aplica)
             if hasattr(event, 'max_capacity') and event.max_capacity:
@@ -203,11 +235,14 @@ def validate_ticket_enterprise(request):
                 ).count()
                 
                 if current_checkins >= event.max_capacity:
-                    validation_errors.append('Evento lleno (capacidad máxima alcanzada)')
+                    error = 'Evento lleno (capacidad máxima alcanzada)'
+                    validation_errors.append(error)
+                    logger.warning(f"  │  └─ ❌ {error}")
             
             # 5. Si hay errores, registrar y retornar
             if validation_errors:
                 error_message = '; '.join(validation_errors)
+                logger.warning(f"  └─ ❌ VALIDATION FAILED: {error_message}")
                 
                 TicketValidationLog.objects.create(
                     ticket=ticket,
@@ -237,9 +272,11 @@ def validate_ticket_enterprise(request):
                 })
             
             # 6. ✅ VALIDACIÓN EXITOSA - Actualizar métricas
+            logger.info("  ├─ ✅ All validations passed!")
             session.total_scans += 1
             session.successful_validations += 1
             session.save()
+            logger.info(f"  ├─ Session stats: {session.successful_validations}/{session.total_scans}")
             
             # Log validación exitosa
             TicketValidationLog.objects.create(
@@ -254,7 +291,7 @@ def validate_ticket_enterprise(request):
             )
             
             # 7. Preparar respuesta completa
-            return Response({
+            response_data = {
                 'valid': True,
                 'message': 'Ticket válido - Listo para check-in',
                 'ticket': {
@@ -284,9 +321,18 @@ def validate_ticket_enterprise(request):
                     'validation_time': timezone.now(),
                     'scan_time_ms': scan_time_ms
                 }
-            })
+            }
+            
+            logger.info("  └─ ✅ SUCCESS! Returning valid ticket")
+            logger.info("=" * 60)
+            return Response(response_data)
             
     except Exception as e:
+        logger.error("=" * 60)
+        logger.error(f"❌ SYSTEM ERROR: {str(e)}")
+        logger.error("=" * 60)
+        import traceback
+        logger.error(traceback.format_exc())
         return Response({
             'valid': False,
             'error': 'SYSTEM_ERROR',

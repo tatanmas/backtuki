@@ -796,7 +796,7 @@ def ensure_pending_emails_sent(self):
                     if order_event:
                         order = order_event.order
                     else:
-                        logger.warning(f"📧 [FALLBACK] No order found for flow {flow.flow_id}")
+                        logger.warning(f"📧 [FALLBACK] No order found for flow {flow.id}")
                         continue
                 
                 # Check if order is paid
@@ -811,7 +811,7 @@ def ensure_pending_emails_sent(self):
                 from apps.events.tasks import send_order_confirmation_email
                 send_order_confirmation_email.apply_async(
                     args=[str(order.id)],
-                    kwargs={'flow_id': str(flow.flow_id)},
+                    kwargs={'flow_id': str(flow.id)},
                     queue='emails'
                 )
                 
@@ -831,7 +831,7 @@ def ensure_pending_emails_sent(self):
                 enqueued += 1
                 
             except Exception as e:
-                logger.error(f"📧 [FALLBACK] Error processing flow {flow.flow_id}: {e}", exc_info=True)
+                logger.error(f"📧 [FALLBACK] Error processing flow {flow.id}: {e}", exc_info=True)
                 continue
         
         logger.info(f"📧 [FALLBACK] Completed: {enqueued} enqueued, {skipped} skipped (too recent)")

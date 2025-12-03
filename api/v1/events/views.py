@@ -3358,6 +3358,50 @@ class TicketViewSet(viewsets.ModelViewSet):
             # Add other tickets from the same order
             ticket_data['order_tickets'] = self.get_serializer(order_tickets, many=True).data
             
+            # Add form data with field labels (like in Excel export)
+            if ticket.order_item.ticket_tier and ticket.order_item.ticket_tier.form:
+                form = ticket.order_item.ticket_tier.form
+                form_fields = form.fields.all().order_by('order')
+                
+                # Build form_data_with_labels: array of {label, value} pairs
+                form_data_with_labels = []
+                if ticket.form_data:
+                    for field in form_fields:
+                        field_id = str(field.id)
+                        field_value = ticket.form_data.get(field_id, '')
+                        
+                        # Format value based on field type
+                        if field.field_type == 'checkbox' and isinstance(field_value, bool):
+                            formatted_value = 'Sí' if field_value else 'No'
+                        elif field.field_type == 'file' and field_value:
+                            formatted_value = f"Archivo: {field_value}"
+                        else:
+                            formatted_value = str(field_value) if field_value else ''
+                        
+                        form_data_with_labels.append({
+                            'field_id': field_id,
+                            'label': field.label,
+                            'field_type': field.field_type,
+                            'value': formatted_value,
+                            'raw_value': field_value
+                        })
+                
+                ticket_data['form_data_with_labels'] = form_data_with_labels
+                ticket_data['form_schema'] = {
+                    'form_id': str(form.id),
+                    'form_name': form.name,
+                    'fields': [
+                        {
+                            'id': str(field.id),
+                            'label': field.label,
+                            'field_type': field.field_type,
+                            'required': field.required,
+                            'order': field.order
+                        }
+                        for field in form_fields
+                    ]
+                }
+            
             return Response(ticket_data)
         except Ticket.DoesNotExist:
             return Response(
@@ -3594,8 +3638,12 @@ class TicketViewSet(viewsets.ModelViewSet):
     def check_in_by_uuid(self, request):
         """
         Check in a ticket by UUID.
+        Performance-optimized: Only loads full details if action_type='view_details'
         """
         ticket_uuid = request.data.get('ticket_uuid')
+        action_type = request.data.get('action_type', 'check_in')  # 'check_in', 'check_out', 'view_details'
+        include_full_details = action_type == 'view_details' or request.data.get('include_full_details', False)
+        
         if not ticket_uuid:
             return Response(
                 {"detail": "ticket_uuid is required."},
@@ -3616,6 +3664,99 @@ class TicketViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_403_FORBIDDEN
                 )
             
+            # PERFORMANCE: For view_details, return ticket info without changing state
+            if action_type == 'view_details':
+                # Return full ticket data without changing state
+                ticket_serializer = self.get_serializer(ticket)
+                ticket_data = ticket_serializer.data
+                
+                if include_full_details:
+                    # Load full information (order, other tickets, form data)
+                    order = ticket.order_item.order
+                    user_name = "Usuario"
+                    user_email = order.email
+                    
+                    if order.user:
+                        user_name = f"{order.user.first_name or ''} {order.user.last_name or ''}".strip() or order.user.email or order.email
+                        user_email = order.user.email or order.email
+                    else:
+                        user_name = f"{order.first_name or ''} {order.last_name or ''}".strip() or order.email
+                        user_email = order.email
+                    
+                    ticket_data['order_info'] = {
+                        'id': str(order.id),
+                        'order_number': order.order_number,
+                        'status': order.status,
+                        'total_amount': float(order.total),
+                        'subtotal': float(order.subtotal),
+                        'taxes': float(order.taxes),
+                        'service_fee': float(order.service_fee),
+                        'discount': float(order.discount),
+                        'payment_method': order.payment_method or 'N/A',
+                        'created_at': order.created_at.isoformat(),
+                        'user': {
+                            'name': user_name,
+                            'email': user_email
+                        }
+                    }
+                    
+                    # Get all tickets from the same order
+                    order_tickets = Ticket.objects.filter(
+                        order_item__order=ticket.order_item.order
+                    ).select_related(
+                        'order_item__ticket_tier'
+                    ).order_by('first_name', 'last_name')
+                    
+                    ticket_data['order_tickets'] = self.get_serializer(order_tickets, many=True).data
+                    
+                    # Add form data with field labels
+                    if ticket.order_item.ticket_tier and ticket.order_item.ticket_tier.form:
+                        form = ticket.order_item.ticket_tier.form
+                        form_fields = form.fields.all().order_by('order')
+                        
+                        form_data_with_labels = []
+                        if ticket.form_data:
+                            for field in form_fields:
+                                field_id = str(field.id)
+                                field_value = ticket.form_data.get(field_id, '')
+                                
+                                if field.field_type == 'checkbox' and isinstance(field_value, bool):
+                                    formatted_value = 'Sí' if field_value else 'No'
+                                elif field.field_type == 'file' and field_value:
+                                    formatted_value = f"Archivo: {field_value}"
+                                else:
+                                    formatted_value = str(field_value) if field_value else ''
+                                
+                                form_data_with_labels.append({
+                                    'field_id': field_id,
+                                    'label': field.label,
+                                    'field_type': field.field_type,
+                                    'value': formatted_value,
+                                    'raw_value': field_value
+                                })
+                        
+                        ticket_data['form_data_with_labels'] = form_data_with_labels
+                        ticket_data['form_schema'] = {
+                            'form_id': str(form.id),
+                            'form_name': form.name,
+                            'fields': [
+                                {
+                                    'id': str(field.id),
+                                    'label': field.label,
+                                    'field_type': field.field_type,
+                                    'required': field.required,
+                                    'order': field.order
+                                }
+                                for field in form_fields
+                            ]
+                        }
+                
+                return Response({
+                    "success": True,
+                    "detail": "Ticket details retrieved successfully.",
+                    "ticket": ticket_data
+                })
+            
             # Check if ticket can be checked in
             if ticket.status in ['cancelled', 'refunded']:
                 return Response(
@@ -3624,8 +3765,98 @@ class TicketViewSet(viewsets.ModelViewSet):
                 )
             
             if ticket.check_in_status == 'checked_in':
+                # PERFORMANCE: Only load full details if requested (for view_details action)
+                ticket_serializer = self.get_serializer(ticket)
+                ticket_data = ticket_serializer.data
+                
+                if include_full_details:
+                    # Load full information for view_details - slower but complete
+                    order = ticket.order_item.order
+                    user_name = "Usuario"
+                    user_email = order.email
+                    
+                    if order.user:
+                        user_name = f"{order.user.first_name or ''} {order.user.last_name or ''}".strip() or order.user.email or order.email
+                        user_email = order.user.email or order.email
+                    else:
+                        user_name = f"{order.first_name or ''} {order.last_name or ''}".strip() or order.email
+                        user_email = order.email
+                    
+                    ticket_data['order_info'] = {
+                        'id': str(order.id),
+                        'order_number': order.order_number,
+                        'status': order.status,
+                        'total_amount': float(order.total),
+                        'subtotal': float(order.subtotal),
+                        'taxes': float(order.taxes),
+                        'service_fee': float(order.service_fee),
+                        'discount': float(order.discount),
+                        'payment_method': order.payment_method or 'N/A',
+                        'created_at': order.created_at.isoformat(),
+                        'user': {
+                            'name': user_name,
+                            'email': user_email
+                        }
+                    }
+                    
+                    # Get all tickets from the same order
+                    order_tickets = Ticket.objects.filter(
+                        order_item__order=ticket.order_item.order
+                    ).select_related(
+                        'order_item__ticket_tier'
+                    ).order_by('first_name', 'last_name')
+                    
+                    ticket_data['order_tickets'] = self.get_serializer(order_tickets, many=True).data
+                    
+                    # Add form data with field labels
+                    if ticket.order_item.ticket_tier and ticket.order_item.ticket_tier.form:
+                        form = ticket.order_item.ticket_tier.form
+                        form_fields = form.fields.all().order_by('order')
+                        
+                        form_data_with_labels = []
+                        if ticket.form_data:
+                            for field in form_fields:
+                                field_id = str(field.id)
+                                field_value = ticket.form_data.get(field_id, '')
+                                
+                                if field.field_type == 'checkbox' and isinstance(field_value, bool):
+                                    formatted_value = 'Sí' if field_value else 'No'
+                                elif field.field_type == 'file' and field_value:
+                                    formatted_value = f"Archivo: {field_value}"
+                                else:
+                                    formatted_value = str(field_value) if field_value else ''
+                                
+                                form_data_with_labels.append({
+                                    'field_id': field_id,
+                                    'label': field.label,
+                                    'field_type': field.field_type,
+                                    'value': formatted_value,
+                                    'raw_value': field_value
+                                })
+                        
+                        ticket_data['form_data_with_labels'] = form_data_with_labels
+                        ticket_data['form_schema'] = {
+                            'form_id': str(form.id),
+                            'form_name': form.name,
+                            'fields': [
+                                {
+                                    'id': str(field.id),
+                                    'label': field.label,
+                                    'field_type': field.field_type,
+                                    'required': field.required,
+                                    'order': field.order
+                                }
+                                for field in form_fields
+                            ]
+                        }
+                # else: Return only basic ticket data for fast check-in operations
+                
                 return Response(
-                    {"success": False, "detail": "Ticket already checked in."},
+                    {
+                        "success": False, 
+                        "detail": "Ticket already checked in.",
+                        "ticket": ticket_data
+                    },
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
@@ -3683,10 +3914,96 @@ class TicketViewSet(viewsets.ModelViewSet):
                 # Log the error but don't fail the check-in
                 print(f"Error creating validation log: {log_error}")
             
+            # PERFORMANCE OPTIMIZATION: Only load full details if requested
+            ticket_serializer = self.get_serializer(ticket)
+            ticket_data = ticket_serializer.data
+            
+            if include_full_details:
+                # Load full information (order, other tickets, form data) - slower but complete
+                order = ticket.order_item.order
+                user_name = "Usuario"
+                user_email = order.email
+                
+                if order.user:
+                    user_name = f"{order.user.first_name or ''} {order.user.last_name or ''}".strip() or order.user.email or order.email
+                    user_email = order.user.email or order.email
+                else:
+                    user_name = f"{order.first_name or ''} {order.last_name or ''}".strip() or order.email
+                    user_email = order.email
+                
+                ticket_data['order_info'] = {
+                    'id': str(order.id),
+                    'order_number': order.order_number,
+                    'status': order.status,
+                    'total_amount': float(order.total),
+                    'subtotal': float(order.subtotal),
+                    'taxes': float(order.taxes),
+                    'service_fee': float(order.service_fee),
+                    'discount': float(order.discount),
+                    'payment_method': order.payment_method or 'N/A',
+                    'created_at': order.created_at.isoformat(),
+                    'user': {
+                        'name': user_name,
+                        'email': user_email
+                    }
+                }
+                
+                # Get all tickets from the same order
+                order_tickets = Ticket.objects.filter(
+                    order_item__order=ticket.order_item.order
+                ).select_related(
+                    'order_item__ticket_tier'
+                ).order_by('first_name', 'last_name')
+                
+                ticket_data['order_tickets'] = self.get_serializer(order_tickets, many=True).data
+                
+                # Add form data with field labels
+                if ticket.order_item.ticket_tier and ticket.order_item.ticket_tier.form:
+                    form = ticket.order_item.ticket_tier.form
+                    form_fields = form.fields.all().order_by('order')
+                    
+                    form_data_with_labels = []
+                    if ticket.form_data:
+                        for field in form_fields:
+                            field_id = str(field.id)
+                            field_value = ticket.form_data.get(field_id, '')
+                            
+                            if field.field_type == 'checkbox' and isinstance(field_value, bool):
+                                formatted_value = 'Sí' if field_value else 'No'
+                            elif field.field_type == 'file' and field_value:
+                                formatted_value = f"Archivo: {field_value}"
+                            else:
+                                formatted_value = str(field_value) if field_value else ''
+                            
+                            form_data_with_labels.append({
+                                'field_id': field_id,
+                                'label': field.label,
+                                'field_type': field.field_type,
+                                'value': formatted_value,
+                                'raw_value': field_value
+                            })
+                    
+                    ticket_data['form_data_with_labels'] = form_data_with_labels
+                    ticket_data['form_schema'] = {
+                        'form_id': str(form.id),
+                        'form_name': form.name,
+                        'fields': [
+                            {
+                                'id': str(field.id),
+                                'label': field.label,
+                                'field_type': field.field_type,
+                                'required': field.required,
+                                'order': field.order
+                            }
+                            for field in form_fields
+                        ]
+                    }
+            # else: Return only basic ticket data for fast check-in/check-out operations
+            
             return Response({
                 "success": True,
                 "detail": "Ticket checked in successfully.",
-                "ticket": TicketSerializer(ticket).data
+                "ticket": ticket_data
             })
             
         except Ticket.DoesNotExist:
@@ -3704,8 +4021,12 @@ class TicketViewSet(viewsets.ModelViewSet):
     def check_out_by_uuid(self, request):
         """
         Check out a ticket by UUID.
+        Performance-optimized: Only loads full details if action_type='view_details'
         """
         ticket_uuid = request.data.get('ticket_uuid')
+        action_type = request.data.get('action_type', 'check_out')  # 'check_in', 'check_out', 'view_details'
+        include_full_details = action_type == 'view_details' or request.data.get('include_full_details', False)
+        
         if not ticket_uuid:
             return Response(
                 {"detail": "ticket_uuid is required."},
@@ -3786,10 +4107,94 @@ class TicketViewSet(viewsets.ModelViewSet):
                 # Log the error but don't fail the check-out
                 print(f"Error creating validation log: {log_error}")
             
+            # Serialize ticket with full information (like by_uuid endpoint)
+            ticket_serializer = self.get_serializer(ticket)
+            ticket_data = ticket_serializer.data
+            
+            # Add order information
+            order = ticket.order_item.order
+            user_name = "Usuario"
+            user_email = order.email
+            
+            if order.user:
+                user_name = f"{order.user.first_name or ''} {order.user.last_name or ''}".strip() or order.user.email or order.email
+                user_email = order.user.email or order.email
+            else:
+                user_name = f"{order.first_name or ''} {order.last_name or ''}".strip() or order.email
+                user_email = order.email
+            
+            ticket_data['order_info'] = {
+                'id': str(order.id),
+                'order_number': order.order_number,
+                'status': order.status,
+                'total_amount': float(order.total),
+                'subtotal': float(order.subtotal),
+                'taxes': float(order.taxes),
+                'service_fee': float(order.service_fee),
+                'discount': float(order.discount),
+                'payment_method': order.payment_method or 'N/A',
+                'created_at': order.created_at.isoformat(),
+                'user': {
+                    'name': user_name,
+                    'email': user_email
+                }
+            }
+            
+            # Get all tickets from the same order
+            order_tickets = Ticket.objects.filter(
+                order_item__order=ticket.order_item.order
+            ).select_related(
+                'order_item__ticket_tier'
+            ).order_by('first_name', 'last_name')
+            
+            ticket_data['order_tickets'] = self.get_serializer(order_tickets, many=True).data
+            
+            # Add form data with field labels
+            if ticket.order_item.ticket_tier and ticket.order_item.ticket_tier.form:
+                form = ticket.order_item.ticket_tier.form
+                form_fields = form.fields.all().order_by('order')
+                
+                form_data_with_labels = []
+                if ticket.form_data:
+                    for field in form_fields:
+                        field_id = str(field.id)
+                        field_value = ticket.form_data.get(field_id, '')
+                        
+                        if field.field_type == 'checkbox' and isinstance(field_value, bool):
+                            formatted_value = 'Sí' if field_value else 'No'
+                        elif field.field_type == 'file' and field_value:
+                            formatted_value = f"Archivo: {field_value}"
+                        else:
+                            formatted_value = str(field_value) if field_value else ''
+                        
+                        form_data_with_labels.append({
+                            'field_id': field_id,
+                            'label': field.label,
+                            'field_type': field.field_type,
+                            'value': formatted_value,
+                            'raw_value': field_value
+                        })
+                
+                ticket_data['form_data_with_labels'] = form_data_with_labels
+                ticket_data['form_schema'] = {
+                    'form_id': str(form.id),
+                    'form_name': form.name,
+                    'fields': [
+                        {
+                            'id': str(field.id),
+                            'label': field.label,
+                            'field_type': field.field_type,
+                            'required': field.required,
+                            'order': field.order
+                        }
+                        for field in form_fields
+                    ]
+                }
+            
             return Response({
                 "success": True,
                 "detail": "Ticket checked out successfully.",
-                "ticket": TicketSerializer(ticket).data
+                "ticket": ticket_data
             })
             
         except Ticket.DoesNotExist:
@@ -4841,12 +5246,17 @@ def send_order_email_sync(request, order_number):
         flow_obj = None
         flow_logger = None
         try:
-            flow_obj = PlatformFlow.objects.filter(
-                primary_order=order,
-                flow_type='ticket_checkout'
-            ).first()
+            # CRITICAL: Check direct relationship first (most efficient and reliable)
+            flow_obj = order.flow
             
-            # If not found by primary_order, search in events
+            # If not found via direct relationship, try primary_order lookup
+            if not flow_obj:
+                flow_obj = PlatformFlow.objects.filter(
+                    primary_order=order,
+                    flow_type='ticket_checkout'
+                ).first()
+            
+            # If still not found, search in events
             if not flow_obj:
                 flow_event = order.flow_events.first()
                 if flow_event:
