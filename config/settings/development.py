@@ -61,16 +61,33 @@ STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.StaticFilesStorage'
 USE_GCS_IN_DEV = config('USE_GCS_IN_DEV', default=False, cast=bool)
 
 if USE_GCS_IN_DEV:
-    # Use Google Cloud Storage
-    DEFAULT_FILE_STORAGE = 'storages.backends.gcloud.GoogleCloudStorage'
+    # Use Google Cloud Storage with custom backend
+    DEFAULT_FILE_STORAGE = 'core.storage.PublicGoogleCloudStorage'
     
     # Google Cloud Storage configuration
     GS_BUCKET_NAME = config('GS_BUCKET_NAME')
-    GS_PROJECT_ID = config('GS_PROJECT_ID')
+    GS_PROJECT_ID = config('GS_PROJECT_ID', default=None)
     
-    # 🚀 ENTERPRISE: Use Application Default Credentials (ADC)
-    # This will use gcloud auth application-default login credentials
-    GS_CREDENTIALS = None  # Use Application Default Credentials
+    # 🚀 ENTERPRISE: Use credentials file if available, otherwise use ADC
+    import os
+    credentials_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+    GS_CREDENTIALS = None
+    
+    if credentials_path and os.path.exists(credentials_path):
+        try:
+            from google.oauth2 import service_account
+            from google.auth import exceptions as auth_exceptions
+            try:
+                GS_CREDENTIALS = service_account.Credentials.from_service_account_file(credentials_path)
+            except (auth_exceptions.MalformedError, ValueError, KeyError) as e:
+                # Credentials file is malformed or invalid, use ADC
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"⚠️ [DEV] GCS credentials file invalid ({e}), using ADC")
+                GS_CREDENTIALS = None
+        except ImportError:
+            # google.oauth2 not available, use ADC
+            GS_CREDENTIALS = None
     
     # 🚀 ENTERPRISE: No ACL needed - bucket has uniform bucket-level access enabled
     GS_DEFAULT_ACL = None
@@ -114,6 +131,9 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
+    'x-tenant',  # 🚀 ENTERPRISE: Multi-tenant header for payment processing
+    'cache-control',
+    'pragma',
 ]
 
 # Set token timeout to the future for development (30 days)

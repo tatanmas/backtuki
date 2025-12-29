@@ -380,27 +380,49 @@ class TransbankWebPayPlusService(BasePaymentService):
                         metadata={'total': float(payment.order.total)}
                     )
                 
-                # ✅ CREAR TICKETS desde reservations almacenadas (ENTERPRISE PATTERN)
-                self._create_tickets_from_reservations(payment.order)
+                # ✅ Domain-specific post-payment handling
+                if getattr(payment.order, 'order_kind', 'event') == 'experience':
+                    # Mark experience reservation paid and keep holds until the instance ends
+                    try:
+                        reservation = payment.order.experience_reservation
+                        if reservation:
+                            reservation.status = 'paid'
+                            reservation.paid_at = timezone.now()
+                            reservation.save(update_fields=['status', 'paid_at'])
+
+                            # Extend holds so capacity/resources remain reserved until the experience ends
+                            end_dt = getattr(reservation.instance, 'end_datetime', None)
+                            if end_dt:
+                                reservation.capacity_holds.filter(released=False).update(expires_at=end_dt)
+                                reservation.resource_holds.filter(released=False).update(expires_at=end_dt)
+                            
+                            logger.info(f"✅ [PAYMENT] Experience reservation {reservation.reservation_id} marked as paid")
+                    except Exception:
+                        logger.exception("Failed to finalize experience reservation after payment")
+                else:
+                    # ✅ CREAR TICKETS desde reservations almacenadas (ENTERPRISE PATTERN)
+                    self._create_tickets_from_reservations(payment.order)
                 
-                # Log tickets created
-                if flow:
-                    tickets_count = payment.order.items.aggregate(total=models.Sum('quantity'))['total'] or 0
-                    flow.log_event(
-                        'TICKETS_CREATED',
-                        order=payment.order,
-                        status='success',
-                        message=f"{tickets_count} tickets created for order {payment.order.order_number}",
-                        metadata={'tickets_count': tickets_count}
-                    )
-                
-                # ✅ CLEANUP: Limpiar holds y reservations
-                self._cleanup_order_reservations(payment.order)
+                # Log tickets created + cleanup only for event orders
+                if getattr(payment.order, 'order_kind', 'event') != 'experience':
+                    if flow:
+                        tickets_count = payment.order.items.aggregate(total=models.Sum('quantity'))['total'] or 0
+                        flow.log_event(
+                            'TICKETS_CREATED',
+                            order=payment.order,
+                            status='success',
+                            message=f"{tickets_count} tickets created for order {payment.order.order_number}",
+                            metadata={'tickets_count': tickets_count}
+                        )
+
+                    # ✅ CLEANUP: Limpiar holds y reservations (tickets)
+                    self._cleanup_order_reservations(payment.order)
                 
                 # 🚀 ENTERPRISE: Email will be sent synchronously from frontend confirmation page
                 # This reduces latency from 5+ minutes to <10 seconds
                 # If frontend sync send fails, it will automatically fallback to Celery
                 if flow:
+                    flow_type = 'paid_experience' if getattr(payment.order, 'order_kind', 'event') == 'experience' else 'paid_order'
                     flow.log_event(
                         'EMAIL_PENDING',
                         order=payment.order,
@@ -409,7 +431,7 @@ class TransbankWebPayPlusService(BasePaymentService):
                         metadata={
                             'email_strategy': 'frontend_sync',
                             'fallback_to_celery': True,
-                            'flow_type': 'paid_order'
+                            'flow_type': flow_type
                         }
                     )
                 logger.info(f"📧 [EMAIL] Email marked as pending for order {payment.order.id} - will be sent from frontend")

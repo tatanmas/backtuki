@@ -96,6 +96,9 @@ app.conf.task_routes = {
     'apps.events.tasks.send_welcome_organizer_email': {'queue': 'emails'},
     'apps.events.tasks.schedule_event_reminders': {'queue': 'emails'},
     'apps.events.tasks.generate_ticket_pdf': {'queue': 'documents'},
+
+    # Experiences emails
+    'apps.experiences.tasks.send_experience_confirmation_email': {'queue': 'emails'},
     
     # 🚀 ENTERPRISE: WooCommerce Sync Task Routing
     # sync_woocommerce_event va a cola dedicada 'sync-heavy' con concurrencia=1

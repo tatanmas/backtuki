@@ -28,14 +28,14 @@ ALLOWED_HOSTS = config(
 )
 CSRF_TRUSTED_ORIGINS = config(
     'CSRF_TRUSTED_ORIGINS',
-    default='https://*.run.app,https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://prop.cl',
+    default='https://*.run.app,https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://prop.cl,https://terminalcoyhaique.cl,https://www.terminalcoyhaique.cl',
     cast=Csv()
 )
 
 # CORS configuration
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
-    default='https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://prop.cl',
+    default='https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://prop.cl,https://terminalcoyhaique.cl,https://www.terminalcoyhaique.cl',
     cast=Csv()
 )
 CORS_ALLOW_CREDENTIALS = True

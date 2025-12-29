@@ -956,7 +956,13 @@ def generate_order_number():
 
 
 class Order(BaseModel):
-    """Order model for ticket purchases."""
+    """
+    Order model for purchases.
+
+    🚀 ENTERPRISE:
+    - Originally this model only supported Event ticket orders.
+    - It has been generalized to also support Experience reservations.
+    """
     
     STATUS_CHOICES = (
         ('pending', _('Pending')),
@@ -964,6 +970,11 @@ class Order(BaseModel):
         ('cancelled', _('Cancelled')),
         ('refunded', _('Refunded')),
         ('failed', _('Failed')),
+    )
+
+    ORDER_KIND_CHOICES = (
+        ('event', _('Event Order')),
+        ('experience', _('Experience Order')),
     )
     
     order_number = models.CharField(
@@ -980,11 +991,32 @@ class Order(BaseModel):
         null=True,
         blank=True
     )
+    # 🚀 ENTERPRISE: order_kind determines which domain object this order belongs to.
+    order_kind = models.CharField(
+        _("order kind"),
+        max_length=20,
+        choices=ORDER_KIND_CHOICES,
+        default='event',
+        help_text=_("Domain this order belongs to: event tickets or experiences."),
+    )
     event = models.ForeignKey(
         Event,
         on_delete=models.PROTECT,
         related_name='orders',
-        verbose_name=_("event")
+        verbose_name=_("event"),
+        null=True,
+        blank=True,
+        help_text=_("Linked event for event orders. Null for experience orders."),
+    )
+    # 🚀 ENTERPRISE: link to ExperienceReservation for experience orders.
+    experience_reservation = models.ForeignKey(
+        'experiences.ExperienceReservation',
+        on_delete=models.PROTECT,
+        related_name='orders',
+        verbose_name=_("experience reservation"),
+        null=True,
+        blank=True,
+        help_text=_("Linked experience reservation for experience orders. Null for event orders."),
     )
     status = models.CharField(
         _("status"),
@@ -1000,7 +1032,17 @@ class Order(BaseModel):
         _("subtotal"),
         max_digits=10,
         decimal_places=2,
-        validators=[MinValueValidator(0)]
+        validators=[MinValueValidator(0)],
+        default=0,
+        help_text=_("Subtotal original (before discount) - organizer revenue")
+    )
+    service_fee = models.DecimalField(
+        _("service fee"),
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        default=0,
+        help_text=_("Service fee original (before discount) - platform commission")
     )
     taxes = models.DecimalField(
         _("taxes"),
@@ -1009,18 +1051,21 @@ class Order(BaseModel):
         validators=[MinValueValidator(0)],
         default=0
     )
-    service_fee = models.DecimalField(
-        _("service fee"),
+    discount = models.DecimalField(
+        _("discount"),
         max_digits=10,
         decimal_places=2,
         validators=[MinValueValidator(0)],
-        default=0
+        default=0,
+        help_text=_("Total discount applied (from coupon)")
     )
     total = models.DecimalField(
         _("total"),
         max_digits=10,
         decimal_places=2,
-        validators=[MinValueValidator(0)]
+        validators=[MinValueValidator(0)],
+        default=0,
+        help_text=_("Final amount paid by customer (after discount)")
     )
     currency = models.CharField(_("currency"), max_length=3, default='CLP')
     payment_method = models.CharField(_("payment method"), max_length=50, blank=True)
@@ -1038,8 +1083,32 @@ class Order(BaseModel):
         max_digits=10,
         decimal_places=2,
         validators=[MinValueValidator(0)],
-        default=0
+        default=0,
+        help_text=_("Total discount applied (from coupon)")
     )
+    
+    # 🚀 ENTERPRISE: Effective values (after proportional discount distribution)
+    # These fields store the actual amounts after discount is distributed proportionally
+    # INVARIANT: subtotal_effective + service_fee_effective = total (always)
+    subtotal_effective = models.DecimalField(
+        _("effective subtotal"),
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        null=True,
+        blank=True,
+        help_text=_("Effective organizer revenue after proportional discount (integer for CLP)")
+    )
+    service_fee_effective = models.DecimalField(
+        _("effective service fee"),
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        null=True,
+        blank=True,
+        help_text=_("Effective platform commission after proportional discount (integer for CLP)")
+    )
+    
     notes = models.TextField(_("notes"), blank=True)
     ip_address = models.GenericIPAddressField(_("IP address"), null=True, blank=True)
     user_agent = models.TextField(_("user agent"), blank=True)
@@ -1083,11 +1152,36 @@ class Order(BaseModel):
         return self.order_number
     
     def save(self, *args, **kwargs):
-        """Generate access token automatically if not set."""
+        """
+        Generate access token automatically if not set and enforce basic invariants.
+
+        🚀 ENTERPRISE INVARIANTS:
+        - If order_kind='event'  -> event MUST be set and experience_reservation MUST be null.
+        - If order_kind='experience' -> experience_reservation MUST be set and event SHOULD be null.
+        """
+        # Generate access token if missing
         if not self.access_token:
             import secrets
             # Generate a secure random token (64 characters)
             self.access_token = secrets.token_urlsafe(48)  # 48 bytes = 64 chars in base64
+
+        # Enforce simple invariants without raising to avoid breaking legacy flows.
+        # We keep them best-effort here; strict DB constraints are handled in migrations.
+        if self.order_kind == 'event' and self.event is None:
+            # Fallback: try to infer event from related order items if possible
+            event_from_items = None
+            try:
+                first_item = self.items.select_related('ticket_tier__event').first()
+                if first_item and first_item.ticket_tier and first_item.ticket_tier.event:
+                    event_from_items = first_item.ticket_tier.event
+            except Exception:
+                event_from_items = None
+            if event_from_items:
+                self.event = event_from_items
+        elif self.order_kind == 'experience' and self.experience_reservation is None:
+            # For now we don't auto-populate; this will be set explicitly by the experiences flow.
+            pass
+
         super().save(*args, **kwargs)
     
     @property
@@ -1141,20 +1235,23 @@ class OrderItem(BaseModel):
         _("unit price"),
         max_digits=10,
         decimal_places=2,
-        validators=[MinValueValidator(0)]
+        validators=[MinValueValidator(0)],
+        help_text=_("Original unit price (before discount)")
     )
     unit_service_fee = models.DecimalField(
         _("unit service fee"),
         max_digits=10,
         decimal_places=2,
         validators=[MinValueValidator(0)],
-        default=0
+        default=0,
+        help_text=_("Original unit service fee (before discount)")
     )
     subtotal = models.DecimalField(
         _("subtotal"),
         max_digits=10,
         decimal_places=2,
-        validators=[MinValueValidator(0)]
+        validators=[MinValueValidator(0)],
+        help_text=_("Original subtotal: (unit_price + unit_service_fee) × quantity")
     )
     custom_price = models.DecimalField(
         _("custom price"),
@@ -1163,6 +1260,36 @@ class OrderItem(BaseModel):
         null=True,
         blank=True,
         help_text=_("User-selected price for pay-what-you-want tickets")
+    )
+    
+    # 🚀 ENTERPRISE: Effective values (after proportional discount distribution)
+    # These fields store the actual amounts after discount is distributed proportionally
+    unit_price_effective = models.DecimalField(
+        _("effective unit price"),
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        null=True,
+        blank=True,
+        help_text=_("Effective unit price after proportional discount (integer for CLP)")
+    )
+    unit_service_fee_effective = models.DecimalField(
+        _("effective unit service fee"),
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        null=True,
+        blank=True,
+        help_text=_("Effective unit service fee after proportional discount (integer for CLP)")
+    )
+    subtotal_effective = models.DecimalField(
+        _("effective subtotal"),
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        null=True,
+        blank=True,
+        help_text=_("Effective subtotal: (unit_price_effective + unit_service_fee_effective) × quantity")
     )
     
     class Meta:

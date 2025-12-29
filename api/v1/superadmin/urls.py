@@ -18,7 +18,10 @@ from .views import (
     bulk_resend_emails,
     celery_tasks_list,
     historical_conversion_rates,
-    events_list
+    events_list,
+    # 🚀 ENTERPRISE: Revenue Migration
+    revenue_migration_status,
+    migrate_revenue_data,
 )
 
 # Create router
@@ -44,5 +47,9 @@ urlpatterns = [
     path('flows/<str:flow_id>/', flow_detail, name='flow-detail'),
     path('celery-tasks/', celery_tasks_list, name='celery-tasks-list'),
     path('historical-conversion-rates/', historical_conversion_rates, name='historical-conversion-rates'),
+    
+    # 🚀 ENTERPRISE: Revenue Migration Endpoints
+    path('revenue-migration/status/', revenue_migration_status, name='revenue-migration-status'),
+    path('revenue-migration/migrate/', migrate_revenue_data, name='migrate-revenue-data'),
 ]
 

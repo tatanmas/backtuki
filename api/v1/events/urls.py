@@ -6,6 +6,7 @@ from .views import (
     generate_ticket_qr,
     validate_ticket_qr,
     send_order_email_sync,
+    proxy_event_image,  # 🎫 ENTERPRISE: Image proxy for CORS
 )
 from .public_views import PublicEventViewSet
 
@@ -37,4 +38,7 @@ urlpatterns = [
     
     # 📧 ENTERPRISE EMAIL ENDPOINTS
     path('orders/<str:order_number>/send-email/', send_order_email_sync, name='send-order-email-sync'),
+    
+    # 🎫 ENTERPRISE IMAGE PROXY (CORS fix for PDF generation)
+    path('events/images/proxy/', proxy_event_image, name='proxy-event-image'),
 ] 

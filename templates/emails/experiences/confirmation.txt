@@ -1,0 +1,68 @@
+✅ RESERVA CONFIRMADA - {{ experience.title }}
+
+Hola {{ customer_name }},
+
+Tu reserva ha sido confirmada exitosamente.
+
+═══════════════════════════════════════════════════════════
+
+DETALLES DE LA EXPERIENCIA
+
+{{ experience.title }}
+{% if experience_data.short_description %}{{ experience_data.short_description|striptags }}{% endif %}
+
+Fecha: {{ instance_data.start_datetime|date:"l, j de F de Y" }}
+Hora: {{ instance_data.start_datetime|date:"H:i" }}
+{% if experience_data.duration_minutes %}Duración: {{ experience_data.duration_minutes }} minutos{% endif %}
+{% if experience_data.location_name %}Ubicación: {{ experience_data.location_name }}{% endif %}
+{% if experience_data.location_address %}Dirección: {{ experience_data.location_address }}{% endif %}
+{% if instance_data.language_name %}Idioma: {{ instance_data.language_name }}{% endif %}
+
+═══════════════════════════════════════════════════════════
+
+DETALLES DE TU RESERVA
+
+Código de Reserva: {{ reservation_data.reservation_id }}
+Número de Orden: {{ order.order_number }}
+Fecha de Reserva: {{ order.created_at|date:"j de F, Y a las H:i" }}
+
+Nombre: {{ customer_name }}
+Email: {{ customer_email }}
+{% if customer_phone %}Teléfono: {{ customer_phone }}{% endif %}
+
+PARTICIPANTES:
+{% if reservation_data.adult_count > 0 %}Adultos: {{ reservation_data.adult_count }}{% endif %}
+{% if reservation_data.child_count > 0 %}Niños: {{ reservation_data.child_count }}{% endif %}
+{% if reservation_data.infant_count > 0 %}Infantes: {{ reservation_data.infant_count }}{% endif %}
+Total: {{ reservation_data.total_participants }} participante{% if reservation_data.total_participants > 1 %}s{% endif %}
+
+{% if resources %}
+EQUIPAMIENTO INCLUIDO:
+{% for resource in resources %}• {{ resource.name }} (x{{ resource.quantity }}){% if resource.price > 0 %} - ${{ resource.price|floatformat:0 }} {{ order.currency }}{% else %} - Incluido{% endif %}
+{% endfor %}
+{% endif %}
+
+═══════════════════════════════════════════════════════════
+
+RESUMEN DE PAGO
+
+Subtotal: ${{ order_data.subtotal|floatformat:0 }} {{ order.currency }}
+{% if order_data.service_fee > 0 %}Cargo por servicio: ${{ order_data.service_fee|floatformat:0 }} {{ order.currency }}{% endif %}
+{% if order_data.discount > 0 %}Descuento: -${{ order_data.discount|floatformat:0 }} {{ order.currency }}{% endif %}
+───────────────────────────────────────────────────────────
+Total: {% if order_data.is_free %}GRATIS{% else %}${{ order_data.total|floatformat:0 }} {{ order.currency }}{% endif %}
+
+═══════════════════════════════════════════════════════════
+
+INFORMACIÓN DEL ORGANIZADOR
+
+{{ organizer_data.name }}
+{% if organizer_data.email %}📧 {{ organizer_data.email }}{% endif %}
+{% if organizer_data.phone %}📞 {{ organizer_data.phone }}{% endif %}
+
+═══════════════════════════════════════════════════════════
+
+¿Necesitas ayuda?
+Contáctanos en {{ support_email }}
+
+© {{ current_year }} Tuki. Todos los derechos reservados.

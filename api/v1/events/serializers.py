@@ -592,10 +592,13 @@ class OrderSerializer(serializers.ModelSerializer):
             'service_fee', 'total', 'currency', 'payment_method', 'payment_id',
             'coupon', 'coupon_code', 'discount', 'notes', 'items', 'buyer_name',
             'created_at', 'updated_at', 'refund_reason', 'refunded_amount',
-            'payment_details'
+            'payment_details',
+            # 🚀 ENTERPRISE: Effective values (after proportional discount distribution)
+            'subtotal_effective', 'service_fee_effective'
         ]
         read_only_fields = ['id', 'order_number', 'buyer_name', 'event_title',
-                           'coupon_code', 'created_at', 'updated_at', 'payment_details']
+                           'coupon_code', 'created_at', 'updated_at', 'payment_details',
+                           'subtotal_effective', 'service_fee_effective']
     
     def get_payment_details(self, obj):
         """🚀 ENTERPRISE: Get detailed payment information including coupon details."""
@@ -1718,9 +1721,6 @@ class BookingSerializer(serializers.Serializer):
                 if discount_amount > 0:
                     order.coupon = validated_coupon
                     order.discount = discount_amount
-                    # 🚀 ENTERPRISE: Round total to integer (no decimals for CLP)
-                    order.total = (order.total - discount_amount).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
-                    order.total = max(Decimal('0'), order.total)
                     
                     # Reserve coupon usage
                     coupon_hold = validated_coupon.reserve_usage_for_order(order)
@@ -1729,6 +1729,39 @@ class BookingSerializer(serializers.Serializer):
                     print(f"⚠️ COUPON: {validated_coupon.code} generated no discount")
             else:
                 print(f"❌ COUPON: {validated_coupon.code} invalid at final total: {message}")
+        
+        # 🚀 ENTERPRISE: Calculate and store effective values
+        # This is the SINGLE SOURCE OF TRUTH for revenue calculation
+        from core.revenue_system import calculate_and_store_effective_values
+        
+        try:
+            revenue_summary = calculate_and_store_effective_values(order)
+            print(f"✅ REVENUE: Effective values calculated and stored")
+            print(f"   Gross Revenue: ${revenue_summary['subtotal_effective']}")
+            print(f"   Service Fees: ${revenue_summary['service_fee_effective']}")
+            print(f"   Total: ${revenue_summary['total']}")
+            print(f"   Discount: ${revenue_summary['discount']}")
+            
+            # Log to flow if available
+            if flow:
+                flow.log_event(
+                    'REVENUE_CALCULATED',
+                    order=order,
+                    status='success',
+                    message=f"Revenue calculated for order {order.order_number}",
+                    metadata=revenue_summary
+                )
+        except Exception as e:
+            print(f"❌ REVENUE: Error calculating effective values: {e}")
+            if flow:
+                flow.log_event(
+                    'REVENUE_CALCULATION_ERROR',
+                    order=order,
+                    status='error',
+                    message=f"Failed to calculate revenue: {str(e)}",
+                    metadata={'error': str(e)}
+                )
+            raise
         
         print(f"🚀 DEBUG - Order totals FINAL: subtotal={subtotal}, service_fee={service_fee}, discount={order.discount}, total={order.total}")
         print(f"🚀 DEBUG - Order status before: {order.status}")

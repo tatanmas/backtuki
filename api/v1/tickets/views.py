@@ -104,7 +104,7 @@ class TicketTierManagementViewSet(viewsets.ModelViewSet):
     def revenue(self, request, pk=None):
         """
         🚀 ENTERPRISE: Calculate accurate revenue for a ticket tier
-        Returns revenue based on actual orders, not tier price × sold tickets
+        Uses centralized revenue calculator for consistency
         """
         try:
             ticket_tier = TicketTier.objects.get(id=pk)
@@ -114,35 +114,31 @@ class TicketTierManagementViewSet(viewsets.ModelViewSet):
             if not organizer or ticket_tier.event.organizer != organizer:
                 return Response({"detail": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
             
-            # Get all paid orders for this ticket tier
-            # 🚀 ENTERPRISE: Use the same logic as analytics - aggregate from Orders, not OrderItems
-            paid_orders = Order.objects.filter(
-                items__ticket_tier=ticket_tier,
-                status='paid'
-            ).distinct().select_related('event')
+            # 🚀 ENTERPRISE: Use centralized revenue calculator
+            from core.revenue_calculator import calculate_ticket_tier_revenue
             
-            # Calculate revenue using the same enterprise logic as analytics
-            revenue_data = paid_orders.aggregate(
-                total_revenue=Sum('total'),  # What customers actually paid (includes service fees)
-                gross_revenue=Sum('subtotal'),  # Revenue before service fees (organizer income)
-                total_service_fees=Sum('service_fee'),
-                total_orders=Count('id')
+            # Get optional date filters
+            start_date = request.query_params.get('start_date')
+            end_date = request.query_params.get('end_date')
+            
+            from django.utils.dateparse import parse_datetime
+            start_date_parsed = parse_datetime(start_date) if start_date else None
+            end_date_parsed = parse_datetime(end_date) if end_date else None
+            
+            # Calculate revenue using centralized function
+            revenue_result = calculate_ticket_tier_revenue(
+                ticket_tier,
+                start_date=start_date_parsed,
+                end_date=end_date_parsed,
+                validate=True
             )
             
-            # Calculate tickets sold from order items
-            tickets_data = OrderItem.objects.filter(
-                ticket_tier=ticket_tier,
-                order__status='paid'
-            ).aggregate(
-                total_tickets=Sum('quantity')
-            )
-            
-            # Extract values with proper defaults
-            total_revenue = float(revenue_data['total_revenue'] or 0)  # Total paid by customers
-            total_service_fees = float(revenue_data['total_service_fees'] or 0)  # Platform commission
-            total_net_revenue = float(revenue_data['gross_revenue'] or 0)  # Organizer income
-            orders_count = revenue_data['total_orders'] or 0
-            tickets_sold = tickets_data['total_tickets'] or 0
+            # Extract values
+            total_revenue = revenue_result['total_revenue']
+            total_service_fees = revenue_result['service_fees']
+            total_net_revenue = revenue_result['gross_revenue']
+            orders_count = revenue_result['total_orders']
+            tickets_sold = revenue_result['total_tickets']
             
             # For pricing history, we still need to look at individual order items to see price variations
             paid_order_items = OrderItem.objects.filter(

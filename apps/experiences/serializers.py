@@ -7,7 +7,11 @@ from django.db import transaction
 from django.contrib.auth import get_user_model
 from datetime import timedelta
 
-from .models import Experience, TourLanguage, TourInstance, TourBooking, OrganizerCredit
+from .models import (
+    Experience, TourLanguage, TourInstance, TourBooking, OrganizerCredit,
+    ExperienceResource, ExperienceReservation, ExperienceDatePriceOverride,
+    ExperienceCapacityHold, ExperienceResourceHold
+)
 from apps.organizers.models import OrganizerUser
 from apps.events.models import Order
 
@@ -23,13 +27,15 @@ class ExperienceSerializer(serializers.ModelSerializer):
         model = Experience
         fields = [
             'id', 'title', 'slug', 'description', 'short_description', 'status', 'type',
-            'organizer', 'organizer_name', 'price', 'is_free_tour', 'credit_per_person',
-            'sales_cutoff_hours', 'recurrence_pattern', 'location_name', 'location_address',
-            'location_latitude', 'location_longitude', 'duration_minutes', 'max_participants',
-            'min_participants', 'included', 'not_included', 'requirements', 'itinerary',
-            'images', 'categories', 'tags', 'views_count', 'created_at', 'updated_at'
+            'organizer', 'organizer_name', 'pricing_mode', 'price', 'child_price', 'is_child_priced',
+            'infant_price', 'is_infant_priced', 'currency', 'is_free_tour', 'credit_per_person',
+            'capacity_count_rule', 'booking_horizon_days', 'sales_cutoff_hours', 'recurrence_pattern',
+            'location_name', 'location_address', 'location_latitude', 'location_longitude',
+            'duration_minutes', 'max_participants', 'min_participants', 'included', 'not_included',
+            'requirements', 'itinerary', 'images', 'categories', 'tags', 'views_count',
+            'is_active', 'deleted_at', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'views_count']
+        read_only_fields = ['id', 'slug', 'organizer', 'created_at', 'updated_at', 'views_count', 'deleted_at']
     
     def create(self, validated_data):
         """Create experience with slug generation."""
@@ -69,8 +75,9 @@ class TourInstanceSerializer(serializers.ModelSerializer):
         model = TourInstance
         fields = [
             'id', 'experience', 'experience_title', 'start_datetime', 'end_datetime',
-            'language', 'status', 'max_capacity', 'notes', 'current_bookings_count',
-            'available_spots', 'created_at', 'updated_at'
+            'language', 'status', 'max_capacity', 'override_adult_price', 'override_child_price',
+            'override_infant_price', 'notes', 'current_bookings_count', 'available_spots',
+            'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'current_bookings_count', 'available_spots']
     
@@ -167,13 +174,17 @@ class TourBookingCreateSerializer(serializers.Serializer):
             )
         
         # Create Order with amount=0 (for tracking)
+        # 🚀 ENTERPRISE: Use generalized Order model with order_kind='experience'
         order = Order.objects.create(
             event=None,  # No event for tour bookings
             user=user,
             total=0,
             subtotal=0,
             service_fee=0,
-            status='completed'  # Free tours are immediately completed
+            discount=0,
+            taxes=0,
+            order_kind='experience',
+            status='paid',  # Free tours are immediately treated as paid (total = 0)
         )
         
         # Create TourBooking
@@ -224,6 +235,61 @@ class OrganizerCreditSerializer(serializers.ModelSerializer):
                 'id': str(obj.tour_booking.id),
                 'customer_name': f"{obj.tour_booking.first_name} {obj.tour_booking.last_name}",
                 'participants_count': obj.tour_booking.participants_count
+            }
+        return None
+
+
+class ExperienceResourceSerializer(serializers.ModelSerializer):
+    """Serializer for ExperienceResource model."""
+    
+    class Meta:
+        model = ExperienceResource
+        fields = [
+            'id', 'experience', 'name', 'description', 'resource_type', 'group_id',
+            'price', 'is_per_person', 'people_per_unit', 'available_quantity',
+            'image_url', 'display_order', 'is_active', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class ExperienceDatePriceOverrideSerializer(serializers.ModelSerializer):
+    """Serializer for ExperienceDatePriceOverride model."""
+    
+    class Meta:
+        model = ExperienceDatePriceOverride
+        fields = [
+            'id', 'experience', 'date', 'start_time', 'end_time',
+            'override_adult_price', 'override_child_price', 'override_infant_price',
+            'override_capacity', 'notes', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class ExperienceReservationSerializer(serializers.ModelSerializer):
+    """Serializer for ExperienceReservation model."""
+    
+    experience_title = serializers.CharField(source='experience.title', read_only=True)
+    instance_info = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = ExperienceReservation
+        fields = [
+            'id', 'reservation_id', 'experience', 'experience_title', 'instance', 'instance_info',
+            'status', 'adult_count', 'child_count', 'infant_count', 'first_name', 'last_name',
+            'email', 'phone', 'user', 'subtotal', 'service_fee', 'discount', 'total', 'currency',
+            'pricing_details', 'selected_resources', 'capacity_count_rule', 'expires_at', 'paid_at',
+            'notes', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'reservation_id', 'created_at', 'updated_at']
+    
+    def get_instance_info(self, obj):
+        """Get instance summary."""
+        if obj.instance:
+            return {
+                'id': str(obj.instance.id),
+                'start_datetime': obj.instance.start_datetime.isoformat(),
+                'end_datetime': obj.instance.end_datetime.isoformat(),
+                'language': obj.instance.language,
             }
         return None
 

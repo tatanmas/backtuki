@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     'apps.otp',  # 🔐 OTP Authentication System
     'apps.validation',  # 🚀 Enterprise Validation System
     'apps.sync_woocommerce',  # 🚀 ENTERPRISE: WooCommerce Sync System
+    'apps.media',  # 🚀 ENTERPRISE: Media Library System
     'payment_processor',  # 🚀 ENTERPRISE Payment System
     'core',
 ]
@@ -217,6 +218,7 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
+    'x-tenant',  # 🚀 ENTERPRISE: Multi-tenant header for payment processing
     'cache-control',
     'pragma',
 ]

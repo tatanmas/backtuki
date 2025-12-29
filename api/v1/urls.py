@@ -58,6 +58,7 @@ urlpatterns = [
     path('auth/', include('api.v1.auth.urls')),
     path('user/', include('api.v1.users.urls')),
     path('tickets/', include('api.v1.tickets.urls')),  # 🚀 ENTERPRISE: Ticket management endpoints
+    path('media/', include('apps.media.urls')),  # 🚀 ENTERPRISE: Media Library System
     path('validation/', include('api.v1.validation.urls')),  # 🚀 ENTERPRISE: Validation system endpoints
     path('sync-woocommerce/', include('apps.sync_woocommerce.urls')),  # 🚀 ENTERPRISE: WooCommerce Sync System
     path('superadmin/', include('api.v1.superadmin.urls')),  # 🚀 ENTERPRISE: Super Admin management

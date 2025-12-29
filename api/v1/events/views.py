@@ -503,18 +503,53 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         
         # Get parameters
-        days = int(request.query_params.get('days', 30))
+        days_param = request.query_params.get('days', '30')
+        days = int(days_param) if days_param else 0
         event_id = request.query_params.get('event_id')
-        start_date = timezone.now() - timedelta(days=days)
         
-        print(f"🔍 [ANALYTICS DEBUG] days={days}, event_id={event_id}, start_date={start_date}")
+        # 🚀 ENTERPRISE: Support "all sales" when days=0
+        # Calculate start_date: if days=0, get from first order, otherwise use days
+        show_all_sales = (days == 0)
+        
+        if show_all_sales:
+            # Get all orders to find the first one
+            base_orders = Order.objects.filter(
+                event__organizer=organizer,
+                status='paid'
+            )
+            if event_id:
+                base_orders = base_orders.filter(event_id=event_id)
+            
+            first_order = base_orders.order_by('created_at').first()
+            if first_order:
+                start_date = first_order.created_at.date()
+                # Calculate actual days from first order to today
+                days = (timezone.now().date() - start_date).days + 1
+                # Convert date to datetime at start of day
+                start_date = timezone.make_aware(datetime.combine(start_date, datetime.min.time()))
+            else:
+                # No orders found, use default 30 days
+                days = 30
+                start_date = timezone.now() - timedelta(days=days)
+                show_all_sales = False
+        else:
+            start_date = timezone.now() - timedelta(days=days)
+        
+        print(f"🔍 [ANALYTICS DEBUG] days={days}, event_id={event_id}, start_date={start_date}, show_all_sales={show_all_sales}")
         
         # Base queryset for PAID orders only (effective sales)
-        orders_queryset = Order.objects.filter(
-            event__organizer=organizer,
-            status='paid',  # Only count actually paid orders
-            created_at__gte=start_date
-        ).select_related('event')
+        if show_all_sales:
+            # Use all orders (no date filter)
+            orders_queryset = Order.objects.filter(
+                event__organizer=organizer,
+                status='paid'
+            ).select_related('event')
+        else:
+            orders_queryset = Order.objects.filter(
+                event__organizer=organizer,
+                status='paid',  # Only count actually paid orders
+                created_at__gte=start_date
+            ).select_related('event')
         
         print(f"🔍 [ANALYTICS DEBUG] Base orders count: {orders_queryset.count()}")
         
@@ -524,43 +559,37 @@ class EventViewSet(viewsets.ModelViewSet):
         else:
             print(f"🔍 [ANALYTICS DEBUG] No event_id filter applied")
         
-        # 🚀 ENTERPRISE: EFFECTIVE REVENUE CALCULATION
-        # Sum the actual 'total' field from orders (what customers actually paid)
-        revenue_data = orders_queryset.aggregate(
-            total_revenue=Sum('total'),  # Lo que realmente pagó el cliente (después de descuentos)
-            total_subtotal=Sum('subtotal'),  # Subtotal original (sin descuento)
-            total_service_fees=Sum('service_fee'),  # Service fees originales (sin descuento)
-            total_taxes=Sum('taxes'),
-            total_discount=Sum('discount'),
-            total_orders=Count('id')
-        )
+        # 🚀 ENTERPRISE: Use centralized revenue calculator
+        # This ensures consistency across all endpoints
+        from core.revenue_calculator import calculate_event_revenue
         
-        total_revenue = float(revenue_data['total_revenue'] or 0)
-        total_subtotal_original = float(revenue_data['total_subtotal'] or 0)
-        total_service_fees_original = float(revenue_data['total_service_fees'] or 0)
-        total_original = total_subtotal_original + total_service_fees_original
-        
-        # 🚀 ENTERPRISE: Calcular revenue efectivo del organizador
-        # Distribuir el descuento proporcionalmente entre subtotal y service_fee
-        # 🚀 ENTERPRISE: Todos los valores deben ser enteros (sin decimales para CLP)
-        if total_original > 0:
-            # Ratio de lo que realmente se pagó vs lo original
-            payment_ratio = Decimal(str(total_revenue)) / Decimal(str(total_original))
+        # Calculate revenue using centralized function
+        # Note: For analytics, we need to calculate per event if event_id is provided
+        if event_id:
+            from apps.events.models import Event
+            try:
+                event = Event.objects.get(id=event_id, organizer=organizer)
+                revenue_result = calculate_event_revenue(
+                    event,
+                    start_date=start_date if not show_all_sales else None,
+                    end_date=timezone.now() if not show_all_sales else None,
+                    validate=True
+                )
+                # Extract values from centralized calculation
+                total_revenue = revenue_result['total_revenue']
+                gross_revenue_effective = revenue_result['gross_revenue']
+                service_fees_effective = revenue_result['service_fees']
+                total_subtotal_original = revenue_result['subtotal_original']
+                total_service_fees_original = revenue_result['service_fees_original']
+                total_discount = revenue_result['total_discount']
+                total_orders = revenue_result['total_orders']
+            except Event.DoesNotExist:
+                return Response(
+                    {"detail": "Evento no encontrado"}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
             
-            # Revenue efectivo del organizador (subtotal después del descuento proporcional)
-            gross_revenue_effective = (Decimal(str(total_subtotal_original)) * payment_ratio).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
-            
-            # Service fees efectivos (después del descuento proporcional)
-            service_fees_effective = (Decimal(str(total_service_fees_original)) * payment_ratio).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
-            
-            # Convertir a float para la respuesta
-            gross_revenue_effective = float(gross_revenue_effective)
-            service_fees_effective = float(service_fees_effective)
-        else:
-            gross_revenue_effective = 0
-            service_fees_effective = 0
-        
-        # Calculate total tickets sold (from order items)
+        # Calculate total tickets sold (from order items) - ALWAYS needed
         tickets_data = OrderItem.objects.filter(
             order__in=orders_queryset
         ).aggregate(
@@ -570,14 +599,12 @@ class EventViewSet(viewsets.ModelViewSet):
         )
         
         total_tickets = tickets_data['total_tickets'] or 0
-        total_orders = revenue_data['total_orders'] or 0
         
         # Calculate effective average ticket price (base price without service fees)
         effective_avg_price = 0
         if total_tickets > 0:
-            # Use unit_price sum for accurate ticket price calculation
-            gross_revenue_from_items = float(tickets_data['total_gross_revenue'] or 0)
-            effective_avg_price = gross_revenue_from_items / total_tickets
+            # Use gross revenue effective for accurate average
+            effective_avg_price = gross_revenue_effective / total_tickets if gross_revenue_effective > 0 else 0
         
         # 🚀 ENTERPRISE: Time series with effective revenue
         chart_data = []
@@ -630,11 +657,13 @@ class EventViewSet(viewsets.ModelViewSet):
             event = Event.objects.get(id=event_id)
             for tier in event.ticket_tiers.all():
                 # Get orders that have this tier
-                tier_orders = Order.objects.filter(
-                    items__ticket_tier=tier,
-                    status='paid',
-                    created_at__gte=start_date
-                ).distinct()
+                tier_orders_filter = {
+                    'items__ticket_tier': tier,
+                    'status': 'paid'
+                }
+                if not show_all_sales:
+                    tier_orders_filter['created_at__gte'] = start_date
+                tier_orders = Order.objects.filter(**tier_orders_filter).distinct()
                 
                 # Calculate totals for orders with this tier
                 tier_order_stats = tier_orders.aggregate(
@@ -660,11 +689,13 @@ class EventViewSet(viewsets.ModelViewSet):
                     tier_effective_revenue = 0
                     tier_effective_service_fees = 0
                 
-                tier_items = OrderItem.objects.filter(
-                    ticket_tier=tier,
-                    order__status='paid',
-                    order__created_at__gte=start_date
-                ).aggregate(
+                tier_items_filter = {
+                    'ticket_tier': tier,
+                    'order__status': 'paid'
+                }
+                if not show_all_sales:
+                    tier_items_filter['order__created_at__gte'] = start_date
+                tier_items = OrderItem.objects.filter(**tier_items_filter).aggregate(
                     tickets=Sum('quantity')
                 )
                 
@@ -686,11 +717,13 @@ class EventViewSet(viewsets.ModelViewSet):
                 'order_ids': set()
             })
             
-            order_items = OrderItem.objects.filter(
-                order__event__organizer=organizer,
-                order__status='paid',
-                order__created_at__gte=start_date
-            ).select_related('ticket_tier', 'order')
+            order_items_filter = {
+                'order__event__organizer': organizer,
+                'order__status': 'paid'
+            }
+            if not show_all_sales:
+                order_items_filter['order__created_at__gte'] = start_date
+            order_items = OrderItem.objects.filter(**order_items_filter).select_related('ticket_tier', 'order')
             
             # First pass: collect tier info and order IDs
             for item in order_items:
@@ -757,7 +790,7 @@ class EventViewSet(viewsets.ModelViewSet):
                 'totalRevenue': total_revenue,  # Lo que pagó el cliente (después de descuentos)
                 'grossRevenue': round(gross_revenue_effective, 2),  # Revenue efectivo del organizador (después de descuentos proporcionales)
                 'totalServiceFees': round(service_fees_effective, 2),  # Service fees efectivos (después de descuentos proporcionales)
-                'totalDiscounts': float(revenue_data['total_discount'] or 0),
+                 'totalDiscounts': total_discount,
                 'averageTicketPrice': round(effective_avg_price, 2),  # Effective average
                 'totalOrders': total_orders,
                 'conversionRate': 0,  # Placeholder - needs view tracking implementation
@@ -1082,29 +1115,27 @@ class EventViewSet(viewsets.ModelViewSet):
         
         # Calculate metrics for each event
         events_with_metrics = []
+        # 🚀 ENTERPRISE: Use centralized revenue calculator for consistency
+        from core.revenue_calculator import calculate_event_revenue
+        
         for event in events:
-            # 🚀 ENTERPRISE: Calculate real revenue from actual orders (robust method)
-            from django.db.models import Sum, Count
-            from apps.events.models import Order, OrderItem
-            
-            # 🚀 ENTERPRISE: Calculate REAL revenue from OrderItems (robust method)
-            # Sum unit_price and unit_service_fee for each ticket sold
-            order_items_data = OrderItem.objects.filter(
-                order__event=event,
-                order__status='paid'
-            ).aggregate(
-                total_tickets=Sum('quantity'),
-                total_organizer_revenue=Sum('unit_price'),  # What organizer gets (unit_price × quantity)
-                total_service_fees=Sum('unit_service_fee'),  # Service fees (unit_service_fee × quantity)
-                total_customer_paid=Sum('subtotal')  # What customers actually paid per item
+            # 🚀 ENTERPRISE: Use centralized revenue calculator
+            revenue_result = calculate_event_revenue(
+                event,
+                start_date=None,  # All sales for event list
+                end_date=None,
+                validate=False  # Skip validation for performance in list view
             )
             
-            # Calculate metrics
+            # Extract values from centralized calculation
+            total_revenue = revenue_result['total_revenue']
+            organizer_revenue = revenue_result['gross_revenue']  # Ingresos brutos del organizador
+            service_fees = revenue_result['service_fees']  # Service fees efectivos
+            sold_tickets = revenue_result['total_tickets']
+            total_orders = revenue_result['total_orders']
+            
+            # Calculate total capacity from ticket tiers
             total_tickets = 0
-            sold_tickets = order_items_data['total_tickets'] or 0
-            organizer_revenue = float(order_items_data['total_organizer_revenue'] or 0)
-            service_fees = float(order_items_data['total_service_fees'] or 0)
-            total_revenue = organizer_revenue + service_fees  # Total paid by customers
             
             # Calculate total capacity from ticket tiers
             for tier in event.ticket_tiers.all():
@@ -1134,9 +1165,9 @@ class EventViewSet(viewsets.ModelViewSet):
                     }
                     for tier in event.ticket_tiers.all()
                 ],
-                'total_revenue': total_revenue,  # What customers actually paid
-                'gross_revenue': organizer_revenue,  # Revenue for organizer (unit_price × quantity)
-                'service_fees': service_fees,  # Platform commission (unit_service_fee × quantity)
+                'total_revenue': total_revenue,  # What customers actually paid (after discounts)
+                'gross_revenue': organizer_revenue,  # 🚀 ENTERPRISE: Revenue efectivo del organizador (after proportional discount distribution)
+                'service_fees': service_fees,  # 🚀 ENTERPRISE: Service fees efectivos (after proportional discount distribution)
                 'total_tickets': total_tickets,
                 'sold_tickets': sold_tickets,
                 'has_unlimited_capacity': any(tier.capacity is None for tier in event.ticket_tiers.all()),  # 🚀 ENTERPRISE: Event-level unlimited flag
@@ -1268,6 +1299,84 @@ class EventViewSet(viewsets.ModelViewSet):
         
         image.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+    
+    @action(detail=True, methods=['post'], url_path='images/from-asset')
+    def create_image_from_asset(self, request, pk=None):
+        """
+        🚀 ENTERPRISE: Create EventImage from MediaAsset.
+        
+        Payload:
+        {
+            "asset_id": "uuid",
+            "replace_main": true,  // Optional, default true
+            "type": "image",  // Optional: image, banner, thumbnail, gallery
+            "alt": "Alt text"  // Optional
+        }
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        from apps.media.models import MediaAsset, MediaUsage
+        from django.contrib.contenttypes.models import ContentType
+        
+        event = self.get_object()
+        asset_id = request.data.get('asset_id')
+        replace_main = request.data.get('replace_main', True)
+        image_type = request.data.get('type', 'image')
+        alt_text = request.data.get('alt', '')
+        
+        if not asset_id:
+            return Response({'detail': 'asset_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            asset = MediaAsset.objects.get(id=asset_id, deleted_at__isnull=True)
+        except MediaAsset.DoesNotExist:
+            return Response({'detail': 'Asset not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Verify organizer owns the asset (or it's global)
+        organizer = self.get_organizer()
+        if asset.scope == 'organizer' and asset.organizer != organizer:
+            return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+        
+        # Replace main image if requested
+        if replace_main:
+            main_image = event.images.filter(order=0).first()
+            if main_image:
+                try:
+                    from django.core.files.storage import default_storage
+                    default_storage.delete(main_image.image.name)
+                except Exception as e:
+                    logger.warning(f"Could not delete old image: {e}")
+                main_image.delete()
+            order = 0
+        else:
+            order = event.images.count()
+        
+        # Create EventImage using the asset's file path
+        event_image = EventImage.objects.create(
+            event=event,
+            image=asset.file.name,  # Reference same file in GCS
+            alt=alt_text or asset.original_filename,
+            type=image_type,
+            order=order
+        )
+        
+        # Create MediaUsage tracking
+        content_type = ContentType.objects.get_for_model(Event)
+        MediaUsage.objects.create(
+            asset=asset,
+            content_type=content_type,
+            object_id=event.id,
+            field_name=f"image_{image_type}"
+        )
+        
+        logger.info(f"📸 [EVENT-MEDIA] Created EventImage {event_image.id} from asset {asset.id} for event {event.id}")
+        
+        return Response({
+            'event_image_id': str(event_image.id),
+            'url': asset.url,  # Use asset.url instead of building from event_image.image.url
+            'message': 'Image linked successfully'
+        }, status=status.HTTP_201_CREATED)
 
     def perform_create(self, serializer):
         # Obtener el organizador del usuario de manera correcta
@@ -5439,4 +5548,87 @@ def send_order_email_sync(request, order_number):
             'success': False,
             'message': 'Internal server error',
             'error': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def proxy_event_image(request):
+    """
+    🎫 ENTERPRISE: Proxy endpoint to serve event images with CORS headers.
+    
+    This endpoint solves the CORS issue when html2canvas tries to load images
+    from Google Cloud Storage for PDF generation.
+    
+    Usage:
+        GET /api/v1/events/images/proxy/?url=https://storage.googleapis.com/...
+    
+    Returns:
+        Image file with proper CORS headers
+    """
+    import logging
+    import requests
+    from django.http import StreamingHttpResponse
+    from django.conf import settings
+    
+    logger = logging.getLogger(__name__)
+    
+    image_url = request.GET.get('url')
+    
+    if not image_url:
+        return Response(
+            {'error': 'Missing url parameter'}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Validate that the URL is from our storage bucket (security)
+    allowed_domains = [
+        'storage.googleapis.com',
+        settings.GS_BUCKET_NAME if hasattr(settings, 'GS_BUCKET_NAME') else None,
+    ]
+    allowed_domains = [d for d in allowed_domains if d]
+    
+    if not any(domain in image_url for domain in allowed_domains):
+        return Response(
+            {'error': 'Invalid image URL domain'}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    try:
+        # Fetch the image from Google Cloud Storage
+        response = requests.get(image_url, stream=True, timeout=10)
+        response.raise_for_status()
+        
+        # Determine content type from response or default to image/jpeg
+        content_type = response.headers.get('Content-Type', 'image/jpeg')
+        
+        # Create streaming response with CORS headers
+        proxy_response = StreamingHttpResponse(
+            response.iter_content(chunk_size=8192),
+            content_type=content_type
+        )
+        
+        # Add CORS headers to allow cross-origin requests
+        proxy_response['Access-Control-Allow-Origin'] = '*'
+        proxy_response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        proxy_response['Access-Control-Allow-Headers'] = 'Content-Type'
+        proxy_response['Cache-Control'] = 'public, max-age=86400'  # Cache for 24 hours
+        
+        # Copy content length if available
+        if 'Content-Length' in response.headers:
+            proxy_response['Content-Length'] = response.headers['Content-Length']
+        
+        return proxy_response
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ [IMAGE_PROXY] Error fetching image {image_url}: {e}")
+        return Response(
+            {'error': 'Failed to fetch image'}, 
+            status=status.HTTP_502_BAD_GATEWAY
+        )
+    except Exception as e:
+        logger.error(f"❌ [IMAGE_PROXY] Unexpected error: {e}", exc_info=True)
+        return Response(
+            {'error': 'Internal server error'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        ) 

@@ -1,20 +1,34 @@
 """Views for experiences API."""
 
 import logging
+import uuid
+import time
+from decimal import Decimal
+from datetime import timedelta
 from rest_framework import viewsets, status, permissions
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
-from django.db.models import Q
+from rest_framework.views import APIView
+from django.db.models import Q, F, Sum
+from django.db import transaction
 from django.utils import timezone
+from django.contrib.auth import get_user_model
 
-from apps.experiences.models import Experience, TourLanguage, TourInstance, TourBooking, OrganizerCredit
+from apps.experiences.models import (
+    Experience, TourLanguage, TourInstance, TourBooking, OrganizerCredit,
+    ExperienceResource, ExperienceReservation, ExperienceDatePriceOverride,
+    ExperienceCapacityHold, ExperienceResourceHold
+)
 from apps.experiences.serializers import (
     ExperienceSerializer,
     TourLanguageSerializer,
     TourInstanceSerializer,
     TourBookingSerializer,
     TourBookingCreateSerializer,
-    OrganizerCreditSerializer
+    OrganizerCreditSerializer,
+    ExperienceResourceSerializer,
+    ExperienceDatePriceOverrideSerializer,
+    ExperienceReservationSerializer
 )
 from apps.organizers.models import OrganizerUser
 from core.permissions import HasExperienceModule
@@ -45,31 +59,285 @@ class ExperienceViewSet(viewsets.ModelViewSet):
             return None
     
     def get_queryset(self):
-        """Return experiences based on user permissions."""
-        organizer = self.get_organizer()
+        """
+        Return experiences based on user permissions.
+        🚀 ENTERPRISE: Supports filtering deleted experiences.
+        """
+        queryset = self.queryset.all()
         
-        # If user is an organizer, return their experiences
-        if organizer:
-            return self.queryset.filter(organizer=organizer)
+        # Check if requesting deleted experiences
+        show_deleted = self.request.query_params.get('show_deleted', 'false').lower() == 'true'
         
-        # For public access (retrieve only)
-        if self.action == 'retrieve':
-            return Experience.objects.filter(status='published')
+        if not show_deleted:
+            # By default, exclude soft-deleted experiences
+            queryset = queryset.filter(deleted_at__isnull=True)
         
-        # Otherwise return empty
-        return Experience.objects.none()
-    
-    def get_permissions(self):
-        """Allow public access to retrieve endpoint."""
-        if self.action == 'retrieve':
-            return [permissions.AllowAny()]
-        return [permissions.IsAuthenticated(), HasExperienceModule()]
+        return queryset
     
     def get_serializer_context(self):
         """Add additional context to serializer."""
         context = super().get_serializer_context()
         context['request'] = self.request
         return context
+    
+    def perform_create(self, serializer):
+        """Automatically assign organizer when creating experience."""
+        organizer = self.get_organizer()
+        if not organizer:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("User is not associated with any organizer")
+        
+        # Check if organizer has experience module enabled
+        if not organizer.has_experience_module:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Experience module is not enabled for this organizer")
+        
+        serializer.save(organizer=organizer)
+    
+    @action(detail=True, methods=['post'], url_path='soft-delete')
+    def soft_delete(self, request, pk=None):
+        """
+        🚀 ENTERPRISE: Soft delete an experience (archive it).
+        Sets deleted_at timestamp and hides from public listings.
+        """
+        experience = self.get_object()
+        
+        # Verify ownership
+        organizer = self.get_organizer()
+        if not organizer or experience.organizer != organizer:
+            return Response(
+                {"error": "You don't have permission to delete this experience"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if experience.deleted_at:
+            return Response(
+                {"error": "Experience is already deleted"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        experience.deleted_at = timezone.now()
+        experience.is_active = False  # Also deactivate when deleting
+        experience.save()
+        
+        logger.info(f"Experience {experience.id} soft-deleted by organizer {organizer.id}")
+        
+        return Response({
+            "message": "Experience deleted successfully",
+            "id": str(experience.id),
+            "deleted_at": experience.deleted_at
+        })
+    
+    @action(detail=True, methods=['post'], url_path='restore')
+    def restore(self, request, pk=None):
+        """
+        🚀 ENTERPRISE: Restore a soft-deleted experience.
+        Clears deleted_at timestamp and makes it available again.
+        """
+        experience = self.get_object()
+        
+        # Verify ownership
+        organizer = self.get_organizer()
+        if not organizer or experience.organizer != organizer:
+            return Response(
+                {"error": "You don't have permission to restore this experience"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if not experience.deleted_at:
+            return Response(
+                {"error": "Experience is not deleted"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        experience.deleted_at = None
+        # Note: We don't automatically set is_active=True, organizer must activate separately
+        experience.save()
+        
+        logger.info(f"Experience {experience.id} restored by organizer {organizer.id}")
+        
+        return Response({
+            "message": "Experience restored successfully",
+            "id": str(experience.id),
+            "is_active": experience.is_active
+        })
+    
+    @action(detail=True, methods=['post'], url_path='toggle-active')
+    def toggle_active(self, request, pk=None):
+        """
+        🚀 ENTERPRISE: Toggle experience active status.
+        When inactive, experience is hidden from public listings but not deleted.
+        """
+        experience = self.get_object()
+        
+        # Verify ownership
+        organizer = self.get_organizer()
+        if not organizer or experience.organizer != organizer:
+            return Response(
+                {"error": "You don't have permission to modify this experience"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if experience.deleted_at:
+            return Response(
+                {"error": "Cannot activate a deleted experience. Restore it first."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        experience.is_active = not experience.is_active
+        experience.save()
+        
+        action_text = "activated" if experience.is_active else "deactivated"
+        logger.info(f"Experience {experience.id} {action_text} by organizer {organizer.id}")
+        
+        return Response({
+            "message": f"Experience {action_text} successfully",
+            "id": str(experience.id),
+            "is_active": experience.is_active
+        })
+
+    @action(detail=True, methods=['post'], url_path='images/from-assets')
+    def link_images_from_assets(self, request, pk=None):
+        """
+        🚀 ENTERPRISE: Link MediaAssets to Experience.
+        
+        Sets Experience.images from asset URLs and creates MediaUsage records.
+        
+        Payload:
+        {
+            "asset_ids": ["uuid1", "uuid2", ...],
+            "replace": true  // Optional: replace all images or append
+        }
+        """
+        from apps.media.models import MediaAsset, MediaUsage
+        from django.contrib.contenttypes.models import ContentType
+        
+        experience = self.get_object()
+        asset_ids = request.data.get('asset_ids', [])
+        replace = request.data.get('replace', True)
+        
+        if not asset_ids or not isinstance(asset_ids, list):
+            return Response(
+                {'detail': 'asset_ids must be a non-empty array'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Verify organizer permission
+        organizer = self.get_organizer()
+        if not organizer or experience.organizer != organizer:
+            return Response(
+                {'detail': 'Permission denied'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Fetch assets
+        try:
+            assets = MediaAsset.objects.filter(
+                id__in=asset_ids,
+                deleted_at__isnull=True
+            )
+            
+            # Verify organizer owns all assets
+            for asset in assets:
+                if asset.scope == 'organizer' and asset.organizer != organizer:
+                    return Response(
+                        {'detail': f'You do not own asset {asset.id}'},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+            
+            if assets.count() != len(asset_ids):
+                return Response(
+                    {'detail': 'Some assets were not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        except Exception as e:
+            logger.error(f"Error fetching assets: {e}")
+            return Response(
+                {'detail': f'Error fetching assets: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Build image URLs
+        asset_urls = [asset.url for asset in assets if asset.url]
+        
+        # Update experience images
+        if replace:
+            experience.images = asset_urls
+        else:
+            # Append to existing
+            existing = experience.images if isinstance(experience.images, list) else []
+            experience.images = existing + asset_urls
+        
+        experience.save(update_fields=['images'])
+        
+        # Create/update MediaUsage records
+        content_type = ContentType.objects.get_for_model(experience.__class__)
+        
+        # Soft-delete old usages if replacing
+        if replace:
+            MediaUsage.objects.filter(
+                content_type=content_type,
+                object_id=experience.id,
+                field_name='experience.images',
+                deleted_at__isnull=True
+            ).update(deleted_at=timezone.now())
+        
+        # Create new usages
+        for asset in assets:
+            MediaUsage.objects.create(
+                asset=asset,
+                content_type=content_type,
+                object_id=experience.id,
+                field_name='experience.images'
+            )
+        
+        logger.info(
+            f"📸 [EXPERIENCE-MEDIA] Linked {len(asset_urls)} assets to experience {experience.id}"
+        )
+        
+        return Response({
+            'message': f'{len(asset_urls)} images linked successfully',
+            'image_urls': asset_urls
+        }, status=status.HTTP_200_OK)
+    
+    @action(detail=True, methods=['delete'], url_path='images/unlink')
+    def unlink_images(self, request, pk=None):
+        """
+        🚀 ENTERPRISE: Unlink all images from Experience.
+        
+        Clears Experience.images and soft-deletes MediaUsage records.
+        """
+        from apps.media.models import MediaUsage
+        from django.contrib.contenttypes.models import ContentType
+        
+        experience = self.get_object()
+        
+        # Verify organizer permission
+        organizer = self.get_organizer()
+        if not organizer or experience.organizer != organizer:
+            return Response(
+                {'detail': 'Permission denied'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Clear images
+        experience.images = []
+        experience.save(update_fields=['images'])
+        
+        # Soft-delete usages
+        content_type = ContentType.objects.get_for_model(experience.__class__)
+        updated_count = MediaUsage.objects.filter(
+            content_type=content_type,
+            object_id=experience.id,
+            field_name='experience.images',
+            deleted_at__isnull=True
+        ).update(deleted_at=timezone.now())
+        
+        logger.info(f"📸 [EXPERIENCE-MEDIA] Unlinked images from experience {experience.id}")
+        
+        return Response({
+            'message': f'All images unlinked (usages soft-deleted: {updated_count})'
+        }, status=status.HTTP_200_OK)
 
 
 class TourLanguageViewSet(viewsets.ModelViewSet):
@@ -109,7 +377,8 @@ class TourInstanceViewSet(viewsets.ModelViewSet):
         organizer = self._get_organizer()
         if organizer:
             return self.queryset.filter(experience__organizer=organizer).select_related('experience')
-        return TourInstance.objects.none()
+        # Return full queryset for method introspection - permissions will handle access control
+        return self.queryset.all()
     
     def _get_organizer(self):
         """Get organizer from user."""
@@ -217,4 +486,457 @@ class OrganizerCreditViewSet(viewsets.ReadOnlyModelViewSet):
             return organizer_user.organizer if organizer_user else None
         except Exception:
             return None
+
+
+class ExperienceResourceViewSet(viewsets.ModelViewSet):
+    """ViewSet for ExperienceResource model."""
+    
+    queryset = ExperienceResource.objects.all()
+    serializer_class = ExperienceResourceSerializer
+    permission_classes = [permissions.IsAuthenticated, HasExperienceModule]
+    
+    def get_queryset(self):
+        """Filter resources by experience and organizer."""
+        organizer = self._get_organizer()
+        if organizer:
+            return self.queryset.filter(experience__organizer=organizer).select_related('experience')
+        return ExperienceResource.objects.none()
+    
+    def _get_organizer(self):
+        """Get organizer from user."""
+        try:
+            if not self.request.user.is_authenticated:
+                return None
+            organizer_user = OrganizerUser.objects.filter(user=self.request.user).first()
+            return organizer_user.organizer if organizer_user else None
+        except Exception:
+            return None
+
+
+class ExperienceDatePriceOverrideViewSet(viewsets.ModelViewSet):
+    """ViewSet for ExperienceDatePriceOverride model."""
+    
+    queryset = ExperienceDatePriceOverride.objects.all()
+    serializer_class = ExperienceDatePriceOverrideSerializer
+    permission_classes = [permissions.IsAuthenticated, HasExperienceModule]
+    
+    def get_queryset(self):
+        """Filter overrides by experience and organizer."""
+        organizer = self._get_organizer()
+        if organizer:
+            return self.queryset.filter(experience__organizer=organizer).select_related('experience')
+        return ExperienceDatePriceOverride.objects.none()
+    
+    def _get_organizer(self):
+        """Get organizer from user."""
+        try:
+            if not self.request.user.is_authenticated:
+                return None
+            organizer_user = OrganizerUser.objects.filter(user=self.request.user).first()
+            return organizer_user.organizer if organizer_user else None
+        except Exception:
+            return None
+
+
+class ExperienceReservationViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet for ExperienceReservation model (organizer view)."""
+    
+    queryset = ExperienceReservation.objects.all()
+    serializer_class = ExperienceReservationSerializer
+    permission_classes = [permissions.IsAuthenticated, HasExperienceModule]
+    
+    def get_queryset(self):
+        """Filter reservations by organizer."""
+        organizer = self._get_organizer()
+        if organizer:
+            return self.queryset.filter(
+                experience__organizer=organizer
+            ).select_related('experience', 'instance', 'user')
+        return ExperienceReservation.objects.none()
+    
+    def _get_organizer(self):
+        """Get organizer from user."""
+        try:
+            if not self.request.user.is_authenticated:
+                return None
+            organizer_user = OrganizerUser.objects.filter(user=self.request.user).first()
+            return organizer_user.organizer if organizer_user else None
+        except Exception:
+            return None
+
+
+User = get_user_model()
+
+
+class PublicExperienceListView(APIView):
+    """
+    Public API to list published experiences.
+    🚀 ENTERPRISE: Excludes deleted and inactive experiences.
+    """
+    
+    permission_classes = [permissions.AllowAny]
+    
+    def get(self, request):
+        """List published experiences with filters."""
+        queryset = Experience.objects.filter(
+            status='published',
+            is_active=True,
+            deleted_at__isnull=True
+        )
+        
+        # Filters
+        experience_type = request.query_params.get('type')
+        if experience_type:
+            queryset = queryset.filter(type=experience_type)
+        
+        categories = request.query_params.getlist('categories')
+        if categories:
+            queryset = queryset.filter(categories__overlap=categories)
+        
+        # Search
+        search = request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search) |
+                Q(description__icontains=search) |
+                Q(short_description__icontains=search)
+            )
+        
+        serializer = ExperienceSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+
+class PublicExperienceDetailView(APIView):
+    """
+    Public API to get experience details.
+    🚀 ENTERPRISE: Only shows active, non-deleted experiences.
+    """
+    
+    permission_classes = [permissions.AllowAny]
+    
+    def get(self, request, slug_or_id):
+        """Get experience details by slug or ID."""
+        try:
+            # Try by slug first - only show active, non-deleted experiences
+            experience = Experience.objects.get(
+                slug=slug_or_id,
+                status='published',
+                is_active=True,
+                deleted_at__isnull=True
+            )
+        except Experience.DoesNotExist:
+            # Try by ID
+            try:
+                experience = Experience.objects.get(
+                    id=slug_or_id,
+                    status='published',
+                    is_active=True,
+                    deleted_at__isnull=True
+                )
+            except (Experience.DoesNotExist, ValueError):
+                return Response(
+                    {'error': 'Experience not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        
+        # Increment view count
+        experience.views_count = F('views_count') + 1
+        experience.save(update_fields=['views_count'])
+        experience.refresh_from_db()
+        
+        serializer = ExperienceSerializer(experience)
+        return Response(serializer.data)
+
+
+class PublicExperienceInstancesView(APIView):
+    """Public API to get available instances for an experience."""
+    
+    permission_classes = [permissions.AllowAny]
+    
+    def get(self, request, experience_id):
+        """Get available instances with filters."""
+        try:
+            experience = Experience.objects.get(id=experience_id, status='published')
+        except Experience.DoesNotExist:
+            return Response(
+                {'error': 'Experience not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Filter instances
+        queryset = TourInstance.objects.filter(
+            experience=experience,
+            status='active',
+            start_datetime__gte=timezone.now()
+        )
+        
+        # Date range filters
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        
+        if start_date:
+            queryset = queryset.filter(start_datetime__date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(start_datetime__date__lte=end_date)
+        
+        # Language filter
+        language = request.query_params.get('language')
+        if language:
+            queryset = queryset.filter(language=language)
+        
+        serializer = TourInstanceSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+
+# 🚀 ENTERPRISE: Synchronous Email Endpoint for Experiences
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def send_experience_email_sync(request, order_number):
+    """
+    🚀 ENTERPRISE: Send experience confirmation email synchronously.
+    Analogous to api/v1/events/views.py::send_order_email_sync
+    
+    This endpoint is called from the frontend confirmation page to send
+    the experience confirmation email immediately, reducing latency from 5+ minutes
+    to <10 seconds.
+    
+    If the synchronous send fails, it automatically falls back to Celery
+    for retry, ensuring no emails are lost.
+    
+    POST /api/v1/experiences/orders/<order_number>/send-email/?access_token=<token>
+    
+    Args:
+        order_number: Order number from URL
+        access_token: Security token from query params (required)
+        to_email: Optional email override from request body
+        
+    Returns:
+        JSON response with send status and metrics
+    """
+    from apps.events.models import Order, EmailLog
+    from apps.experiences.email_sender import send_experience_confirmation_email_optimized
+    from core.models import PlatformFlow
+    from core.flow_logger import FlowLogger
+    
+    start_time = time.time()
+    
+    try:
+        # 1. Get and validate access_token
+        access_token = request.query_params.get('access_token')
+        if not access_token:
+            logger.warning(f"📧 [EMAIL_SYNC_EXP] Missing access_token for order {order_number}")
+            return Response({
+                'success': False,
+                'message': 'Missing access_token'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 2. Get order with access_token validation
+        try:
+            order = Order.objects.select_related(
+                'experience_reservation',
+                'experience_reservation__experience',
+                'user'
+            ).get(
+                order_number=order_number,
+                access_token=access_token,
+                order_kind='experience'
+            )
+        except Order.DoesNotExist:
+            logger.warning(f"📧 [EMAIL_SYNC_EXP] Order not found or invalid token: {order_number}")
+            return Response({
+                'success': False,
+                'message': 'Order not found or invalid token'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # 3. Get flow for logging and idempotency check
+        flow_obj = None
+        flow_logger = None
+        try:
+            # CRITICAL: Check direct relationship first (most efficient and reliable)
+            flow_obj = order.flow
+            
+            # If not found via direct relationship, try primary_order lookup
+            if not flow_obj:
+                flow_obj = PlatformFlow.objects.filter(
+                    primary_order=order,
+                    flow_type='experience_booking'
+                ).first()
+            
+            # If still not found, search in events
+            if not flow_obj:
+                flow_event = order.flow_events.first()
+                if flow_event:
+                    flow_obj = flow_event.flow
+            
+            # Convert PlatformFlow to FlowLogger for logging
+            if flow_obj:
+                flow_logger = FlowLogger(flow_obj)
+        except Exception as e:
+            logger.warning(f"📧 [EMAIL_SYNC_EXP] Could not find flow for order {order_number}: {e}")
+        
+        # 🚀 ENTERPRISE: IDEMPOTENCY CHECK - Verify if email already sent
+        if flow_obj:
+            email_sent_exists = flow_obj.events.filter(step='EMAIL_SENT').exists()
+            if email_sent_exists:
+                logger.info(f"📧 [EMAIL_SYNC_EXP] ✅ Email already sent for order {order_number} (idempotency check)")
+                return Response({
+                    'success': True,
+                    'message': 'Email already sent',
+                    'already_sent': True,
+                    'emails_sent': 1
+                }, status=status.HTTP_200_OK)
+        
+        # 4. Log EMAIL_SYNC_ATTEMPT
+        if flow_logger:
+            flow_logger.log_event(
+                'EMAIL_SYNC_ATTEMPT',
+                order=order,
+                source='api',
+                status='info',
+                message=f"Attempting synchronous email send for experience order {order_number}",
+                metadata={
+                    'strategy': 'frontend_sync',
+                    'triggered_by': 'confirmation_page'
+                }
+            )
+        
+        logger.info(f"📧 [EMAIL_SYNC_EXP] Starting synchronous email send for order {order_number}")
+        
+        # 5. Get optional email override
+        to_email = request.data.get('to_email')
+        
+        # 6. Send email synchronously
+        result = send_experience_confirmation_email_optimized(
+            order_id=str(order.id),
+            to_email=to_email,
+            flow_id=str(flow_obj.id) if flow_obj else None
+        )
+        
+        total_time_ms = int((time.time() - start_time) * 1000)
+        
+        # 7. Check if send was successful
+        if result.get('status') == 'success' and result.get('emails_sent', 0) > 0:
+            # ✅ SUCCESS
+            logger.info(f"📧 [EMAIL_SYNC_EXP] ✅ Email sent successfully for order {order_number} in {total_time_ms}ms")
+            
+            if flow_logger:
+                flow_logger.log_event(
+                    'EMAIL_SENT',
+                    order=order,
+                    source='api',
+                    status='success',
+                    message=f"Email sent successfully in {total_time_ms}ms",
+                    metadata={
+                        'strategy': 'frontend_sync',
+                        'emails_sent': result.get('emails_sent', 0),
+                        'metrics': result.get('metrics', {}),
+                        'total_time_ms': total_time_ms
+                    }
+                )
+            
+            # Get EmailLog details for confirmation
+            email_logs = EmailLog.objects.filter(
+                order=order,
+                status='sent'
+            ).order_by('-sent_at')[:1]
+            
+            response_data = {
+                'success': True,
+                'message': 'Email sent successfully',
+                'emails_sent': result.get('emails_sent', 0),
+                'metrics': result.get('metrics', {}),
+                'fallback_to_celery': False,
+                'recipients': []
+            }
+            
+            # Add recipient details
+            if email_logs:
+                for email_log in email_logs:
+                    response_data['recipients'].append({
+                        'email': email_log.to_email,
+                        'sent_at': email_log.sent_at.isoformat() if email_log.sent_at else None,
+                        'subject': email_log.subject
+                    })
+            
+            logger.info(
+                f"📧 [EMAIL_SYNC_EXP] ✅ Success response for order {order_number}: "
+                f"{result.get('emails_sent', 0)} emails sent"
+            )
+            
+            return Response(response_data, status=status.HTTP_200_OK)
+        
+        else:
+            # ❌ FAILED - Fallback to Celery
+            logger.warning(f"📧 [EMAIL_SYNC_EXP] ⚠️ Synchronous send failed for order {order_number}, falling back to Celery")
+            
+            if flow_logger:
+                flow_logger.log_event(
+                    'EMAIL_FAILED',
+                    order=order,
+                    source='api',
+                    status='warning',
+                    message=f"Synchronous email send failed, falling back to Celery",
+                    metadata={
+                        'strategy': 'frontend_sync',
+                        'error': result.get('error', 'Unknown error'),
+                        'metrics': result.get('metrics', {})
+                    }
+                )
+            
+            # Enqueue in Celery for retry
+            from apps.experiences.tasks import send_experience_confirmation_email
+            task = send_experience_confirmation_email.apply_async(
+                args=[str(order.id)],
+                kwargs={'flow_id': str(flow_obj.id) if flow_obj else None},
+                queue='emails'
+            )
+            
+            if flow_logger:
+                flow_logger.log_event(
+                    'EMAIL_TASK_ENQUEUED',
+                    order=order,
+                    source='api',
+                    status='info',
+                    message=f"Email enqueued in Celery for retry",
+                    metadata={
+                        'task_id': task.id,
+                        'reason': 'sync_send_failed'
+                    }
+                )
+            
+            logger.info(f"📧 [EMAIL_SYNC_EXP] Enqueued in Celery with task_id: {task.id}")
+            
+            return Response({
+                'success': False,
+                'message': 'Email failed but enqueued in Celery for retry',
+                'fallback_to_celery': True,
+                'task_id': task.id,
+                'error': result.get('error', 'Unknown error')
+            }, status=status.HTTP_202_ACCEPTED)
+    
+    except Exception as e:
+        logger.error(f"❌ [EMAIL_SYNC_EXP] Unexpected error for order {order_number}: {e}", exc_info=True)
+        
+        # Try to enqueue in Celery as last resort
+        try:
+            from apps.experiences.tasks import send_experience_confirmation_email
+            task = send_experience_confirmation_email.apply_async(
+                args=[str(order.id)],
+                queue='emails'
+            )
+            
+            return Response({
+                'success': False,
+                'message': f'Unexpected error, but enqueued in Celery: {str(e)}',
+                'fallback_to_celery': True,
+                'task_id': task.id,
+                'error': str(e)
+            }, status=status.HTTP_202_ACCEPTED)
+        except Exception as celery_error:
+            logger.error(f"❌ [EMAIL_SYNC_EXP] Failed to enqueue in Celery: {celery_error}")
+            return Response({
+                'success': False,
+                'message': f'Critical error: {str(e)}',
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

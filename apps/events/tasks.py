@@ -763,9 +763,10 @@ def ensure_pending_emails_sent(self):
         cutoff_time = timezone.now() - timedelta(minutes=2)
         
         # Find flows with EMAIL_PENDING but without EMAIL_SENT
+        # ✅ CRÍTICO: Incluir tanto ticket_checkout como experience_booking
         pending_flows = PlatformFlow.objects.filter(
             events__step='EMAIL_PENDING',
-            flow_type='ticket_checkout'
+            flow_type__in=['ticket_checkout', 'experience_booking']
         ).exclude(
             events__step='EMAIL_SENT'
         ).distinct().select_related('primary_order')
@@ -807,13 +808,23 @@ def ensure_pending_emails_sent(self):
                 # Enqueue email send
                 logger.info(f"📧 [FALLBACK] Enqueuing email for order {order.order_number} (pending for {timezone.now() - pending_event.created_at})")
                 
-                # Import here to avoid circular imports
-                from apps.events.tasks import send_order_confirmation_email
-                send_order_confirmation_email.apply_async(
-                    args=[str(order.id)],
-                    kwargs={'flow_id': str(flow.id)},
-                    queue='emails'
-                )
+                # ✅ CRÍTICO: Verificar order_kind y llamar task correcto
+                if getattr(order, 'order_kind', 'event') == 'experience':
+                    # Experience order
+                    from apps.experiences.tasks import send_experience_confirmation_email
+                    send_experience_confirmation_email.apply_async(
+                        args=[str(order.id)],
+                        kwargs={'flow_id': str(flow.id)},
+                        queue='emails'
+                    )
+                else:
+                    # Event order (tickets)
+                    from apps.events.tasks import send_order_confirmation_email
+                    send_order_confirmation_email.apply_async(
+                        args=[str(order.id)],
+                        kwargs={'flow_id': str(flow.id)},
+                        queue='emails'
+                    )
                 
                 # Log fallback event
                 flow.log_event(
@@ -824,7 +835,8 @@ def ensure_pending_emails_sent(self):
                     message=f"Email enqueued by periodic fallback task (was pending for {timezone.now() - pending_event.created_at})",
                     metadata={
                         'reason': 'periodic_fallback',
-                        'pending_since': pending_event.created_at.isoformat()
+                        'pending_since': pending_event.created_at.isoformat(),
+                        'order_kind': getattr(order, 'order_kind', 'event')
                     }
                 )
                 
