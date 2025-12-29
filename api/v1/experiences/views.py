@@ -61,7 +61,8 @@ class ExperienceViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """
         Return experiences based on user permissions.
-        🚀 ENTERPRISE: Supports filtering deleted experiences.
+        🚀 ENTERPRISE: By default excludes soft-deleted and inactive experiences.
+        Use show_deleted=true query param to include deleted experiences.
         """
         queryset = self.queryset.all()
         
@@ -69,8 +70,8 @@ class ExperienceViewSet(viewsets.ModelViewSet):
         show_deleted = self.request.query_params.get('show_deleted', 'false').lower() == 'true'
         
         if not show_deleted:
-            # By default, exclude soft-deleted experiences
-            queryset = queryset.filter(deleted_at__isnull=True)
+            # By default, exclude soft-deleted and inactive experiences
+            queryset = queryset.filter(deleted_at__isnull=True, is_active=True)
         
         return queryset
     

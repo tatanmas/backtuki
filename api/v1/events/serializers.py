@@ -460,7 +460,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
         model = OrderItem
         fields = [
             'id', 'ticket_tier', 'ticket_tier_name', 'quantity', 'unit_price',
-            'unit_service_fee', 'subtotal', 'tickets_count', 'attendees'
+            'unit_service_fee', 'subtotal', 'custom_price', 'tickets_count', 'attendees'
         ]
         read_only_fields = ['id', 'ticket_tier_name', 'subtotal', 'tickets_count', 'attendees']
     

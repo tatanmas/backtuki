@@ -4,6 +4,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
     SuperAdminUserViewSet, 
+    CountryViewSet,
     superadmin_stats, 
     sales_analytics, 
     organizer_sales, 
@@ -27,6 +28,7 @@ from .views import (
 # Create router
 router = DefaultRouter()
 router.register(r'users', SuperAdminUserViewSet, basename='superadmin-users')
+router.register(r'countries', CountryViewSet, basename='country')
 
 urlpatterns = [
     path('', include(router.urls)),

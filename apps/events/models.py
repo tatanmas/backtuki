@@ -1051,14 +1051,6 @@ class Order(BaseModel):
         validators=[MinValueValidator(0)],
         default=0
     )
-    discount = models.DecimalField(
-        _("discount"),
-        max_digits=10,
-        decimal_places=2,
-        validators=[MinValueValidator(0)],
-        default=0,
-        help_text=_("Total discount applied (from coupon)")
-    )
     total = models.DecimalField(
         _("total"),
         max_digits=10,

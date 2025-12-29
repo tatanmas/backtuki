@@ -30,6 +30,8 @@ from rest_framework.authtoken.models import Token
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 from apps.sync_woocommerce.models import SyncConfiguration, SyncExecution
 from apps.events.models import EventView, ConversionFunnel
+from core.models import Country
+from core.serializers import CountrySerializer
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -2251,4 +2253,24 @@ def celery_tasks_list(request):
             'success': False,
             'message': f'Error getting celery tasks: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class CountryViewSet(viewsets.ModelViewSet):
+    """
+    🚀 ENTERPRISE: Country Management ViewSet for SuperAdmin.
+    
+    Allows SuperAdmin to manage countries for categorizing experiences and accommodations.
+    """
+    
+    queryset = Country.objects.all()
+    serializer_class = CountrySerializer
+    permission_classes = [AllowAny]  # TODO: Cambiar a IsAdminUser en producción
+    
+    def get_queryset(self):
+        """Return active countries by default, or all if requested."""
+        queryset = Country.objects.all()
+        active_only = self.request.query_params.get('active_only', 'true')
+        if active_only.lower() == 'true':
+            queryset = queryset.filter(is_active=True)
+        return queryset.order_by('display_order', 'name')
 

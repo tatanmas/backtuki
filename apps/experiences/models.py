@@ -184,6 +184,15 @@ class Experience(BaseModel):
         null=True,
         blank=True
     )
+    country = models.ForeignKey(
+        'core.Country',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='experiences',
+        verbose_name=_("country"),
+        help_text=_("Country assigned by SuperAdmin for categorization")
+    )
     
     # Experience details
     duration_minutes = models.PositiveIntegerField(
@@ -246,6 +255,13 @@ class Experience(BaseModel):
     
     # Analytics
     views_count = models.PositiveIntegerField(_("views count"), default=0)
+    
+    # WhatsApp reservation flag (contacts Tuki directly at +56947884342)
+    is_whatsapp_reservation = models.BooleanField(
+        _("is whatsapp reservation"),
+        default=False,
+        help_text=_("If true, users reserve via WhatsApp to Tuki (+56947884342) instead of paying in platform")
+    )
     
     # 🚀 ENTERPRISE: Soft delete and activation control
     is_active = models.BooleanField(

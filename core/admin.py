@@ -9,7 +9,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse
 from django.utils.safestring import mark_safe
-from core.models import PlatformFlow, PlatformFlowEvent, CeleryTaskLog
+from core.models import PlatformFlow, PlatformFlowEvent, CeleryTaskLog, Country
 
 
 @admin.register(PlatformFlow)
@@ -432,4 +432,35 @@ class CeleryTaskLogAdmin(admin.ModelAdmin):
             return "No traceback"
         return format_html('<pre style="background: #ffebee; padding: 10px; color: #c62828; font-size: 11px;">{}</pre>', obj.traceback)
     traceback_display.short_description = 'Traceback'
+
+
+@admin.register(Country)
+class CountryAdmin(admin.ModelAdmin):
+    """Admin interface for Country model."""
+    
+    list_display = ['name', 'code', 'is_active', 'display_order', 'experiences_count', 'created_at']
+    list_filter = ['is_active', 'created_at']
+    search_fields = ['name', 'code']
+    ordering = ['display_order', 'name']
+    
+    fieldsets = (
+        ('Country Information', {
+            'fields': ('name', 'code', 'is_active', 'display_order')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    readonly_fields = ['created_at', 'updated_at']
+    
+    def experiences_count(self, obj):
+        """Display count of experiences in this country."""
+        count = obj.experiences.count()
+        if count > 0:
+            url = reverse('admin:experiences_experience_changelist') + f'?country__id__exact={obj.id}'
+            return format_html('<a href="{}">{}</a>', url, count)
+        return '0'
+    experiences_count.short_description = 'Experiences'
 

@@ -22,6 +22,7 @@ class ExperienceSerializer(serializers.ModelSerializer):
     """Serializer for Experience model."""
     
     organizer_name = serializers.CharField(source='organizer.name', read_only=True)
+    country_name = serializers.CharField(source='country.name', read_only=True)
     
     class Meta:
         model = Experience
@@ -29,9 +30,9 @@ class ExperienceSerializer(serializers.ModelSerializer):
             'id', 'title', 'slug', 'description', 'short_description', 'status', 'type',
             'organizer', 'organizer_name', 'pricing_mode', 'price', 'child_price', 'is_child_priced',
             'infant_price', 'is_infant_priced', 'currency', 'is_free_tour', 'credit_per_person',
-            'capacity_count_rule', 'booking_horizon_days', 'sales_cutoff_hours', 'recurrence_pattern',
-            'location_name', 'location_address', 'location_latitude', 'location_longitude',
-            'duration_minutes', 'max_participants', 'min_participants', 'included', 'not_included',
+            'is_whatsapp_reservation', 'capacity_count_rule', 'booking_horizon_days', 'sales_cutoff_hours',
+            'recurrence_pattern', 'location_name', 'location_address', 'location_latitude', 'location_longitude',
+            'country', 'country_name', 'duration_minutes', 'max_participants', 'min_participants', 'included', 'not_included',
             'requirements', 'itinerary', 'images', 'categories', 'tags', 'views_count',
             'is_active', 'deleted_at', 'created_at', 'updated_at'
         ]

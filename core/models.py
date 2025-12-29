@@ -450,4 +450,47 @@ class CeleryTaskLog(BaseModel):
     
     def __str__(self):
         task_short = self.task_name.split('.')[-1] if '.' in self.task_name else self.task_name
-        return f"{task_short} [{self.status}] - {self.task_id[:8]}" 
+        return f"{task_short} [{self.status}] - {self.task_id[:8]}"
+
+
+class Country(TimeStampedModel):
+    """
+    Country model for categorizing experiences and accommodations by country.
+    Managed by SuperAdmin.
+    """
+    
+    name = models.CharField(
+        _("country name"),
+        max_length=100,
+        unique=True,
+        help_text=_("Country name (e.g., 'Chile', 'Brasil', 'Colombia')")
+    )
+    code = models.CharField(
+        _("country code"),
+        max_length=3,
+        unique=True,
+        blank=True,
+        null=True,
+        help_text=_("ISO country code (optional, e.g., 'CHL', 'BRA')")
+    )
+    is_active = models.BooleanField(
+        _("active"),
+        default=True,
+        help_text=_("Whether this country is active and can be assigned")
+    )
+    display_order = models.IntegerField(
+        _("display order"),
+        default=0,
+        help_text=_("Order in which countries should be displayed (lower = first)")
+    )
+    
+    class Meta:
+        verbose_name = _("Country")
+        verbose_name_plural = _("Countries")
+        ordering = ['display_order', 'name']
+        indexes = [
+            models.Index(fields=['is_active', 'display_order', 'name']),
+        ]
+    
+    def __str__(self):
+        return self.name 
