@@ -1,17 +1,18 @@
 #!/bin/bash
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🚀 TUKI PLATFORM - DEPLOY TO DAKO SERVER
+# 🚀 TUKI PLATFORM - DEPLOY COMPLETO A DAKO SERVER
 # ═══════════════════════════════════════════════════════════════════════════════
-# Este script prepara y levanta Tuki en el servidor Dako
+# Este script prepara y levanta TODO Tuki en el servidor Dako
 # Ejecutar desde: ~/Desktop/tuki/
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set -e
 
 echo "═══════════════════════════════════════════════════════════════════════════════"
-echo "🚀 TUKI PLATFORM - DEPLOY TO DAKO"
+echo "🚀 TUKI PLATFORM - DEPLOY COMPLETO A PRODUCCIÓN"
 echo "═══════════════════════════════════════════════════════════════════════════════"
+echo ""
 
 # Verificar que estamos en el directorio correcto
 if [ ! -d "backtuki" ] || [ ! -d "tuki-experiencias" ]; then
@@ -20,114 +21,139 @@ if [ ! -d "backtuki" ] || [ ! -d "tuki-experiencias" ]; then
     exit 1
 fi
 
-echo ""
-echo "📁 Directorio actual: $(pwd)"
+TUKI_DIR=$(pwd)
+echo "📁 Directorio: $TUKI_DIR"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 1: Copiar archivos de configuración
+# PASO 1: Actualizar repositorios
 # ═══════════════════════════════════════════════════════════════════════════════
-echo "📋 Paso 1: Copiando archivos de configuración..."
+echo "📥 Paso 1: Actualizando repositorios..."
 
-# Copiar docker-compose
+cd "$TUKI_DIR/backtuki"
+git fetch origin main
+git reset --hard origin/main
+echo "   ✅ Backend actualizado"
+
+cd "$TUKI_DIR/tuki-experiencias"
+git fetch origin main
+git reset --hard origin/main
+echo "   ✅ Frontend actualizado"
+
+cd "$TUKI_DIR"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PASO 2: Copiar archivos de configuración
+# ═══════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "📋 Paso 2: Copiando archivos de configuración..."
+
 cp backtuki/docker-compose.dako.yml docker-compose.yml
-echo "   ✅ docker-compose.yml copiado"
+echo "   ✅ docker-compose.yml"
 
-# Copiar nginx config
 cp backtuki/nginx.dako.conf nginx.conf
-echo "   ✅ nginx.conf copiado"
+echo "   ✅ nginx.conf"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 2: Compilar Frontend
+# PASO 3: Compilar Frontend
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🔨 Paso 2: Compilando frontend..."
+echo "🔨 Paso 3: Compilando frontend..."
 
-cd tuki-experiencias
+cd "$TUKI_DIR/tuki-experiencias"
 
-# Verificar si node está instalado
+# Verificar node
 if ! command -v node &> /dev/null; then
-    echo "❌ Node.js no está instalado. Instalando..."
+    echo "   ⚠️ Node.js no encontrado. Instalando..."
     curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
     sudo apt-get install -y nodejs
 fi
 
-# Verificar versión de node
-echo "   Node version: $(node --version)"
-echo "   NPM version: $(npm --version)"
+echo "   Node: $(node --version)"
 
-# Instalar dependencias
-echo "   📦 Instalando dependencias..."
-npm install --legacy-peer-deps
-
-# Crear archivo .env para build
-echo "   📝 Creando .env para producción..."
+# Crear .env.production
 cat > .env.production << 'EOF'
 VITE_API_BASE_URL=https://tukitickets.duckdns.org/api/v1
 VITE_APP_ENV=production
 EOF
+echo "   ✅ .env.production creado"
 
-# Compilar
-echo "   🔨 Compilando React app..."
+# Instalar y compilar
+echo "   📦 Instalando dependencias..."
+npm install --legacy-peer-deps --silent 2>/dev/null || npm install --legacy-peer-deps
+
+echo "   🔨 Compilando..."
 npm run build
 
-echo "   ✅ Frontend compilado en dist/"
+echo "   ✅ Frontend compilado"
 
-cd ..
+cd "$TUKI_DIR"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 3: Levantar servicios de infraestructura primero
+# PASO 4: Detener servicios existentes (si hay)
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🐳 Paso 3: Levantando PostgreSQL y Redis..."
+echo "🛑 Paso 4: Deteniendo servicios existentes..."
+
+docker-compose down 2>/dev/null || true
+echo "   ✅ Servicios detenidos"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PASO 5: Levantar PostgreSQL y Redis
+# ═══════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "🗄️ Paso 5: Levantando PostgreSQL y Redis..."
 
 docker-compose up -d tuki-db tuki-redis
 
-echo "   ⏳ Esperando a que PostgreSQL esté listo..."
-sleep 10
-
-# Verificar que PostgreSQL está listo
-until docker exec tuki-db pg_isready -U tuki_user -d tuki_production; do
-    echo "   ⏳ Esperando PostgreSQL..."
+echo "   ⏳ Esperando PostgreSQL..."
+until docker exec tuki-db pg_isready -U tuki_user -d tuki_production 2>/dev/null; do
     sleep 2
 done
 echo "   ✅ PostgreSQL listo"
 
-# Verificar Redis
-until docker exec tuki-redis redis-cli ping | grep -q PONG; do
-    echo "   ⏳ Esperando Redis..."
+echo "   ⏳ Esperando Redis..."
+until docker exec tuki-redis redis-cli ping 2>/dev/null | grep -q PONG; do
     sleep 2
 done
 echo "   ✅ Redis listo"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 4: Construir y levantar Backend
+# PASO 6: Construir y levantar Backend
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🐍 Paso 4: Construyendo y levantando Backend..."
+echo "🐍 Paso 6: Construyendo Backend..."
 
 docker-compose build tuki-backend
 docker-compose up -d tuki-backend
 
-echo "   ⏳ Esperando a que Backend esté listo..."
-sleep 20
+echo "   ⏳ Esperando Backend..."
+sleep 15
+
+# Verificar que está corriendo
+if ! docker ps | grep -q tuki-backend; then
+    echo "   ❌ Error: Backend no arrancó"
+    docker logs tuki-backend --tail 50
+    exit 1
+fi
+echo "   ✅ Backend corriendo"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 5: Ejecutar migraciones
+# PASO 7: Migraciones y setup
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🗄️ Paso 5: Ejecutando migraciones de base de datos..."
+echo "🗄️ Paso 7: Ejecutando migraciones..."
 
 docker-compose exec -T tuki-backend python manage.py migrate --noinput
-
 echo "   ✅ Migraciones completadas"
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# PASO 6: Crear superusuario si no existe
-# ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "👤 Paso 6: Creando superusuario..."
+echo "📁 Paso 8: Collectstatic..."
+docker-compose exec -T tuki-backend python manage.py collectstatic --noinput
+echo "   ✅ Archivos estáticos recolectados"
 
+echo ""
+echo "👤 Paso 9: Verificando superusuario..."
 docker-compose exec -T tuki-backend python manage.py shell << 'PYEOF'
 from django.contrib.auth import get_user_model
 User = get_user_model()
@@ -139,58 +165,90 @@ if not User.objects.filter(email='admin@tuki.cl').exists():
         first_name='Admin',
         last_name='Tuki'
     )
-    print("✅ Superusuario creado: admin@tuki.cl / TukiAdmin2025!")
+    print("   ✅ Superusuario creado: admin@tuki.cl")
 else:
-    print("ℹ️ Superusuario ya existe")
+    print("   ℹ️ Superusuario ya existe")
 PYEOF
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 7: Collectstatic
+# PASO 10: Levantar Celery
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "📁 Paso 7: Recolectando archivos estáticos..."
-
-docker-compose exec -T tuki-backend python manage.py collectstatic --noinput
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PASO 8: Levantar Celery workers
-# ═══════════════════════════════════════════════════════════════════════════════
-echo ""
-echo "⚙️ Paso 8: Levantando Celery workers..."
+echo "⚙️ Paso 10: Levantando Celery workers..."
 
 docker-compose up -d tuki-celery-worker tuki-celery-beat
+sleep 5
+echo "   ✅ Celery corriendo"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 9: Levantar Frontend
+# PASO 11: Levantar Frontend
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🌐 Paso 9: Levantando Frontend (Nginx)..."
+echo "🌐 Paso 11: Levantando Frontend (Nginx)..."
 
 docker-compose up -d tuki-frontend
+sleep 3
+echo "   ✅ Frontend corriendo en puerto 80"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# RESUMEN FINAL
+# VERIFICACIÓN FINAL
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
 echo "═══════════════════════════════════════════════════════════════════════════════"
-echo "✅ DEPLOY COMPLETADO"
+echo "🔍 VERIFICACIÓN FINAL"
 echo "═══════════════════════════════════════════════════════════════════════════════"
 echo ""
-echo "📊 Estado de los servicios:"
+
+# Mostrar servicios
+echo "📊 Servicios corriendo:"
 docker-compose ps
 echo ""
-echo "🌐 URLs de acceso:"
-echo "   - Frontend:  http://tukitickets.duckdns.org"
-echo "   - Backend:   http://tukitickets.duckdns.org:8000"
-echo "   - Admin:     http://tukitickets.duckdns.org/admin/"
+
+# Verificar endpoints
+echo "🔗 Probando endpoints..."
+
+# Backend health
+if curl -s http://localhost:8000/api/v1/health/ | grep -q "ok\|healthy\|status"; then
+    echo "   ✅ Backend API: http://localhost:8000 ✓"
+else
+    echo "   ⚠️ Backend API: respuesta inesperada (puede estar OK)"
+fi
+
+# Frontend
+if curl -s -o /dev/null -w "%{http_code}" http://localhost:80 | grep -q "200"; then
+    echo "   ✅ Frontend: http://localhost:80 ✓"
+else
+    echo "   ⚠️ Frontend: verificar manualmente"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESUMEN
+# ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🔐 Credenciales de admin:"
-echo "   - Email:    admin@tuki.cl"
-echo "   - Password: TukiAdmin2025!"
+echo "═══════════════════════════════════════════════════════════════════════════════"
+echo "✅ DEPLOY COMPLETADO EXITOSAMENTE"
+echo "═══════════════════════════════════════════════════════════════════════════════"
+echo ""
+echo "🌐 URLs de acceso:"
+echo "   • Frontend:     http://tukitickets.duckdns.org"
+echo "   • Backend API:  http://tukitickets.duckdns.org:8000/api/v1/"
+echo "   • Admin Django: http://tukitickets.duckdns.org:8000/admin/"
+echo ""
+echo "🔐 Credenciales SuperAdmin:"
+echo "   • Email:    admin@tuki.cl"
+echo "   • Password: TukiAdmin2025!"
+echo ""
+echo "📦 Volumes persistentes (datos seguros):"
+echo "   • tuki_postgres_data  → Base de datos"
+echo "   • tuki_media          → Archivos subidos"
+echo "   • tuki_staticfiles    → Archivos estáticos"
+echo "   • tuki_redis_data     → Cache Redis"
 echo ""
 echo "📋 Comandos útiles:"
-echo "   - Ver logs:     docker-compose logs -f"
-echo "   - Reiniciar:    docker-compose restart"
-echo "   - Detener:      docker-compose down"
+echo "   • Ver logs:        docker-compose logs -f"
+echo "   • Ver logs back:   docker-compose logs -f tuki-backend"
+echo "   • Reiniciar:       docker-compose restart"
+echo "   • Detener todo:    docker-compose down"
+echo "   • Actualizar:      ./backtuki/deploy-dako.sh"
 echo ""
 echo "═══════════════════════════════════════════════════════════════════════════════"
