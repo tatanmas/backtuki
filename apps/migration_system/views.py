@@ -197,6 +197,9 @@ def receive_import(request):
         
         export_file = request.FILES['export_file']
         
+        # Log para debugging
+        logger.info(f"Recibido archivo para import: {export_file.name}, size={export_file.size}")
+        
         # Crear config excluyendo el archivo (no es serializable a JSON)
         config_data = {k: v for k, v in request.data.items() if k != 'export_file'}
         

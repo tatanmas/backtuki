@@ -103,10 +103,12 @@ class PlatformImportService:
             self.job.start()
         
         checkpoint = None
+        source_file_path = None  # Guardar ruta para extracción de media
         
         try:
             # Cargar datos si es un archivo
             if isinstance(input_data, str):
+                source_file_path = input_data  # Guardar ruta original
                 input_data = self.load_from_file(input_data)
             
             # Validar formato
@@ -172,6 +174,18 @@ class PlatformImportService:
                         imported_counts[model_path] = len(model_data)
                         self.log('info', f"[DRY RUN] Importaría {len(model_data)} registros de {model_path}")
             
+            # Extraer archivos media del archivo fuente (si es tar.gz)
+            media_result = {'extracted': 0, 'skipped': 0, 'errors': []}
+            if source_file_path and not options.get('dry_run'):
+                if self.job:
+                    self.job.update_progress(92, "Extrayendo archivos media")
+                
+                media_result = self.extract_media_files(source_file_path)
+                
+                if self.job:
+                    self.job.files_transferred = media_result['extracted']
+                    self.job.save(update_fields=['files_transferred'])
+            
             # Verificar integridad si se solicita
             if options.get('verify', True) and not options.get('dry_run'):
                 self.log('info', "Verificando integridad post-import")
@@ -194,7 +208,8 @@ class PlatformImportService:
                 'imported_counts': imported_counts,
                 'checkpoint_id': checkpoint.id if checkpoint else None,
                 'duration_seconds': duration,
-                'dry_run': options.get('dry_run', False)
+                'dry_run': options.get('dry_run', False),
+                'media_files': media_result
             }
             
         except Exception as e:
@@ -328,10 +343,14 @@ class PlatformImportService:
         
         self.log('info', f"Creando checkpoint: {name}")
         
+        # Asegurar que el directorio existe
+        checkpoint_dir = Path(self.checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        
         # Exportar datos actuales
         export_service = PlatformExportService()
         timestamp = timezone.now().strftime('%Y%m%d-%H%M%S')
-        checkpoint_file = Path(self.checkpoint_dir) / f"{name}-{timestamp}.json.gz"
+        checkpoint_file = checkpoint_dir / f"{name}-{timestamp}.json.gz"
         
         result = export_service.export_all(
             output_file=str(checkpoint_file),
@@ -465,6 +484,8 @@ class PlatformImportService:
     def load_from_file(self, file_path):
         """
         Carga datos desde archivo export.
+        Detecta automáticamente el tipo de archivo por contenido (magic bytes),
+        no por extensión.
         
         Args:
             file_path: ruta del archivo
@@ -479,38 +500,143 @@ class PlatformImportService:
         if not file_path.exists():
             raise FileNotFoundError(f"Archivo no encontrado: {file_path}")
         
-        # Detectar tipo de archivo
-        if file_path.name.endswith('.tar.gz') or file_path.name.endswith('.tgz'):
-            # Es un archivo TAR.GZ con JSON + media files
-            with tarfile.open(file_path, 'r:gz') as tar:
-                # Buscar el archivo de datos JSON dentro del tar
-                data_file = None
-                for member in tar.getmembers():
-                    if member.name == 'data.json.gz' or member.name.endswith('/data.json.gz'):
-                        data_file = member
-                        break
-                    elif member.name == 'data.json' or member.name.endswith('/data.json'):
-                        data_file = member
-                        break
-                
-                if not data_file:
-                    raise ValueError("No se encontró archivo de datos (data.json.gz o data.json) en el archivo TAR")
-                
-                # Extraer y leer el archivo de datos
-                extracted = tar.extractfile(data_file)
-                if extracted is None:
-                    raise ValueError(f"No se pudo extraer {data_file.name}")
-                
-                if data_file.name.endswith('.gz'):
-                    with gzip.open(extracted, 'rt', encoding='utf-8') as f:
-                        data = json.load(f)
-                else:
-                    data = json.loads(extracted.read().decode('utf-8'))
-        elif file_path.suffix == '.gz':
-            with gzip.open(file_path, 'rt', encoding='utf-8') as f:
-                data = json.load(f)
-        else:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+        # Leer magic bytes para detectar tipo de archivo
+        with open(file_path, 'rb') as f:
+            magic = f.read(10)
         
-        return data
+        is_gzip = magic[:2] == b'\x1f\x8b'
+        
+        # Intentar abrir como TAR.GZ primero (detectar por contenido, no extensión)
+        if is_gzip:
+            try:
+                with tarfile.open(file_path, 'r:gz') as tar:
+                    # Buscar el archivo de datos JSON dentro del tar
+                    data_file = None
+                    for member in tar.getmembers():
+                        if member.name == 'data.json.gz' or member.name.endswith('/data.json.gz'):
+                            data_file = member
+                            break
+                        elif member.name == 'data.json' or member.name.endswith('/data.json'):
+                            data_file = member
+                            break
+                    
+                    if data_file:
+                        # Es un TAR.GZ válido con datos
+                        extracted = tar.extractfile(data_file)
+                        if extracted is None:
+                            raise ValueError(f"No se pudo extraer {data_file.name}")
+                        
+                        if data_file.name.endswith('.gz'):
+                            with gzip.open(extracted, 'rt', encoding='utf-8') as f:
+                                return json.load(f)
+                        else:
+                            return json.loads(extracted.read().decode('utf-8'))
+            except tarfile.TarError:
+                # No es un tar, intentar como gzip simple
+                pass
+            
+            # Intentar como gzip simple (JSON comprimido)
+            try:
+                with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                raise ValueError(f"Archivo gzip no contiene JSON válido: {e}")
+        
+        # Intentar como JSON plano
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
+    def extract_media_files(self, archive_path, target_dir=None):
+        """
+        Extrae archivos media de un archivo TAR.GZ al directorio de media.
+        
+        Args:
+            archive_path: ruta al archivo tar.gz
+            target_dir: directorio destino (default: MEDIA_ROOT)
+            
+        Returns:
+            dict con estadísticas de extracción
+        """
+        import tarfile
+        from django.conf import settings
+        from django.core.files.storage import default_storage
+        
+        archive_path = Path(archive_path)
+        
+        if not archive_path.exists():
+            return {'extracted': 0, 'skipped': 0, 'errors': []}
+        
+        # Verificar si es un tar.gz
+        with open(archive_path, 'rb') as f:
+            magic = f.read(2)
+        
+        if magic != b'\x1f\x8b':
+            self.log('info', "Archivo no es tar.gz, omitiendo extracción de media")
+            return {'extracted': 0, 'skipped': 0, 'errors': []}
+        
+        try:
+            with tarfile.open(archive_path, 'r:gz') as tar:
+                # Buscar directorio media en el tar
+                media_members = [m for m in tar.getmembers() 
+                               if m.name.startswith('media/') and m.isfile()]
+                
+                if not media_members:
+                    self.log('info', "No hay archivos media en el archivo")
+                    return {'extracted': 0, 'skipped': 0, 'errors': []}
+                
+                self.log('info', f"Encontrados {len(media_members)} archivos media para extraer")
+                
+                # Determinar directorio destino
+                if target_dir is None:
+                    target_dir = Path(settings.MEDIA_ROOT)
+                else:
+                    target_dir = Path(target_dir)
+                
+                target_dir.mkdir(parents=True, exist_ok=True)
+                
+                extracted = 0
+                skipped = 0
+                errors = []
+                
+                for member in media_members:
+                    try:
+                        # Ruta relativa sin el prefijo 'media/'
+                        relative_path = member.name[6:]  # Quitar 'media/'
+                        dest_path = target_dir / relative_path
+                        
+                        # Verificar si ya existe
+                        if dest_path.exists():
+                            skipped += 1
+                            continue
+                        
+                        # Crear directorio padre si no existe
+                        dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        
+                        # Extraer archivo
+                        file_obj = tar.extractfile(member)
+                        if file_obj:
+                            with open(dest_path, 'wb') as dest_file:
+                                import shutil
+                                shutil.copyfileobj(file_obj, dest_file)
+                            extracted += 1
+                            
+                            # Actualizar progreso cada 10 archivos
+                            if extracted % 10 == 0 and self.job:
+                                self.job.files_transferred = extracted
+                                self.job.save(update_fields=['files_transferred'])
+                    
+                    except Exception as e:
+                        errors.append(f"{member.name}: {str(e)}")
+                        logger.warning(f"Error extrayendo {member.name}: {e}")
+                
+                self.log('info', f"Media extraídos: {extracted}, omitidos: {skipped}, errores: {len(errors)}")
+                
+                return {
+                    'extracted': extracted,
+                    'skipped': skipped,
+                    'errors': errors
+                }
+                
+        except tarfile.TarError as e:
+            self.log('warning', f"Error abriendo archivo tar: {e}")
+            return {'extracted': 0, 'skipped': 0, 'errors': [str(e)]}

@@ -189,31 +189,43 @@ class PlatformExportService:
             if output_file:
                 self.log('info', f"Guardando export a {output_file}")
                 
-                # Guardar primero el JSON
-                json_path = output_file.replace('.tar.gz', '_data.json.gz')
-                _, json_size = self.save_to_file(
-                    export_data,
-                    json_path,
-                    options.get('compress', True)
-                )
+                include_media = options.get('include_media', True)
+                has_media_files = bool(export_data.get('media_files'))
                 
-                # Crear archivo TAR.GZ con JSON + archivos media
-                if self.job:
-                    self.job.update_progress(90, "Empaquetando archivos media")
-                
-                file_path, file_size = self.create_full_backup(
-                    json_path,
-                    export_data['media_files'],
-                    output_file
-                )
-                
-                # Limpiar JSON temporal
-                Path(json_path).unlink(missing_ok=True)
+                # Si include_media=True y hay archivos, crear TAR.GZ completo
+                if include_media and has_media_files and output_file.endswith('.tar.gz'):
+                    # Guardar primero el JSON temporal
+                    json_path = output_file.replace('.tar.gz', '_data.json.gz')
+                    _, json_size = self.save_to_file(
+                        export_data,
+                        json_path,
+                        options.get('compress', True)
+                    )
+                    
+                    # Crear archivo TAR.GZ con JSON + archivos media
+                    if self.job:
+                        self.job.update_progress(90, "Empaquetando archivos media")
+                    
+                    file_path, file_size = self.create_full_backup(
+                        json_path,
+                        export_data['media_files'],
+                        output_file
+                    )
+                    
+                    # Limpiar JSON temporal
+                    Path(json_path).unlink(missing_ok=True)
+                else:
+                    # Solo JSON (sin media o checkpoint)
+                    file_path, file_size = self.save_to_file(
+                        export_data,
+                        output_file,
+                        options.get('compress', True)
+                    )
                 
                 if self.job:
                     self.job.export_file_path = file_path
                     self.job.export_file_size_mb = file_size
-                    self.job.files_transferred = len(export_data['media_files'])
+                    self.job.files_transferred = len(export_data.get('media_files', []))
                     self.job.save(update_fields=['export_file_path', 'export_file_size_mb', 'files_transferred'])
             
             duration = (datetime.now() - start_time).total_seconds()
