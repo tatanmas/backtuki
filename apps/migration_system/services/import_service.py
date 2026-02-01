@@ -457,21 +457,24 @@ class PlatformImportService:
         
         missing_critical = []
         for model in critical_models:
-            if model not in export_data['models']:
+            if model not in export_data['models'] or not export_data['models'][model]:
                 missing_critical.append(model)
         
         if missing_critical:
             self.log('warning', f"Modelos críticos faltantes: {', '.join(missing_critical)}")
         
-        # Validar estructura de cada modelo (debe tener 'pk' y 'fields')
+        # Validar estructura de cada modelo
+        # Nota: El formato puede ser directo (serializer) o Django-style (pk/fields)
+        # Ambos son válidos, solo validamos que sean diccionarios con datos
         invalid_models = []
         for model_path, records in export_data['models'].items():
             if records and isinstance(records, list) and len(records) > 0:
                 first_record = records[0]
                 if not isinstance(first_record, dict):
                     invalid_models.append(f"{model_path}: registros no son diccionarios")
-                elif 'pk' not in first_record or 'fields' not in first_record:
-                    invalid_models.append(f"{model_path}: registros sin 'pk' o 'fields'")
+                elif not first_record:  # Diccionario vacío
+                    invalid_models.append(f"{model_path}: registros vacíos")
+                # No validar 'pk'/'fields' porque el formato puede variar
         
         if invalid_models:
             self.log('error', f"Modelos con estructura inválida: {', '.join(invalid_models[:5])}")
