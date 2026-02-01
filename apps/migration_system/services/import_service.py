@@ -472,13 +472,41 @@ class PlatformImportService:
         Returns:
             dict con datos
         """
+        import tarfile
+        
         file_path = Path(file_path)
         
         if not file_path.exists():
             raise FileNotFoundError(f"Archivo no encontrado: {file_path}")
         
-        # Detectar si está comprimido
-        if file_path.suffix == '.gz':
+        # Detectar tipo de archivo
+        if file_path.name.endswith('.tar.gz') or file_path.name.endswith('.tgz'):
+            # Es un archivo TAR.GZ con JSON + media files
+            with tarfile.open(file_path, 'r:gz') as tar:
+                # Buscar el archivo de datos JSON dentro del tar
+                data_file = None
+                for member in tar.getmembers():
+                    if member.name == 'data.json.gz' or member.name.endswith('/data.json.gz'):
+                        data_file = member
+                        break
+                    elif member.name == 'data.json' or member.name.endswith('/data.json'):
+                        data_file = member
+                        break
+                
+                if not data_file:
+                    raise ValueError("No se encontró archivo de datos (data.json.gz o data.json) en el archivo TAR")
+                
+                # Extraer y leer el archivo de datos
+                extracted = tar.extractfile(data_file)
+                if extracted is None:
+                    raise ValueError(f"No se pudo extraer {data_file.name}")
+                
+                if data_file.name.endswith('.gz'):
+                    with gzip.open(extracted, 'rt', encoding='utf-8') as f:
+                        data = json.load(f)
+                else:
+                    data = json.loads(extracted.read().decode('utf-8'))
+        elif file_path.suffix == '.gz':
             with gzip.open(file_path, 'rt', encoding='utf-8') as f:
                 data = json.load(f)
         else:
