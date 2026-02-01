@@ -71,9 +71,9 @@ fi
 
 echo "   Node: $(node --version)"
 
-# Crear .env.production
+# Crear .env.production (HTTP porque no hay SSL)
 cat > .env.production << 'EOF'
-VITE_API_BASE_URL=https://tukitickets.duckdns.org/api/v1
+VITE_API_BASE_URL=http://tukitickets.duckdns.org/api/v1
 VITE_APP_ENV=production
 EOF
 echo "   ✅ .env.production creado"
