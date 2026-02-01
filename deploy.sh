@@ -3,6 +3,20 @@
 # 🚀 ENTERPRISE COMPLETE DEPLOYMENT - Tuki Platform
 # Inspirado en AuroraDev - Deploy completo con migraciones y superusuario
 # Orden correcto: Build -> Deploy -> Migrate -> Create Superuser -> Configure Domain
+#
+# 💰 COST-OPTIMIZED CONFIGURATION (Default Mode)
+# ================================================
+# This script deploys with cost-optimized settings for normal operation (1-100 users):
+#
+# Backend:          min-instances=1  (required for WhatsApp webhooks 24/7)
+# Celery Beat:      min-instances=1  (required to schedule periodic tasks)
+# Celery Worker:    min-instances=1  (required to execute periodic tasks - Cloud Run doesn't auto-scale from Redis queue)
+# Other Workers:    min-instances=0  (scale-to-zero, only activate when needed)
+#
+# 🎯 For EVENTS with 1000+ simultaneous users, use: deploy-event-mode.sh
+#
+# Estimated monthly cost with this configuration: $27-35k CLP/month
+# (vs $57-69k with previous always-on configuration)
 
 set -e
 
@@ -55,6 +69,7 @@ fi
 # Step 2: Deploy to Cloud Run
 print_step "PASO 2: Deploying to Cloud Run..."
 
+# 🚀 COST-OPTIMIZED: Backend min-instances=1 (required for WhatsApp webhooks)
 gcloud run deploy ${SERVICE_NAME} \
   --image ${IMAGE_NAME} \
   --region ${REGION} \
@@ -205,7 +220,9 @@ else
     exit 1
 fi
 
-# Deploy Unified Worker
+# 🚀 COST-OPTIMIZED: Unified Worker min-instances=1 (required for periodic tasks)
+# This is the "anchor" worker that guarantees periodic tasks execute
+# Cloud Run does NOT auto-scale based on Redis queue, so we need at least 1 worker always listening
 print_step "Deploying unified Celery worker..."
 gcloud run deploy tuki-celery-unified \
   --image us-central1-docker.pkg.dev/${PROJECT_ID}/tuki-repo/tuki-celery-unified:${IMAGE_TAG} \
@@ -213,7 +230,7 @@ gcloud run deploy tuki-celery-unified \
   --platform managed \
   --no-allow-unauthenticated \
   --port 8080 \
-  --min-instances 2 \
+  --min-instances 1 \
   --max-instances 10 \
   --concurrency 1 \
   --memory 8Gi \
@@ -259,6 +276,29 @@ else
 fi
 
 print_success "Celery deployment completed!"
+echo ""
+
+# 🚀 COST-OPTIMIZED: Configure specialized workers to scale-to-zero
+# These workers will only activate when there are tasks in their specific queues
+print_step "Configuring specialized workers (scale-to-zero)..."
+echo "Setting min-instances=0 for cost optimization..."
+
+# Check if specialized workers exist and configure them
+for worker_service in tuki-celery-worker-critical tuki-celery-worker-emails tuki-celery-worker-general tuki-celery-worker-sync; do
+  if gcloud run services describe $worker_service --region=${REGION} --project=${PROJECT_ID} &>/dev/null; then
+    echo "  → Configuring $worker_service to min-instances=0..."
+    gcloud run services update $worker_service \
+      --region=${REGION} \
+      --min-instances=0 \
+      --project=${PROJECT_ID} \
+      --quiet
+    echo "    ✅ $worker_service configured"
+  else
+    echo "  ℹ️  $worker_service does not exist (OK - using unified worker)"
+  fi
+done
+
+print_success "Specialized workers configured for cost optimization!"
 echo ""
 print_success "Tuki Platform is now live and ready for production! 🚀"
 

@@ -20,6 +20,60 @@ class PaymentProviderSerializer(serializers.ModelSerializer):
         ]
 
 
+class PaymentProviderAdminSerializer(serializers.ModelSerializer):
+    """
+    🚀 ENTERPRISE: Admin serializer for payment providers
+    Includes full configuration with masked API keys
+    """
+    config_preview = serializers.SerializerMethodField()
+    api_key_preview = serializers.SerializerMethodField()
+    commerce_code = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = PaymentProvider
+        fields = [
+            'id', 'name', 'provider_type', 'is_active', 'is_sandbox',
+            'config', 'config_preview', 'api_key_preview', 'commerce_code',
+            'min_amount', 'max_amount', 'supported_currencies', 
+            'priority', 'timeout_seconds', 'retry_attempts',
+            'created_at', 'updated_at'
+        ]
+    
+    def get_config_preview(self, obj):
+        """Return config with masked sensitive data"""
+        if not obj.config:
+            return {}
+        
+        preview = obj.config.copy()
+        
+        # Mask API key if present
+        if 'api_key' in preview:
+            api_key = preview['api_key']
+            if api_key and len(api_key) > 20:
+                preview['api_key'] = api_key[:20] + '...'
+        
+        return preview
+    
+    def get_api_key_preview(self, obj):
+        """Get masked API key preview"""
+        if not obj.config or 'api_key' not in obj.config:
+            return None
+        
+        api_key = obj.config.get('api_key', '')
+        if not api_key:
+            return None
+        
+        if len(api_key) > 20:
+            return api_key[:20] + '...'
+        return api_key
+    
+    def get_commerce_code(self, obj):
+        """Get commerce code from config"""
+        if not obj.config:
+            return None
+        return obj.config.get('commerce_code')
+
+
 class PaymentMethodSerializer(serializers.ModelSerializer):
     """Serializer for payment methods"""
     
@@ -126,6 +180,7 @@ class PaymentSerializer(serializers.ModelSerializer):
     payment_method = PaymentMethodSerializer(read_only=True)
     order_id = serializers.UUIDField(source='order.id', read_only=True)
     order_total = serializers.DecimalField(source='order.total', max_digits=10, decimal_places=2, read_only=True)
+    order_number = serializers.CharField(source='order.order_number', read_only=True)
     
     # Event information for frontend
     event_info = serializers.SerializerMethodField()
@@ -135,6 +190,7 @@ class PaymentSerializer(serializers.ModelSerializer):
     paymentStatus = serializers.CharField(source='status', read_only=True)
     paymentAmount = serializers.DecimalField(source='amount', max_digits=10, decimal_places=2, read_only=True)
     buyOrder = serializers.CharField(source='buy_order', read_only=True)
+    orderNumber = serializers.CharField(source='order.order_number', read_only=True)
     externalId = serializers.CharField(source='external_id', read_only=True)
     
     # Timestamps
@@ -147,12 +203,12 @@ class PaymentSerializer(serializers.ModelSerializer):
         try:
             event = obj.order.event
             
-            # Get event image
+            # Get event image - build absolute URL for robustness
             event_image = None
             if event.images.exists():
                 first_image = event.images.first()
                 if first_image and first_image.image:
-                    event_image = first_image.image.url
+                    event_image = self._build_absolute_image_url(first_image.image.url)
             
             # Get location info
             location_info = {
@@ -219,12 +275,53 @@ class PaymentSerializer(serializers.ModelSerializer):
             logger.error(f"❌ [PDF] Error getting ticket holders: {e}", exc_info=True)
         return holders
     
+    def _build_absolute_image_url(self, image_url):
+        """
+        🚀 ENTERPRISE: Build absolute URL for images.
+        Works in all environments: local development, staging, production.
+        
+        Args:
+            image_url: URL from ImageField.url (can be relative or absolute)
+            
+        Returns:
+            Absolute URL that works from any client
+        """
+        from django.conf import settings
+        
+        # If already absolute (GCS in production), return as-is
+        if image_url and (image_url.startswith('http://') or image_url.startswith('https://')):
+            return image_url
+        
+        # Build absolute URL for local development
+        # In local: MEDIA_URL = '/media/', need to prepend backend URL
+        if image_url and image_url.startswith('/'):
+            # Get backend URL from settings or environment
+            backend_url = getattr(settings, 'BACKEND_URL', None)
+            
+            if not backend_url:
+                # Fallback: construct from ALLOWED_HOSTS
+                allowed_hosts = getattr(settings, 'ALLOWED_HOSTS', [])
+                if allowed_hosts and allowed_hosts[0] not in ['*', 'localhost', '127.0.0.1']:
+                    backend_url = f"https://{allowed_hosts[0]}"
+                else:
+                    # Development fallback
+                    backend_url = "http://localhost:8000"
+            
+            return f"{backend_url}{image_url}"
+        
+        # If relative path without leading slash
+        if image_url:
+            backend_url = getattr(settings, 'BACKEND_URL', 'http://localhost:8000')
+            return f"{backend_url}/{image_url}"
+        
+        return image_url
+    
     class Meta:
         model = Payment
         fields = [
-            'id', 'paymentId', 'order_id', 'order_total', 'payment_method',
+            'id', 'paymentId', 'order_id', 'order_total', 'order_number', 'payment_method',
             'amount', 'paymentAmount', 'currency', 'status', 'paymentStatus',
-            'buy_order', 'buyOrder', 'external_id', 'externalId', 'token',
+            'buy_order', 'buyOrder', 'orderNumber', 'external_id', 'externalId', 'token',
             'created_at', 'createdAt', 'authorized_at', 'authorizedAt', 
             'completed_at', 'completedAt', 'metadata', 'event_info'
         ]

@@ -50,14 +50,20 @@ INSTALLED_APPS = [
     'apps.payments',
     'apps.forms',
     'apps.satisfaction',  # 🚀 ENTERPRISE: Satisfaction Survey System
+    'apps.migration_system',  # 🚀 ENTERPRISE: Backend-to-Backend Migration System
     'apps.ticket_validation',
     'apps.otp',  # 🔐 OTP Authentication System
     'apps.validation',  # 🚀 Enterprise Validation System
     'apps.sync_woocommerce',  # 🚀 ENTERPRISE: WooCommerce Sync System
     'apps.media',  # 🚀 ENTERPRISE: Media Library System
+    'apps.whatsapp',  # 🚀 ENTERPRISE: WhatsApp Integration
+    'apps.terminal',  # 🚀 ENTERPRISE: Terminal bus schedule management
     'payment_processor',  # 🚀 ENTERPRISE Payment System
     'core',
 ]
+
+# WooCommerce sync toggle (runtime)
+WOOCOMMERCE_SYNC_ENABLED = config('WOOCOMMERCE_SYNC_ENABLED', default=False, cast=bool)
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -160,8 +166,8 @@ REST_FRAMEWORK = {
 
 # JWT settings
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),  # 1 hour
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),     # 7 days
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=8),     # 8 hours (más tiempo para trabajar sin interrupciones)
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),    # 30 days (más persistencia)
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
     'UPDATE_LAST_LOGIN': True,
@@ -179,9 +185,10 @@ SIMPLE_JWT = {
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
     'TOKEN_TYPE_CLAIM': 'token_type',
     'JTI_CLAIM': 'jti',
-    'SLIDING_TOKEN_REFRESH_EXP_CLAIM': 'refresh_exp',
-    'SLIDING_TOKEN_LIFETIME': timedelta(minutes=5),
-    'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=1),
+    # SLIDING_TOKEN settings comentados (no los estamos usando)
+    # 'SLIDING_TOKEN_REFRESH_EXP_CLAIM': 'refresh_exp',
+    # 'SLIDING_TOKEN_LIFETIME': timedelta(minutes=5),
+    # 'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=1),
 }
 
 # Django Spectacular settings
@@ -270,6 +277,27 @@ FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:8080')
 TRANSBANK_WEBPAY_PLUS_COMMERCE_CODE = config('TRANSBANK_WEBPAY_PLUS_COMMERCE_CODE', default='597055555532')
 TRANSBANK_WEBPAY_PLUS_API_KEY = config('TRANSBANK_WEBPAY_PLUS_API_KEY', default='579B532A7440BB0C9079DED94D31EA1615BACEB56610332264630D42D0A36B1C')
 TRANSBANK_WEBPAY_PLUS_SANDBOX = config('TRANSBANK_WEBPAY_PLUS_SANDBOX', default=True, cast=bool)
+
+# 🚀 ENTERPRISE: Migration System Configuration
+MIGRATION_SYSTEM = {
+    'EXPORT_DIR': BASE_DIR / 'exports',
+    'CHECKPOINT_DIR': BASE_DIR / 'checkpoints',
+    'MAX_EXPORT_SIZE_GB': 10,
+    'CHUNK_SIZE': 1000,  # Registros por chunk
+    'FILE_CHUNK_SIZE_MB': 10,  # MB por chunk de archivo
+    'PARALLEL_TRANSFERS': 5,  # Archivos en paralelo
+    'TOKEN_EXPIRY_HOURS': 24,
+    'ALLOWED_SOURCE_DOMAINS': [
+        'prop.cl',
+        'tuki.cl',
+        'www.tuki.cl',
+        'tukitickets.duckdns.org',
+        'localhost',
+        '127.0.0.1',
+        '*.run.app',  # Cloud Run URLs
+    ],
+    'VERIFY_SSL': True,  # Verificar certificados SSL en producción
+}
 
 # Transbank Oneclick Settings (for future implementation)
 TRANSBANK_ONECLICK_COMMERCE_CODE = config('TRANSBANK_ONECLICK_COMMERCE_CODE', default='597055555541')

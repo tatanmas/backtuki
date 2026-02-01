@@ -1,16 +1,23 @@
 """Views for organizers API."""
 
+import logging
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.parsers import MultiPartParser, FormParser
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework.exceptions import NotFound
 from rest_framework.generics import RetrieveUpdateAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
+from django.core.files.storage import default_storage
 import re
+import logging
+import uuid
+
+logger = logging.getLogger(__name__)
 
 from apps.organizers.models import (
     Organizer,
@@ -415,6 +422,77 @@ class CurrentOrganizerView(RetrieveUpdateAPIView):
         if organizer:
             return organizer
         raise NotFound("No organizer is associated with the current user.")
+
+
+class OrganizerLogoUploadView(APIView):
+    """🚀 ENTERPRISE: Upload organizer logo using FormData (like events/tours)."""
+    permission_classes = [IsAuthenticated, IsOrganizer]
+    parser_classes = [MultiPartParser, FormParser]
+    
+    def get_organizer(self):
+        """Get the current user's organizer."""
+        user = self.request.user
+        organizer = user.get_primary_organizer() if hasattr(user, 'get_primary_organizer') else None
+        if not organizer:
+            raise NotFound("No organizer is associated with the current user.")
+        return organizer
+    
+    def post(self, request):
+        """Upload organizer logo."""
+        organizer = self.get_organizer()
+        
+        if 'logo' not in request.FILES:
+            return Response(
+                {'detail': 'No file provided. Use "logo" as the field name.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        file_obj = request.FILES['logo']
+        
+        # Validate file type
+        if not file_obj.content_type.startswith('image/'):
+            return Response(
+                {'detail': 'File must be an image.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate file size (max 10MB)
+        if file_obj.size > 10 * 1024 * 1024:
+            return Response(
+                {'detail': 'File size must be less than 10MB.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Generate unique filename
+            file_extension = file_obj.name.split('.')[-1] if '.' in file_obj.name else 'jpg'
+            filename = f"logo_{uuid.uuid4().hex}.{file_extension}"
+            file_path = f"organizers/logos/{filename}"
+            
+            # Save file using Django's storage backend
+            saved_path = default_storage.save(file_path, file_obj)
+            
+            # Update organizer logo
+            organizer.logo = saved_path
+            organizer.save(update_fields=['logo'])
+            
+            # Get the full URL for the uploaded file
+            file_url = default_storage.url(saved_path)
+            
+            logger.info(f"✅ [Organizer] Logo uploaded: {saved_path} -> {file_url}")
+            
+            return Response({
+                'logo': file_url,
+                'file_path': saved_path,
+                'message': 'Logo uploaded successfully'
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"❌ [Organizer] Error uploading logo: {e}")
+            return Response(
+                {'detail': f'Error uploading logo: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 class DashboardStatsView(APIView):

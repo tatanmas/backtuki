@@ -697,6 +697,22 @@ class TicketTier(BaseModel):
         null=True
     )
     
+    # 🎫 COMPLIMENTARY: Special tier for complimentary tickets
+    is_complimentary = models.BooleanField(
+        _("is complimentary"),
+        default=False,
+        help_text=_("Marks this tier as special for complimentary tickets (doesn't affect inventory)")
+    )
+    complimentary_tier_for_event = models.OneToOneField(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='complimentary_tier',
+        null=True,
+        blank=True,
+        verbose_name=_("complimentary tier for event"),
+        help_text=_("One complimentary tier per event")
+    )
+    
     # Link to form for collecting attendee information
     form = models.ForeignKey(
         'forms.Form',
@@ -1051,6 +1067,14 @@ class Order(BaseModel):
         validators=[MinValueValidator(0)],
         default=0
     )
+    discount = models.DecimalField(
+        _("discount"),
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        default=0,
+        help_text=_("Total discount applied (from coupon)")
+    )
     total = models.DecimalField(
         _("total"),
         max_digits=10,
@@ -1359,7 +1383,12 @@ class Ticket(BaseModel):
     )
     first_name = models.CharField(_("first name"), max_length=100)
     last_name = models.CharField(_("last name"), max_length=100)
-    email = models.EmailField(_("email"))
+    email = models.EmailField(
+        _("email"),
+        blank=True,
+        null=True,
+        help_text=_("Email is optional for complimentary tickets without email")
+    )
     status = models.CharField(
         _("status"),
         max_length=20,
@@ -1451,6 +1480,138 @@ class Ticket(BaseModel):
     def attendee_name(self):
         """Return the attendee's full name."""
         return f"{self.first_name} {self.last_name}"
+
+
+class ComplimentaryTicketInvitation(BaseModel):
+    """
+    🎫 COMPLIMENTARY: Invitation to a complimentary ticket for an event.
+    
+    Created initially with partial data (may not have email) and completed when redeemed.
+    Tickets are generated only when the invitation is redeemed, not at creation time.
+    """
+    
+    STATUS_CHOICES = [
+        ('pending', _('Pendiente de canje')),
+        ('redeemed', _('Canjeada')),
+        ('cancelled', _('Cancelada')),
+    ]
+    
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name='complimentary_invitations',
+        verbose_name=_("event")
+    )
+    ticket_tier = models.ForeignKey(
+        TicketTier,
+        on_delete=models.CASCADE,
+        related_name='complimentary_invitations',
+        verbose_name=_("ticket tier"),
+        help_text=_("Complimentary ticket tier for this event")
+    )
+    
+    # Initial data (may be incomplete)
+    first_name = models.CharField(_("first name"), max_length=100, blank=True)
+    last_name = models.CharField(_("last name"), max_length=100, blank=True)
+    email = models.EmailField(_("email"), blank=True, help_text=_("Email may be empty for invitations"))
+    
+    # Configuration
+    max_tickets = models.PositiveIntegerField(
+        _("max tickets"),
+        default=1,
+        help_text=_("Maximum number of tickets allowed (1 or 2)")
+    )
+    tickets_per_invitation = models.PositiveIntegerField(
+        _("tickets per invitation"),
+        default=1,
+        help_text=_("Number of tickets configured when invitation was created")
+    )
+    
+    # Status
+    status = models.CharField(
+        _("status"),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending'
+    )
+    
+    # Public access token (secure, unique)
+    public_token = models.CharField(
+        _("public token"),
+        max_length=64,
+        unique=True,
+        db_index=True,
+        help_text=_("Secure token for public redemption URL")
+    )
+    
+    # Metadata
+    redeemed_at = models.DateTimeField(_("redeemed at"), null=True, blank=True)
+    redeemed_by_email = models.EmailField(_("redeemed by email"), null=True, blank=True)
+    
+    # Tracking
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name='created_complimentary_invitations',
+        verbose_name=_("created by"),
+        null=True,
+        blank=True,
+        help_text=_("Organizer who created this invitation")
+    )
+    
+    # Related order (created when redeemed)
+    order = models.ForeignKey(
+        'Order',
+        on_delete=models.SET_NULL,
+        related_name='complimentary_invitations',
+        verbose_name=_("order"),
+        null=True,
+        blank=True,
+        help_text=_("Order created when this invitation was redeemed")
+    )
+    
+    class Meta:
+        verbose_name = _("complimentary ticket invitation")
+        verbose_name_plural = _("complimentary ticket invitations")
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['public_token']),
+            models.Index(fields=['event', 'status']),
+            models.Index(fields=['status', '-created_at']),
+        ]
+    
+    def __str__(self):
+        name = f"{self.first_name} {self.last_name}".strip() or "Sin nombre"
+        return f"{name} - {self.event.title} ({self.get_status_display()})"
+    
+    def save(self, *args, **kwargs):
+        """Auto-generate public_token if not set."""
+        if not self.public_token:
+            import secrets
+            # Generate secure random token (48 bytes = 64 chars in base64)
+            self.public_token = secrets.token_urlsafe(48)
+        super().save(*args, **kwargs)
+    
+    def generate_public_url(self):
+        """Generate public redemption URL."""
+        from django.conf import settings
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
+        return f"{frontend_url}/complimentary/{self.public_token}"
+    
+    def can_redeem(self):
+        """Check if invitation can be redeemed."""
+        return self.status == 'pending'
+    
+    @property
+    def full_name(self):
+        """Return full name or placeholder."""
+        name = f"{self.first_name} {self.last_name}".strip()
+        return name or "Invitado"
+    
+    @property
+    def has_email(self):
+        """Check if invitation has email."""
+        return bool(self.email and self.email.strip())
 
 
 class TicketNote(BaseModel):
@@ -2439,7 +2600,7 @@ from .analytics_models import EventView, ConversionFunnel, EventPerformanceMetri
 __all__ = [
     'Location', 'Event', 'TicketTier', 'TicketCategory', 'Order', 'OrderItem', 
     'Ticket', 'TicketHold', 'Coupon', 'EventForm', 'FormField', 'FormSubmission',
-    'EmailLog', 'TicketNote', 'TicketHolderReservation',
+    'EmailLog', 'TicketNote', 'TicketHolderReservation', 'ComplimentaryTicketInvitation',
     # Analytics models
     'EventView', 'ConversionFunnel', 'EventPerformanceMetrics'
 ] 

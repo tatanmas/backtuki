@@ -46,6 +46,9 @@ DATABASES = {
     }
 }
 
+# Allow backend host for Docker internal communication
+ALLOWED_HOSTS = list(ALLOWED_HOSTS) + ['backend']
+
 # Cache
 CACHES = {
     'default': {

@@ -979,3 +979,155 @@ class ExperienceResourceHold(BaseModel):
     def __str__(self):
         return f"Hold {self.quantity}x {self.resource.name} for {self.instance}"
 
+
+class StudentCenterTimelineItem(BaseModel):
+    """Timeline item for a student center experience."""
+    
+    STATUS_CHOICES = (
+        ('draft', _('Draft')),
+        ('tentative', _('Tentative')),
+        ('confirmed', _('Confirmed')),
+        ('cancelled', _('Cancelled')),
+    )
+    
+    id = models.UUIDField(
+        primary_key=True,
+        default=BaseModel._meta.get_field('id').default,
+        editable=False
+    )
+    student_center = models.ForeignKey(
+        Organizer,
+        on_delete=models.CASCADE,
+        related_name='timeline_items',
+        verbose_name=_("student center"),
+        help_text=_("The student center organizer this timeline item belongs to")
+    )
+    experience = models.ForeignKey(
+        Experience,
+        on_delete=models.CASCADE,
+        related_name='student_center_timeline_items',
+        verbose_name=_("experience"),
+        help_text=_("The base experience from the platform")
+    )
+    scheduled_date = models.DateTimeField(
+        _("scheduled date"),
+        null=True,
+        blank=True,
+        help_text=_("Custom scheduled date for this experience")
+    )
+    duration_minutes = models.PositiveIntegerField(
+        _("duration in minutes"),
+        null=True,
+        blank=True,
+        help_text=_("Custom duration (overrides experience default if set)")
+    )
+    min_participants = models.PositiveIntegerField(
+        _("min participants"),
+        null=True,
+        blank=True,
+        help_text=_("Custom minimum participants (overrides experience default if set)")
+    )
+    max_participants = models.PositiveIntegerField(
+        _("max participants"),
+        null=True,
+        blank=True,
+        help_text=_("Custom maximum participants (overrides experience default if set)")
+    )
+    interest_threshold = models.PositiveIntegerField(
+        _("interest threshold"),
+        default=10,
+        help_text=_("Minimum number of interested students required to confirm this experience")
+    )
+    status = models.CharField(
+        _("status"),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='tentative',
+        help_text=_("Current status of this timeline item")
+    )
+    display_order = models.PositiveIntegerField(
+        _("display order"),
+        default=0,
+        help_text=_("Order in which this item appears in the timeline")
+    )
+    
+    class Meta:
+        verbose_name = _("student center timeline item")
+        verbose_name_plural = _("student center timeline items")
+        ordering = ['display_order', 'scheduled_date']
+        indexes = [
+            models.Index(fields=['student_center', 'status']),
+            models.Index(fields=['scheduled_date']),
+            models.Index(fields=['display_order']),
+        ]
+    
+    def __str__(self):
+        return f"{self.experience.title} - {self.student_center.name}"
+    
+    def get_interested_count(self):
+        """Get the count of students interested in this timeline item."""
+        return self.interests.filter(status='pending').count()
+    
+    def can_confirm(self):
+        """Check if this item can be confirmed (threshold reached)."""
+        return self.get_interested_count() >= self.interest_threshold
+
+
+class StudentInterest(BaseModel):
+    """Student interest registration for a timeline item."""
+    
+    STATUS_CHOICES = (
+        ('pending', _('Pending')),
+        ('notified', _('Notified')),
+        ('converted', _('Converted')),
+    )
+    
+    id = models.UUIDField(
+        primary_key=True,
+        default=BaseModel._meta.get_field('id').default,
+        editable=False
+    )
+    timeline_item = models.ForeignKey(
+        StudentCenterTimelineItem,
+        on_delete=models.CASCADE,
+        related_name='interests',
+        verbose_name=_("timeline item"),
+        help_text=_("The timeline item this interest is for")
+    )
+    name = models.CharField(
+        _("name"),
+        max_length=255,
+        help_text=_("Full name of the interested student")
+    )
+    email = models.EmailField(
+        _("email"),
+        help_text=_("Email address of the interested student")
+    )
+    phone = models.CharField(
+        _("phone"),
+        max_length=30,
+        blank=True,
+        help_text=_("Phone number of the interested student")
+    )
+    status = models.CharField(
+        _("status"),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending',
+        help_text=_("Current status of this interest")
+    )
+    
+    class Meta:
+        verbose_name = _("student interest")
+        verbose_name_plural = _("student interests")
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['timeline_item', 'status']),
+            models.Index(fields=['email']),
+            models.Index(fields=['status']),
+        ]
+        unique_together = [['timeline_item', 'email']]
+    
+    def __str__(self):
+        return f"{self.name} - {self.timeline_item.experience.title}"
+

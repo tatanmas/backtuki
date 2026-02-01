@@ -27,9 +27,13 @@ from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 import csv
 import io
+import logging
+import time
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
+
+logger = logging.getLogger(__name__)
 
 from core.permissions import IsOrganizer, HasEventModule
 from apps.events.models import (
@@ -45,6 +49,7 @@ from apps.events.models import (
     Coupon,
     EventCommunication,
     EventImage,
+    ComplimentaryTicketInvitation,
 )
 from apps.forms.models import Form, FormField
 from apps.forms.serializers import FormFieldSerializer
@@ -67,6 +72,18 @@ from .serializers import (
     CouponSerializer,
     EventCommunicationSerializer,
     PublicEventSerializer,
+    ComplimentaryTicketInvitationSerializer,
+    ComplimentaryTicketInvitationCreateBatchSerializer,
+    ComplimentaryTicketInvitationPreviewSerializer,
+    ComplimentaryTicketInvitationRedeemSerializer,
+    PublicComplimentaryTicketInvitationSerializer,
+)
+from apps.events.services.complimentary import (
+    parse_excel_file,
+    parse_text_file,
+    get_or_create_complimentary_tier,
+    redeem_invitation,
+    export_to_excel,
 )
 
 
@@ -2143,6 +2160,193 @@ class EventViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    # 🎫 COMPLIMENTARY: Complimentary ticket invitation endpoints
+    
+    @action(detail=True, methods=['post'], parser_classes=[MultiPartParser, FormParser], url_path='complimentary-tickets/preview')
+    def complimentary_tickets_preview(self, request, pk=None):
+        """
+        Preview Excel/text file for complimentary ticket invitations.
+        
+        Accepts:
+        - Excel file (.xlsx) in 'file' field, OR
+        - Text content in 'text' field with optional 'delimiter' (default: tab)
+        
+        Returns parsed data with suggested column mapping.
+        """
+        event = self.get_object()
+        
+        # Verify organizer has access to this event
+        organizer = self.get_organizer()
+        if not organizer or event.organizer != organizer:
+            return Response(
+                {"detail": "You don't have permission to access this event"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        entries = []
+        errors = []
+        suggested_mapping = {}
+        
+        # Check if Excel file was uploaded
+        if 'file' in request.FILES:
+            file_obj = request.FILES['file']
+            if not file_obj.name.endswith('.xlsx'):
+                return Response(
+                    {"detail": "File must be .xlsx format"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            entries, errors = parse_excel_file(file_obj)
+            
+        # Check if text content was provided
+        elif 'text' in request.data:
+            text_content = request.data.get('text', '')
+            delimiter = request.data.get('delimiter', '\t')
+            entries, errors = parse_text_file(text_content, delimiter)
+            
+        else:
+            return Response(
+                {"detail": "Either 'file' or 'text' field is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Auto-detect column mapping from first row if available
+        if entries:
+            # Try to detect from first entry keys
+            first_entry = entries[0]
+            for key in first_entry.keys():
+                key_lower = key.lower()
+                if any(n in key_lower for n in ['nombre', 'first', 'name', 'invitado']):
+                    suggested_mapping['first_name'] = key
+                elif any(n in key_lower for n in ['apellido', 'last', 'surname']):
+                    suggested_mapping['last_name'] = key
+                elif any(n in key_lower for n in ['email', 'correo', 'mail']):
+                    suggested_mapping['email'] = key
+        
+        serializer = ComplimentaryTicketInvitationPreviewSerializer({
+            'data': entries,
+            'suggested_mapping': suggested_mapping,
+            'errors': errors
+        })
+        
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'], url_path='complimentary-tickets/create-batch')
+    def complimentary_tickets_create_batch(self, request, pk=None):
+        """Create batch of complimentary ticket invitations."""
+        event = self.get_object()
+        
+        # Verify organizer has access
+        organizer = self.get_organizer()
+        if not organizer or event.organizer != organizer:
+            return Response(
+                {"detail": "You don't have permission to access this event"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        serializer = ComplimentaryTicketInvitationCreateBatchSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        entries = serializer.validated_data['entries']
+        tickets_per_invitation = serializer.validated_data['tickets_per_invitation']
+        
+        # Get or create complimentary tier
+        ticket_tier = get_or_create_complimentary_tier(event)
+        
+        # Create invitations
+        invitations = []
+        with transaction.atomic():
+            for entry_data in entries:
+                invitation = ComplimentaryTicketInvitation.objects.create(
+                    event=event,
+                    ticket_tier=ticket_tier,
+                    first_name=entry_data.get('first_name', ''),
+                    last_name=entry_data.get('last_name', ''),
+                    email=entry_data.get('email', ''),
+                    max_tickets=tickets_per_invitation,
+                    tickets_per_invitation=tickets_per_invitation,
+                    created_by=request.user
+                )
+                invitations.append(invitation)
+        
+        # Serialize response
+        response_serializer = ComplimentaryTicketInvitationSerializer(invitations, many=True)
+        return Response({
+            'created': len(invitations),
+            'invitations': response_serializer.data
+        }, status=status.HTTP_201_CREATED)
+    
+    @action(detail=True, methods=['get'], url_path='complimentary-tickets')
+    def complimentary_tickets(self, request, pk=None):
+        """List complimentary ticket invitations for an event."""
+        event = self.get_object()
+        
+        # Verify organizer has access
+        organizer = self.get_organizer()
+        if not organizer or event.organizer != organizer:
+            return Response(
+                {"detail": "You don't have permission to access this event"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        queryset = ComplimentaryTicketInvitation.objects.filter(event=event)
+        
+        # Filters
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        search = request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(email__icontains=search)
+            )
+        
+        serializer = ComplimentaryTicketInvitationSerializer(queryset.order_by('-created_at'), many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'], url_path='complimentary-tickets/export-excel')
+    def complimentary_tickets_export_excel(self, request, pk=None):
+        """Export complimentary ticket invitations to Excel."""
+        event = self.get_object()
+        
+        # Verify organizer has access
+        organizer = self.get_organizer()
+        if not organizer or event.organizer != organizer:
+            return Response(
+                {"detail": "You don't have permission to access this event"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        queryset = ComplimentaryTicketInvitation.objects.filter(event=event)
+        
+        # Apply same filters as list
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        search = request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(email__icontains=search)
+            )
+        
+        # Generate Excel
+        excel_file = export_to_excel(queryset.order_by('-created_at'))
+        
+        # Return as download
+        from django.http import HttpResponse
+        response = HttpResponse(
+            excel_file.read(),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = f'attachment; filename="cortesias_{event.slug}_{timezone.now().strftime("%Y%m%d")}.xlsx"'
+        return response
+
 
 class EventCategoryViewSet(viewsets.ModelViewSet):
     """
@@ -3317,18 +3521,57 @@ class TicketViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         """
         ✅ SOLUCIÓN ROBUSTA: Permitir paginación ilimitada para tickets
+        🚀 OPTIMIZED: Using select_related and prefetch_related for better performance
         """
+        start_time = time.time()
+        event_id = request.query_params.get('event_id')
+        user_email = request.user.email if request.user.is_authenticated else 'anonymous'
+        user_id = request.user.id if request.user.is_authenticated else None
+        
+        logger.info(f'🎫 [TICKETS_LIST] Request started - Event: {event_id}, User: {user_email} (ID: {user_id})')
+        
         # Verificar si se solicita sin paginación
         no_pagination = request.query_params.get('no_pagination', '').lower() == 'true'
         
         if no_pagination:
-            # Devolver todos los tickets sin paginación
-            queryset = self.filter_queryset(self.get_queryset())
-            serializer = self.get_serializer(queryset, many=True)
+            # Get base queryset
+            base_queryset = self.get_queryset()
             
-            # Calcular estadísticas completas
+            # 🚀 OPTIMIZATION: Use select_related and prefetch_related to reduce database queries
+            # This is critical for large events with many tickets
+            queryset = base_queryset.select_related(
+                'order_item__order__event',
+                'order_item__order__user',
+                'order_item__ticket_tier',
+                'check_in_by'
+            ).prefetch_related(
+                'notes',
+                'email_logs'
+            )
+            
+            # Apply filters
+            queryset = self.filter_queryset(queryset)
+            
+            # Count before serialization (more efficient)
+            count_start = time.time()
             total_tickets = queryset.count()
             checked_in_count = queryset.filter(checked_in=True).count()
+            count_time = (time.time() - count_start) * 1000
+            
+            logger.info(f'🎫 [TICKETS_LIST] Queryset prepared - Total tickets: {total_tickets}, Count time: {count_time:.2f}ms')
+            
+            # Serialize with optimized queryset
+            serialize_start = time.time()
+            serializer = self.get_serializer(queryset, many=True)
+            serialize_time = (time.time() - serialize_start) * 1000
+            
+            logger.info(f'🎫 [TICKETS_LIST] Serialization completed - Time: {serialize_time:.2f}ms')
+            
+            # Calculate total processing time
+            total_time = (time.time() - start_time) * 1000
+            
+            logger.info(f'🎫 [TICKETS_LIST] Request completed - Event: {event_id}, Tickets: {total_tickets}, '
+                       f'Total time: {total_time:.2f}ms, User: {user_email}')
             
             return Response({
                 'results': serializer.data,
@@ -3354,10 +3597,15 @@ class TicketViewSet(viewsets.ModelViewSet):
         """
         Get tickets based on permissions with STRICT event isolation.
         🚀 ENTERPRISE: Multi-level filtering to prevent data leakage between events.
+        🚀 OPTIMIZED: Base queryset with select_related for better performance.
         """
         # Regular users can only see their own tickets
         if self.request.user.is_authenticated and not hasattr(self.request.user, 'organizer_roles'):
-            return Ticket.objects.filter(order_item__order__user=self.request.user)
+            return Ticket.objects.select_related(
+                'order_item__order__event',
+                'order_item__order__user',
+                'order_item__ticket_tier'
+            ).filter(order_item__order__user=self.request.user)
         
         # 🚀 ENTERPRISE: Organizers can see tickets for their events with STRICT isolation
         if self.request.user.is_authenticated:
@@ -3367,23 +3615,157 @@ class TicketViewSet(viewsets.ModelViewSet):
                 event_id = self.request.query_params.get('event_id')
                 if not event_id:
                     # 🚨 SECURITY: Without event_id, return empty to prevent data leakage
+                    logger.warning(f'🎫 [TICKETS_QUERYSET] No event_id provided - User: {self.request.user.email}')
+                    return Ticket.objects.none()
+                
+                # 🚨 SECURITY: Additional validation - ensure event belongs to organizer
+                event = Event.objects.filter(id=event_id, organizer=organizer).first()
+                if not event:
+                    logger.warning(f'🎫 [TICKETS_QUERYSET] Event {event_id} not found or not owned by organizer - User: {self.request.user.email}')
                     return Ticket.objects.none()
                 
                 # 🚀 ENTERPRISE: Multi-level filtering for maximum security
+                # 🚀 OPTIMIZED: Base queryset with select_related (additional optimization in list() method)
                 queryset = Ticket.objects.filter(
                     order_item__order__event__organizer=organizer,
                     order_item__order__event_id=event_id  # ← STRICT event isolation
                 )
                 
-                # 🚨 SECURITY: Additional validation - ensure event belongs to organizer
-                event = Event.objects.filter(id=event_id, organizer=organizer).first()
-                if not event:
-                    return Ticket.objects.none()
-                
+                logger.debug(f'🎫 [TICKETS_QUERYSET] Queryset created for event {event_id} - User: {self.request.user.email}')
                 return queryset
         
         # No tickets for unauthenticated users
+        logger.warning(f'🎫 [TICKETS_QUERYSET] Unauthenticated user attempt')
         return Ticket.objects.none()
+    
+    @action(detail=True, methods=['get'], url_path='pdf-data')
+    def pdf_data(self, request, pk=None):
+        """
+        🎫 ENTERPRISE: Get ticket data for PDF generation (single ticket)
+        Returns data in the same format as get_order_tickets but for a single ticket.
+        """
+        from core.permissions import IsSuperAdmin
+        from django.conf import settings
+        
+        try:
+            # Check if this is an admin request (from superadmin panel without auth)
+            is_admin_request = request.query_params.get('admin') == 'true'
+            
+            # Check permissions
+            is_authenticated = request.user.is_authenticated
+            is_superadmin = is_authenticated and (request.user.is_superuser or IsSuperAdmin().has_permission(request, None))
+            is_organizer = is_authenticated and self.get_organizer() is not None
+            
+            if not (is_superadmin or is_organizer or is_admin_request):
+                return Response({
+                    'success': False,
+                    'error': 'PERMISSION_DENIED',
+                    'message': 'You do not have permission to access this ticket'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            # Get the ticket directly (bypass queryset filtering for admin requests or when event_id is not in query)
+            # For organizers, we need to bypass queryset filtering if event_id is not provided
+            # because get_queryset() returns empty queryset without event_id
+            if is_admin_request or (is_organizer and not request.query_params.get('event_id')):
+                # Get ticket directly without queryset filtering
+                try:
+                    ticket = Ticket.objects.select_related(
+                        'order_item__order__event',
+                        'order_item__order__event__location',
+                        'order_item__ticket_tier'
+                    ).prefetch_related(
+                        'order_item__order__event__images'
+                    ).get(id=pk)
+                except Ticket.DoesNotExist:
+                    return Response({
+                        'success': False,
+                        'error': 'TICKET_NOT_FOUND',
+                        'message': 'Ticket not found'
+                    }, status=status.HTTP_404_NOT_FOUND)
+            else:
+                # For authenticated users with event_id, use get_object() which respects queryset filtering
+                try:
+                    ticket = self.get_object()
+                except Exception as e:
+                    # If get_object() fails (e.g., queryset is empty), try direct lookup
+                    try:
+                        ticket = Ticket.objects.select_related(
+                            'order_item__order__event',
+                            'order_item__order__event__location',
+                            'order_item__ticket_tier'
+                        ).prefetch_related(
+                            'order_item__order__event__images'
+                        ).get(id=pk)
+                    except Ticket.DoesNotExist:
+                        return Response({
+                            'success': False,
+                            'error': 'TICKET_NOT_FOUND',
+                            'message': 'Ticket not found'
+                        }, status=status.HTTP_404_NOT_FOUND)
+            
+            order = ticket.order_item.order
+            event = order.event
+            
+            # For organizers (not admin requests), verify they have access to this event
+            if is_organizer and not is_superadmin and not is_admin_request:
+                organizer = self.get_organizer()
+                if event.organizer != organizer:
+                    return Response({
+                        'success': False,
+                        'error': 'PERMISSION_DENIED',
+                        'message': 'You do not have permission to access this ticket'
+                    }, status=status.HTTP_403_FORBIDDEN)
+            
+            # Build event data
+            image_url = None
+            if event.images.exists():
+                first_image = event.images.first()
+                if first_image and first_image.image:
+                    relative_url = first_image.image.url
+                    if relative_url and not (relative_url.startswith('http://') or relative_url.startswith('https://')):
+                        image_url = request.build_absolute_uri(relative_url)
+                    else:
+                        image_url = relative_url
+            
+            event_data = {
+                'id': str(event.id),
+                'title': event.title,
+                'start_date': event.start_date.isoformat() if event.start_date else None,
+                'location': {
+                    'name': event.location.name if event.location else 'Ubicación no disponible',
+                    'address': event.location.address if event.location and hasattr(event.location, 'address') else '',
+                },
+                'image_url': image_url,
+            }
+            
+            # Build ticket data (single ticket)
+            ticket_data = [{
+                'ticket_number': ticket.ticket_number,
+                'first_name': ticket.first_name,
+                'last_name': ticket.last_name,
+                'email': ticket.email,
+                'tier_name': ticket.order_item.ticket_tier.name if ticket.order_item and ticket.order_item.ticket_tier else 'General',
+                'tier_id': str(ticket.order_item.ticket_tier.id) if ticket.order_item and ticket.order_item.ticket_tier else None,
+            }]
+            
+            return Response({
+                'success': True,
+                'order_number': order.order_number,
+                'order_created_at': order.created_at.isoformat(),
+                'event': event_data,
+                'tickets': ticket_data,
+                'ticket_count': 1,
+            })
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"❌ [TICKET_PDF_DATA] Error getting ticket PDF data: {e}", exc_info=True)
+            return Response({
+                'success': False,
+                'error': 'SERVER_ERROR',
+                'message': f'Error getting ticket data: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['get'])
     def by_uuid(self, request):
@@ -5013,9 +5395,12 @@ def generate_ticket_qr(request, ticket_number):
 @permission_classes([AllowAny])
 def get_order_tickets(request, order_number):
     """
-    🎫 ENTERPRISE: Get all tickets for an order by order number and access token
+    🎫 ENTERPRISE: Get all tickets for an order by order number
     
-    Authentication: Requires access_token as query parameter (public access)
+    Authentication: 
+    - Option 1: access_token as query parameter (public access for customers)
+    - Option 2: JWT authentication (for organizers/superadmin)
+    
     Returns complete ticket data including:
     - Real ticket numbers (not temporary)
     - First name and last name
@@ -5025,34 +5410,82 @@ def get_order_tickets(request, order_number):
     """
     try:
         from apps.events.models import Order, Ticket
+        from core.permissions import IsSuperAdmin, IsOrganizer
         
         # Get access token from query parameters
         access_token = request.query_params.get('token')
         
-        if not access_token:
-            return Response({
-                'success': False,
-                'error': 'TOKEN_REQUIRED',
-                'message': 'Access token is required. Please use the link from your confirmation email.'
-            }, status=status.HTTP_401_UNAUTHORIZED)
+        # Check if user is authenticated via JWT (organizer/superadmin)
+        is_authenticated_user = request.user.is_authenticated
+        is_superadmin = is_authenticated_user and (request.user.is_superuser or IsSuperAdmin().has_permission(request, None))
+        is_organizer = is_authenticated_user and IsOrganizer().has_permission(request, None)
         
-        # Get order by order_number and validate token
-        try:
-            order = Order.objects.select_related(
-                'event',
-                'event__location',
-                'event__organizer'
-            ).prefetch_related(
-                'items__tickets',
-                'items__ticket_tier',
-                'event__images'
-            ).get(order_number=order_number, access_token=access_token)
-        except Order.DoesNotExist:
-            return Response({
-                'success': False,
-                'error': 'INVALID_TOKEN_OR_ORDER',
-                'message': 'Invalid access token or order not found'
-            }, status=status.HTTP_404_NOT_FOUND)
+        # Check if this is an admin request (from superadmin panel without auth)
+        # Allow admin access via query parameter for superadmin panel (temporary, no login)
+        is_admin_request = request.query_params.get('admin') == 'true'
+        
+        # If authenticated as organizer/superadmin, or admin request, skip access_token requirement
+        if (is_authenticated_user and (is_superadmin or is_organizer)) or is_admin_request:
+            # Get order by order_number only (no access_token needed)
+            try:
+                order = Order.objects.select_related(
+                    'event',
+                    'event__location',
+                    'event__organizer'
+                ).prefetch_related(
+                    'items__tickets',
+                    'items__ticket_tier',
+                    'event__images'
+                ).get(order_number=order_number)
+            except Order.DoesNotExist:
+                return Response({
+                    'success': False,
+                    'error': 'ORDER_NOT_FOUND',
+                    'message': 'Order not found'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # For organizers (not admin requests), verify they have access to this event
+            if is_organizer and not is_superadmin and not is_admin_request:
+                try:
+                    organizer_user = OrganizerUser.objects.get(user=request.user)
+                    if order.event.organizer != organizer_user.organizer:
+                        return Response({
+                            'success': False,
+                            'error': 'PERMISSION_DENIED',
+                            'message': 'You do not have permission to access this order'
+                        }, status=status.HTTP_403_FORBIDDEN)
+                except OrganizerUser.DoesNotExist:
+                    return Response({
+                        'success': False,
+                        'error': 'PERMISSION_DENIED',
+                        'message': 'You do not have permission to access this order'
+                    }, status=status.HTTP_403_FORBIDDEN)
+        else:
+            # Public access: require access_token
+            if not access_token:
+                return Response({
+                    'success': False,
+                    'error': 'TOKEN_REQUIRED',
+                    'message': 'Access token is required. Please use the link from your confirmation email.'
+                }, status=status.HTTP_401_UNAUTHORIZED)
+            
+            # Get order by order_number and validate token
+            try:
+                order = Order.objects.select_related(
+                    'event',
+                    'event__location',
+                    'event__organizer'
+                ).prefetch_related(
+                    'items__tickets',
+                    'items__ticket_tier',
+                    'event__images'
+                ).get(order_number=order_number, access_token=access_token)
+            except Order.DoesNotExist:
+                return Response({
+                    'success': False,
+                    'error': 'INVALID_TOKEN_OR_ORDER',
+                    'message': 'Invalid access token or order not found'
+                }, status=status.HTTP_404_NOT_FOUND)
         
         # Get all tickets for this order
         tickets = Ticket.objects.filter(
@@ -5063,6 +5496,19 @@ def get_order_tickets(request, order_number):
         
         # Build event data
         event = order.event
+        
+        # 🚀 ENTERPRISE: Build absolute image URL for robustness (works in all environments)
+        image_url = None
+        if event.images.exists():
+            first_image = event.images.first()
+            if first_image and first_image.image:
+                relative_url = first_image.image.url
+                # Build absolute URL
+                if relative_url and not (relative_url.startswith('http://') or relative_url.startswith('https://')):
+                    image_url = request.build_absolute_uri(relative_url)
+                else:
+                    image_url = relative_url
+        
         event_data = {
             'id': str(event.id),
             'title': event.title,
@@ -5071,7 +5517,7 @@ def get_order_tickets(request, order_number):
                 'name': event.location.name if event.location else 'Ubicación no disponible',
                 'address': event.location.address if event.location and hasattr(event.location, 'address') else '',
             },
-            'image_url': event.images.first().image.url if event.images.exists() else None,
+            'image_url': image_url,
         }
         
         # Build tickets data

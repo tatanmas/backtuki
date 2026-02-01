@@ -15,7 +15,7 @@ status = 'active'  -- Debe estar activo
 
 -- Campos para activar módulo de experiencias
 has_experience_module = TRUE  -- ⚠️ CRÍTICO: Debe ser TRUE
-experience_dashboard_template = 'free_tours'  -- o 'standard'
+experience_dashboard_template = 'principal'  -- o 'v0' (legacy)
 ```
 
 ### Campos Opcionales pero Recomendados:
@@ -38,7 +38,7 @@ is_temporary = FALSE
 UPDATE organizers_organizer
 SET 
     has_experience_module = TRUE,
-    experience_dashboard_template = 'free_tours',  -- o 'standard'
+    experience_dashboard_template = 'principal',  -- o 'v0' (legacy)
     status = 'active',
     onboarding_completed = TRUE,
     email_validated = TRUE
@@ -73,7 +73,7 @@ VALUES (
     'contacto@freetours.cl',
     'active',
     TRUE,  -- Activar módulo de experiencias
-    'free_tours',  -- Template de Free Tours
+    'principal',  -- Template Principal
     TRUE,
     TRUE,
     FALSE,
@@ -133,7 +133,7 @@ User = get_user_model()
 # Opción 1: Actualizar organizador existente
 organizer = Organizer.objects.get(slug='tu-slug-aqui')
 organizer.has_experience_module = True
-organizer.experience_dashboard_template = 'free_tours'
+organizer.experience_dashboard_template = 'principal'
 organizer.status = 'active'
 organizer.onboarding_completed = True
 organizer.email_validated = True
@@ -146,7 +146,7 @@ organizer = Organizer.objects.create(
     contact_email='contacto@freetours.cl',
     status='active',
     has_experience_module=True,
-    experience_dashboard_template='free_tours',
+    experience_dashboard_template='principal',
     onboarding_completed=True,
     email_validated=True
 )
@@ -195,8 +195,8 @@ WHERE o.slug = 'tu-slug-aqui';
 
 ## 📝 Valores Posibles para `experience_dashboard_template`
 
-- `'standard'` - Dashboard estándar de experiencias
-- `'free_tours'` - Dashboard personalizado para Free Tours
+- `'principal'` - Dashboard principal de experiencias (default)
+- `'v0'` - Dashboard legacy de experiencias (versión antigua)
 
 ## ⚠️ Notas Importantes
 

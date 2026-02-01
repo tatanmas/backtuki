@@ -34,7 +34,7 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - SECRET_KEY=local-dev-secret-key
-      - ALLOWED_HOSTS=localhost,127.0.0.1,192.168.1.156,0.0.0.0
+      - ALLOWED_HOSTS=localhost,127.0.0.1,192.168.1.156,0.0.0.0,backend
       - CSRF_TRUSTED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000,http://192.168.1.156:8000,https://192.168.1.156:3000
       # 🚀 ENTERPRISE: Google Cloud Storage Configuration
       # Set to False to use local storage in development (avoids credential issues)

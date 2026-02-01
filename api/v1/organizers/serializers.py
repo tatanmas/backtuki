@@ -24,10 +24,30 @@ class OrganizerSerializer(serializers.ModelSerializer):
             'address', 'city', 'country', 'organization_size',
             'representative_name', 'representative_email', 'representative_phone',
             'has_events_module', 'has_accommodation_module', 'has_experience_module',
-            'experience_dashboard_template',
+            'experience_dashboard_template', 'is_student_center',
             'onboarding_completed', 'status', 'created_at'
         ]
         read_only_fields = ['id', 'slug', 'created_at']
+        extra_kwargs = {
+            'logo': {'required': False, 'allow_null': True}
+        }
+
+    def to_representation(self, instance):
+        """
+        Normalize legacy template values to new values.
+        'standard' -> 'v0'
+        'free_tours' -> 'principal'
+        """
+        data = super().to_representation(instance)
+        
+        # Normalize legacy template values
+        template = data.get('experience_dashboard_template')
+        if template == 'standard':
+            data['experience_dashboard_template'] = 'v0'
+        elif template == 'free_tours':
+            data['experience_dashboard_template'] = 'principal'
+        
+        return data
 
 
 class OrganizerUserSerializer(serializers.ModelSerializer):

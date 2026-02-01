@@ -4,7 +4,7 @@ Similar al flujo de Luma - crear evento primero, validar email después.
 """
 
 from rest_framework import viewsets, permissions, status
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -19,10 +19,18 @@ import os
 from apps.otp.models import OTP, OTPPurpose
 from apps.otp.services import OTPService
 from apps.organizers.models import Organizer, OrganizerUser
-from apps.events.models import Event, Location
+from apps.events.models import Event, Location, ComplimentaryTicketInvitation
 from apps.forms.models import Form
 from apps.forms.serializers import FormSerializer
-from .serializers import PublicEventCreateSerializer, EventDetailSerializer
+from .serializers import (
+    PublicEventCreateSerializer,
+    EventDetailSerializer,
+    PublicComplimentaryTicketInvitationSerializer,
+    ComplimentaryTicketInvitationRedeemSerializer,
+)
+from apps.events.services.complimentary import redeem_invitation
+from django.shortcuts import get_object_or_404
+from django.http import Http404
 
 User = get_user_model()
 
@@ -49,7 +57,7 @@ class PublicEventViewSet(viewsets.ModelViewSet):
         Sobrescribir get_object para permitir acceso a eventos en draft
         que requieren validación de email (para el flujo público).
         """
-        if self.action in ['send_validation_otp', 'validate_and_publish', 'update', 'partial_update']:
+        if self.action in ['send_validation_otp', 'validate_and_publish', 'update', 'partial_update', 'associate_image']:
             # Para acciones de validación y actualización, permitir acceso a eventos en draft
             lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
             lookup_value = self.kwargs[lookup_url_kwarg]
@@ -391,6 +399,95 @@ class PublicEventViewSet(viewsets.ModelViewSet):
             event.requires_email_validation = False
             event.save()
             
+            # 🚀 ENTERPRISE: Vincular imágenes del evento a la biblioteca de medios del organizador
+            try:
+                from apps.events.models import EventImage
+                from apps.media.models import MediaAsset, MediaUsage
+                from django.contrib.contenttypes.models import ContentType
+                from django.core.files.storage import default_storage
+                from django.core.files.base import ContentFile
+                
+                # Obtener todas las imágenes del evento
+                event_images = EventImage.objects.filter(event=event)
+                
+                print(f"[PublicEventValidation] 📸 Linking {event_images.count()} images to media library for organizer {organizer.id}")
+                
+                for event_image in event_images:
+                    try:
+                        # Obtener la ruta del archivo del EventImage
+                        file_path = event_image.image.name if hasattr(event_image.image, 'name') else str(event_image.image)
+                        
+                        # Leer el archivo desde storage
+                        if default_storage.exists(file_path):
+                            with default_storage.open(file_path, 'rb') as f:
+                                file_content = f.read()
+                                
+                                # Obtener el nombre original del archivo
+                                original_filename = event_image.alt or file_path.split('/')[-1]
+                                if not original_filename or '.' not in original_filename:
+                                    # Si no hay extensión, intentar obtenerla del content type o usar .jpg por defecto
+                                    ext = 'jpg'
+                                    if hasattr(event_image.image, 'content_type'):
+                                        content_type = event_image.image.content_type
+                                        if 'png' in content_type:
+                                            ext = 'png'
+                                        elif 'webp' in content_type:
+                                            ext = 'webp'
+                                        elif 'gif' in content_type:
+                                            ext = 'gif'
+                                    original_filename = f"{original_filename}.{ext}" if '.' not in original_filename else original_filename
+                                
+                                # Crear MediaAsset usando el archivo
+                                asset = MediaAsset(
+                                    scope='organizer',
+                                    organizer=organizer,
+                                    uploaded_by=user,
+                                    original_filename=original_filename
+                                )
+                                
+                                # Asignar el archivo usando ContentFile para que Django lo guarde correctamente
+                                asset.file.save(
+                                    original_filename,
+                                    ContentFile(file_content),
+                                    save=False
+                                )
+                                
+                                # Obtener el tamaño del archivo
+                                try:
+                                    asset.size_bytes = len(file_content)
+                                except:
+                                    asset.size_bytes = default_storage.size(file_path) if hasattr(default_storage, 'size') else 0
+                                
+                                # Guardar el asset (esto también extraerá los metadatos de la imagen)
+                                asset.save()
+                                
+                                print(f"[PublicEventValidation] ✅ Created MediaAsset {asset.id} from EventImage {event_image.id}")
+                                
+                                # Crear MediaUsage para rastrear el uso
+                                content_type = ContentType.objects.get_for_model(event.__class__)
+                                MediaUsage.objects.create(
+                                    asset=asset,
+                                    content_type=content_type,
+                                    object_id=event.id,
+                                    field_name=f"image_{event_image.type or 'image'}"
+                                )
+                                
+                                print(f"[PublicEventValidation] ✅ Created MediaUsage for asset {asset.id} on event {event.id}")
+                        else:
+                            print(f"[PublicEventValidation] ⚠️ File not found in storage: {file_path}")
+                            
+                    except Exception as img_error:
+                        # Log error pero continuar con otras imágenes
+                        print(f"[PublicEventValidation] ⚠️ Error linking image {event_image.id}: {img_error}")
+                        import traceback
+                        traceback.print_exc()
+                        
+            except Exception as e:
+                # Log error pero no fallar la validación
+                print(f"[PublicEventValidation] ⚠️ Error linking images to media library: {e}")
+                import traceback
+                traceback.print_exc()
+            
             # Generar token de autenticación
             from rest_framework_simplejwt.tokens import RefreshToken
             refresh = RefreshToken.for_user(user)
@@ -405,6 +502,69 @@ class PublicEventViewSet(viewsets.ModelViewSet):
             'user_token': access_token,
             'is_new_user': is_new_user
         })
+    
+    @action(detail=True, methods=['post'], url_path='associate-image')
+    def associate_image(self, request, pk=None):
+        """
+        🚀 ENTERPRISE: Asociar una imagen ya subida a un evento público.
+        Útil cuando la imagen se subió antes de crear el evento.
+        """
+        event = self.get_object()
+        file_path = request.data.get('file_path')
+        
+        if not file_path:
+            return Response({
+                'success': False,
+                'message': 'file_path es requerido'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Verificar que el evento requiere validación (está en draft)
+        if not (event.organizer and event.organizer.is_temporary and event.requires_email_validation):
+            return Response({
+                'success': False,
+                'message': 'Solo se pueden asociar imágenes a eventos en draft'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        from django.core.files.storage import default_storage
+        from apps.events.models import EventImage
+        
+        try:
+            # Verificar que el archivo existe
+            if not default_storage.exists(file_path):
+                return Response({
+                    'success': False,
+                    'message': 'El archivo no existe'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Obtener la URL del archivo
+            file_url = default_storage.url(file_path)
+            
+            # Crear EventImage record
+            event_image = EventImage.objects.create(
+                event=event,
+                image=file_path,
+                alt=request.data.get('alt', file_path.split('/')[-1]),
+                type=request.data.get('type', 'image'),
+                order=event.images.count()
+            )
+            
+            print(f"[PUBLIC-ASSOCIATE] ✅ Created EventImage {event_image.id} for event {event.id} from path {file_path}")
+            
+            return Response({
+                'success': True,
+                'url': file_url,
+                'event_image_id': str(event_image.id),
+                'message': 'Imagen asociada al evento exitosamente'
+            })
+            
+        except Exception as e:
+            print(f"[PUBLIC-ASSOCIATE] ❌ Error associating image: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response({
+                'success': False,
+                'message': f'Error al asociar la imagen: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=True, methods=['post'])
     def send_validation_otp(self, request, pk=None):
@@ -559,9 +719,11 @@ class PublicEventViewSet(viewsets.ModelViewSet):
                                   status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
             # Return just the file URL if no event association
+            # ✅ IMPORTANTE: También retornar el path para poder asociarlo después
             return Response({
                 'url': file_url,
                 'filename': filename,
+                'file_path': saved_path,  # ✅ NUEVO: Path del archivo para asociarlo después
                 'message': 'Image uploaded successfully'
             })
             
@@ -596,3 +758,127 @@ class PublicEventViewSet(viewsets.ModelViewSet):
         except Exception as e:
             print(f"[PUBLIC-FORMS] ❌ Error fetching active forms: {e}")
             return Response({'detail': 'Error fetching forms'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# 🎫 COMPLIMENTARY: Public endpoints for complimentary ticket redemption
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_complimentary_invitation(request, public_token):
+    """
+    Get complimentary ticket invitation information (public endpoint).
+    
+    No authentication required. Returns event info and invitation details.
+    If already redeemed, includes ticket information.
+    """
+    try:
+        invitation = ComplimentaryTicketInvitation.objects.get(
+            public_token=public_token
+        )
+        
+        serializer = PublicComplimentaryTicketInvitationSerializer(invitation, context={'request': request})
+        data = serializer.data
+        data['status'] = invitation.status
+        data['has_email'] = bool(invitation.email)
+        
+        # If redeemed, include ticket information
+        if invitation.status == 'redeemed' and invitation.order:
+            from apps.events.models import Ticket
+            from .serializers import TicketSerializer
+            # Tickets are related through OrderItem, not directly to Order
+            tickets = Ticket.objects.filter(order_item__order=invitation.order).select_related(
+                'order_item__ticket_tier'
+            )
+            if tickets.exists():
+                ticket_serializer = TicketSerializer(tickets, many=True)
+                data['tickets'] = ticket_serializer.data
+                data['order_number'] = invitation.order.order_number
+            else:
+                data['tickets'] = []
+                data['order_number'] = invitation.order.order_number
+        else:
+            data['tickets'] = []
+            data['order_number'] = None
+        
+        return Response(data)
+        
+    except ComplimentaryTicketInvitation.DoesNotExist:
+        return Response(
+            {'detail': 'Invitation not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error fetching invitation {public_token}: {e}", exc_info=True)
+        return Response(
+            {'detail': f'Error fetching invitation: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def redeem_complimentary_invitation(request, public_token):
+    """
+    Redeem a complimentary ticket invitation (public endpoint).
+    
+    No authentication required. Creates order, tickets, and QR codes.
+    Email is optional - if not provided, no confirmation email will be sent.
+    """
+    try:
+        invitation = ComplimentaryTicketInvitation.objects.get(
+            public_token=public_token
+        )
+        
+        if invitation.status != 'pending':
+            return Response(
+                {'detail': 'Invitation already redeemed or cancelled'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        serializer = ComplimentaryTicketInvitationRedeemSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        user_data = {
+            'first_name': serializer.validated_data.get('first_name', ''),
+            'last_name': serializer.validated_data.get('last_name', ''),
+            'email': serializer.validated_data.get('email', ''),
+        }
+        ticket_quantity = serializer.validated_data['ticket_quantity']
+        
+        # Redeem invitation (creates order, tickets, QR codes)
+        tickets = redeem_invitation(invitation, user_data, ticket_quantity)
+        
+        # Serialize tickets for response
+        from .serializers import TicketSerializer
+        ticket_serializer = TicketSerializer(tickets, many=True)
+        
+        return Response({
+            'success': True,
+            'invitation_id': str(invitation.id),
+            'order_number': invitation.order.order_number if invitation.order else None,
+            'tickets': ticket_serializer.data,
+            'ticket_count': len(tickets),
+            'email_sent': False,  # No email sent for complimentary tickets without email
+        }, status=status.HTTP_201_CREATED)
+        
+    except ComplimentaryTicketInvitation.DoesNotExist:
+        return Response(
+            {'detail': 'Invitation not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except ValueError as e:
+        return Response(
+            {'detail': str(e)},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error redeeming invitation {public_token}: {e}", exc_info=True)
+        return Response(
+            {'detail': 'Error redeeming invitation'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

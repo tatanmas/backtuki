@@ -23,19 +23,19 @@ CSRF_COOKIE_SECURE = True
 # Cloud Run specific settings
 ALLOWED_HOSTS = config(
     'ALLOWED_HOSTS',
-    default='*.run.app,tuki.live,www.tuki.live,api.tuki.live,prop.cl',
+    default='*.run.app,tuki.live,www.tuki.live,api.tuki.live,tuki.cl,www.tuki.cl,prop.cl',
     cast=Csv()
 )
 CSRF_TRUSTED_ORIGINS = config(
     'CSRF_TRUSTED_ORIGINS',
-    default='https://*.run.app,https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://prop.cl,https://terminalcoyhaique.cl,https://www.terminalcoyhaique.cl',
+    default='https://*.run.app,https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://tuki.cl,https://www.tuki.cl,https://prop.cl,https://terminalcoyhaique.cl,https://www.terminalcoyhaique.cl',
     cast=Csv()
 )
 
 # CORS configuration
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
-    default='https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://prop.cl,https://terminalcoyhaique.cl,https://www.terminalcoyhaique.cl',
+    default='https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://tuki.cl,https://www.tuki.cl,https://prop.cl,https://terminalcoyhaique.cl,https://www.terminalcoyhaique.cl',
     cast=Csv()
 )
 CORS_ALLOW_CREDENTIALS = True

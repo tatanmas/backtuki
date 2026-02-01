@@ -16,7 +16,7 @@ import logging
 
 from .models import Payment, PaymentProvider, PaymentMethod, SavedCard
 from .serializers import (
-    PaymentProviderSerializer, PaymentMethodSerializer, CreatePaymentSerializer,
+    PaymentProviderSerializer, PaymentProviderAdminSerializer, PaymentMethodSerializer, CreatePaymentSerializer,
     PaymentSerializer, PaymentStatusSerializer, WebPayReturnSerializer,
     SavedCardSerializer, PaymentSummarySerializer
 )
@@ -54,6 +54,32 @@ class PaymentMethodsPublicView(APIView):
             return Response({
                 'success': False,
                 'error': 'Error retrieving payment methods'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class PaymentProvidersListView(APIView):
+    """
+    🚀 ENTERPRISE: Admin endpoint for listing all payment providers
+    """
+    permission_classes = [permissions.AllowAny]  # For deployment automation
+    
+    def get(self, request):
+        """List all payment providers with admin details"""
+        try:
+            providers = PaymentProvider.objects.all().order_by('-priority', 'name')
+            serializer = PaymentProviderAdminSerializer(providers, many=True)
+            
+            return Response({
+                'success': True,
+                'providers': serializer.data,
+                'count': providers.count()
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"💥 PAYMENT PROVIDERS LIST ERROR: {str(e)}")
+            return Response({
+                'success': False,
+                'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -137,10 +163,70 @@ class TransbankUpdateView(APIView):
             }, status=status.HTTP_200_OK)
             
         except PaymentProvider.DoesNotExist:
-            return Response({
-                'success': False,
-                'error': 'Transbank WebPay Plus provider not found'
-            }, status=status.HTTP_404_NOT_FOUND)
+            # 🚀 ENTERPRISE: Si el provider no existe, crearlo automáticamente
+            logger.info("⚠️ Transbank WebPay Plus provider not found, creating it...")
+            try:
+                provider = PaymentProvider.objects.create(
+                    name='Transbank WebPay Plus',
+                    provider_type='transbank_webpay_plus',
+                    is_active=True,
+                    is_sandbox=is_sandbox,
+                    config={
+                        'commerce_code': commerce_code,
+                        'api_key': api_key,
+                    },
+                    min_amount=50,  # Minimum 50 CLP
+                    max_amount=10000000,  # Maximum 10M CLP
+                    supported_currencies=['CLP'],
+                    priority=100,
+                    timeout_seconds=30,
+                    retry_attempts=3,
+                )
+                
+                # 🚀 ENTERPRISE: Create payment methods for the provider
+                methods = [
+                    {
+                        'method_type': 'credit_card',
+                        'display_name': 'Tarjeta de Crédito',
+                        'description': 'Paga con tu tarjeta de crédito de forma segura',
+                        'display_order': 1,
+                    },
+                    {
+                        'method_type': 'debit_card', 
+                        'display_name': 'Tarjeta de Débito',
+                        'description': 'Paga con tu tarjeta de débito RedCompra',
+                        'display_order': 2,
+                    },
+                ]
+                
+                for method_data in methods:
+                    PaymentMethod.objects.get_or_create(
+                        provider=provider,
+                        method_type=method_data['method_type'],
+                        defaults=method_data
+                    )
+                    logger.info(f"✅ Created payment method: {method_data['display_name']}")
+                
+                env_mode = "SANDBOX" if is_sandbox else "PRODUCTION"
+                logger.info(f"✅ Created and configured Transbank WebPay Plus provider to {env_mode}")
+                
+                return Response({
+                    'success': True,
+                    'message': f'Transbank WebPay Plus provider created and configured to {env_mode}',
+                    'provider': {
+                        'id': str(provider.id),
+                        'name': provider.name,
+                        'is_sandbox': provider.is_sandbox,
+                        'commerce_code': commerce_code,
+                        'api_key_preview': api_key[:20] + '...' if len(api_key) > 20 else api_key
+                    }
+                }, status=status.HTTP_201_CREATED)
+            except Exception as create_error:
+                logger.error(f"💥 ERROR creating provider: {str(create_error)}")
+                return Response({
+                    'success': False,
+                    'error': f'Failed to create provider: {str(create_error)}'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
         except Exception as e:
             logger.error(f"💥 TRANSBANK UPDATE ERROR: {str(e)}")

@@ -8,7 +8,11 @@ from .views import (
     send_order_email_sync,
     proxy_event_image,  # 🎫 ENTERPRISE: Image proxy for CORS
 )
-from .public_views import PublicEventViewSet
+from .public_views import (
+    PublicEventViewSet,
+    get_complimentary_invitation,
+    redeem_complimentary_invitation,
+)
 
 # ✅ Router para endpoints públicos ONLY
 # EventViewSet is already registered in api/v1/urls.py to avoid duplicate registration
@@ -41,4 +45,8 @@ urlpatterns = [
     
     # 🎫 ENTERPRISE IMAGE PROXY (CORS fix for PDF generation)
     path('events/images/proxy/', proxy_event_image, name='proxy-event-image'),
+    
+    # 🎫 COMPLIMENTARY: Public endpoints for complimentary ticket redemption
+    path('public/complimentary/<str:public_token>/', get_complimentary_invitation, name='get-complimentary-invitation'),
+    path('public/complimentary/<str:public_token>/redeem/', redeem_complimentary_invitation, name='redeem-complimentary-invitation'),
 ] 

@@ -1,0 +1,50 @@
+¡Hola {{ student_name }}!
+
+¡Gracias por registrarte!
+
+Has registrado tu interés en la experiencia "{{ experience_title }}" organizada por {{ organizer_name }}.
+
+¿QUÉ SIGUE AHORA?
+
+• Activación automática: Cuando se alcance el mínimo de participantes ({{ min_participants }} personas), la experiencia se activará automáticamente.
+
+• Notificaciones: Recibirás un correo del centro de alumnos cuando la experiencia esté confirmada y lista para reservar.
+
+• Anticipación: La experiencia se realizará con la anticipación necesaria para que puedas planificar tu participación.
+
+• Próximos pasos: Mantente atento a tu correo, te notificaremos cuando puedas realizar tu reserva oficial.
+
+DETALLES DE LA EXPERIENCIA:
+
+{% if scheduled_date %}Fecha propuesta: {{ scheduled_date|date:"l, j \d\e F \d\e Y" }}{% endif %}
+{% if scheduled_time %}Hora: {{ scheduled_time }}{% endif %}
+{% if duration_minutes %}Duración: {{ duration_minutes }} minutos{% endif %}
+{% if location_name %}Ubicación: {{ location_name }}{% endif %}
+{% if min_participants and max_participants %}Participantes: {{ min_participants }} - {{ max_participants }} personas{% endif %}
+
+{% if experience_description %}
+{{ experience_description|striptags|truncatewords:50 }}
+{% endif %}
+
+ORGANIZADO POR:
+
+{{ organizer_name }}
+{% if organizer_email %}Contacto: {{ organizer_email }}{% endif %}
+
+¿Tienes preguntas? Contáctanos en {{ organizer_email|default:'ventas@tuki.cl' }}
+
+─────────────────────────────────────────────────────────────
+
+RECORDATORIO IMPORTANTE:
+
+Este registro de interés no garantiza un lugar en la experiencia. 
+Una vez que se alcance el mínimo de participantes y la experiencia se active, 
+recibirás un correo con las instrucciones para realizar tu reserva oficial.
+
+─────────────────────────────────────────────────────────────
+
+Este correo fue enviado a {{ student_email }}.
+Si no solicitaste este registro, puedes ignorar este mensaje.
+
+© 2025 Tuki. Todos los derechos reservados.
+

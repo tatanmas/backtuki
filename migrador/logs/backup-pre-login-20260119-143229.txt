@@ -1,0 +1,11 @@
+=== BACKUP POINT: pre-login ===
+Timestamp: 2026-01-19 17:32:59 UTC
+Project: tukiprod
+Cloud SQL: tuki-db-prod
+GCS Bucket: tuki-media-prod-1759240560
+
+=== Current State ===
+sh: ssh_exec_with_output: line 28: syntax error near unexpected token `|'
+sh: ssh_exec_with_output: line 28: ` | grep -v "^spawn\|^expect\|^send\|^exit\|^Connection\|^tatan@dako"'
+sh: error importing function definition for `ssh_exec_with_output'
+ssh: connect to host tukitickets.duckdns.org port 2222: Operation timed out

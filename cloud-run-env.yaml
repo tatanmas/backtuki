@@ -11,9 +11,9 @@ DB_HOST: /cloudsql/tukiprod:us-central1:tuki-db-prod
 DB_PORT: "5432"
 REDIS_URL: redis://10.5.153.115:6379/0
 SECRET_KEY: tuki-super-secret-key-enterprise-2025-production
-ALLOWED_HOSTS: "tuki.live,www.tuki.live,api.tuki.live,prop.cl,*.run.app,34.149.134.127,*"
-CSRF_TRUSTED_ORIGINS: "https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://prop.cl,https://*.run.app"
-CORS_ALLOWED_ORIGINS: "https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://prop.cl"
+ALLOWED_HOSTS: "tuki.live,www.tuki.live,api.tuki.live,tuki.cl,www.tuki.cl,prop.cl,*.run.app,34.149.134.127,*"
+CSRF_TRUSTED_ORIGINS: "https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://tuki.cl,https://www.tuki.cl,https://prop.cl,https://scan.tuki.live,https://*.run.app"
+CORS_ALLOWED_ORIGINS: "https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://tuki.cl,https://www.tuki.cl,https://prop.cl,https://scan.tuki.live,https://tuki-validator-prod-g6mwf7fr6a-uc.a.run.app"
 # Superuser configuration (like AuroraDev)
 DJANGO_SUPERUSER_USERNAME: "admin"
 DJANGO_SUPERUSER_EMAIL: "admin@tuki.cl"
@@ -54,3 +54,4 @@ WOOCOMMERCE_SYNC_ENABLED: "true"
 WOOCOMMERCE_SYNC_DEFAULT_SERVICE_FEE: "10.0"
 WOOCOMMERCE_SYNC_MAX_RETRIES: "3"
 WOOCOMMERCE_SYNC_RETRY_DELAY: "5"
+WOOCOMMERCE_SYNC_ENABLED: "false"

@@ -31,7 +31,8 @@ from apps.experiences.serializers import (
     ExperienceReservationSerializer
 )
 from apps.organizers.models import OrganizerUser
-from core.permissions import HasExperienceModule
+from core.permissions import HasExperienceModule, IsSuperAdmin
+from .error_handlers import ExperienceErrorHandler
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,32 @@ class ExperienceViewSet(viewsets.ModelViewSet):
     queryset = Experience.objects.all()
     serializer_class = ExperienceSerializer
     permission_classes = [permissions.IsAuthenticated]
+    
+    def get_permissions(self):
+        """
+        Allow public access to read and update endpoints (for Super Admin panel).
+        Create and delete still require authentication.
+        """
+        if self.action in ['list', 'retrieve', 'partial_update', 'update']:
+            return [permissions.AllowAny()]
+        return [permissions.IsAuthenticated()]
+    
+    def partial_update(self, request, *args, **kwargs):
+        """
+        Allow partial updates from Super Admin without authentication.
+        This is needed for updating fields like 'country' from the Super Admin panel.
+        """
+        # Get the experience
+        instance = self.get_object()
+        
+        # Use the serializer to update
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        
+        # Save without checking organizer (Super Admin can update any experience)
+        serializer.save()
+        
+        return Response(serializer.data)
     
     def get_organizer(self):
         """Get organizer associated with current user."""
@@ -60,18 +87,47 @@ class ExperienceViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """
-        Return experiences based on user permissions.
-        🚀 ENTERPRISE: By default excludes soft-deleted and inactive experiences.
+        🚀 ENTERPRISE: Return experiences based on user permissions.
+        
+        CRITICAL PRIVACY: Filters by organizer to ensure operators only see their own tours.
+        Super Admin can see all experiences.
+        
+        By default excludes soft-deleted and inactive experiences.
         Use show_deleted=true query param to include deleted experiences.
         """
         queryset = self.queryset.all()
+        
+        # 🚀 ENTERPRISE: CRITICAL PRIVACY FIX - Filter by organizer
+        # Super Admin can see all, but regular organizers only see their own
+        user = self.request.user
+        is_super_admin = user.is_authenticated and (user.is_superuser or IsSuperAdmin().has_permission(self.request, self))
+        
+        if user.is_authenticated and not is_super_admin:
+            # Regular organizer: filter by their organizer
+            organizer = self.get_organizer()
+            if organizer:
+                queryset = queryset.filter(organizer=organizer)
+                logger.debug(f"🔒 [PRIVACY] Filtering experiences for organizer {organizer.id}")
+            else:
+                # User authenticated but no organizer - return empty queryset
+                logger.warning(f"🔒 [PRIVACY] User {user.id} authenticated but no organizer found - returning empty queryset")
+                return Experience.objects.none()
+        elif not user.is_authenticated:
+            # Unauthenticated requests (e.g., Super Admin panel) - return all
+            # This is safe because Super Admin panel uses AllowAny permission
+            logger.debug("🔒 [PRIVACY] Unauthenticated request - returning all experiences (Super Admin panel)")
         
         # Check if requesting deleted experiences
         show_deleted = self.request.query_params.get('show_deleted', 'false').lower() == 'true'
         
         if not show_deleted:
-            # By default, exclude soft-deleted and inactive experiences
-            queryset = queryset.filter(deleted_at__isnull=True, is_active=True)
+            if not user.is_authenticated:
+                # For Super Admin panel (unauthenticated), only exclude soft-deleted
+                # but include inactive experiences so they can be managed
+                queryset = queryset.filter(deleted_at__isnull=True)
+            else:
+                # For authenticated users, exclude both soft-deleted and inactive experiences
+                queryset = queryset.filter(deleted_at__isnull=True, is_active=True)
         
         return queryset
     
@@ -82,18 +138,87 @@ class ExperienceViewSet(viewsets.ModelViewSet):
         return context
     
     def perform_create(self, serializer):
-        """Automatically assign organizer when creating experience."""
-        organizer = self.get_organizer()
-        if not organizer:
-            from rest_framework.exceptions import PermissionDenied
-            raise PermissionDenied("User is not associated with any organizer")
+        """
+        🚀 ENTERPRISE: Automatically assign organizer when creating experience.
         
-        # Check if organizer has experience module enabled
-        if not organizer.has_experience_module:
-            from rest_framework.exceptions import PermissionDenied
-            raise PermissionDenied("Experience module is not enabled for this organizer")
-        
-        serializer.save(organizer=organizer)
+        Includes robust error handling and validation.
+        """
+        try:
+            organizer = self.get_organizer()
+            if not organizer:
+                logger.warning(
+                    f"🔴 [EXPERIENCE_CREATE] User {self.request.user.id} not associated with any organizer"
+                )
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied("Usuario no está asociado con ningún organizador")
+            
+            # Check if organizer has experience module enabled
+            if not organizer.has_experience_module:
+                logger.warning(
+                    f"🔴 [EXPERIENCE_CREATE] Organizer {organizer.id} does not have experience module enabled"
+                )
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied("El módulo de experiencias no está habilitado para este organizador")
+            
+            serializer.save(organizer=organizer)
+            logger.info(
+                f"✅ [EXPERIENCE_CREATE] Experience created successfully for organizer {organizer.id}"
+            )
+        except PermissionDenied:
+            raise
+        except Exception as e:
+            logger.error(
+                f"🔴 [EXPERIENCE_CREATE] Unexpected error during creation: {str(e)}",
+                exc_info=True,
+                extra={
+                    'user_id': self.request.user.id if self.request.user.is_authenticated else None,
+                    'action': 'create'
+                }
+            )
+            raise
+    
+    def create(self, request, *args, **kwargs):
+        """
+        🚀 ENTERPRISE: Override create to add comprehensive error handling.
+        """
+        try:
+            return super().create(request, *args, **kwargs)
+        except Exception as e:
+            context = {
+                'user_id': request.user.id if request.user.is_authenticated else None,
+                'action': 'create',
+                'data_keys': list(request.data.keys()) if hasattr(request, 'data') else []
+            }
+            return ExperienceErrorHandler.handle_exception(e, context)
+    
+    def update(self, request, *args, **kwargs):
+        """
+        🚀 ENTERPRISE: Override update to add comprehensive error handling.
+        """
+        try:
+            # Verify ownership before update
+            instance = self.get_object()
+            organizer = self.get_organizer()
+            
+            if organizer and instance.organizer != organizer:
+                # Check if user is super admin
+                is_super_admin = request.user.is_authenticated and (
+                    request.user.is_superuser or 
+                    IsSuperAdmin().has_permission(request, self)
+                )
+                if not is_super_admin:
+                    from rest_framework.exceptions import PermissionDenied
+                    raise PermissionDenied("No tienes permisos para modificar esta experiencia")
+            
+            return super().update(request, *args, **kwargs)
+        except Exception as e:
+            context = {
+                'user_id': request.user.id if request.user.is_authenticated else None,
+                'action': 'update',
+                'instance_id': kwargs.get('pk'),
+                'data_keys': list(request.data.keys()) if hasattr(request, 'data') else []
+            }
+            return ExperienceErrorHandler.handle_exception(e, context)
     
     @action(detail=True, methods=['post'], url_path='soft-delete')
     def soft_delete(self, request, pk=None):

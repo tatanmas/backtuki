@@ -65,4 +65,4 @@ htmlcov/
 
 # Celery
 celerybeat-schedule
-celerybeat.pid 
+celerybeat.pid gcp-key-*.json

@@ -54,12 +54,12 @@ class UserProfileSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'email', 'username', 'first_name', 'last_name',
             'phone_number', 'full_name', 'is_organizer', 'is_validator',
-            'is_guest', 'is_profile_complete', 'has_password',
+            'is_guest', 'is_superuser', 'is_staff', 'is_profile_complete', 'has_password',
             'date_joined', 'last_login', 'profile_completed_at', 'password'
         ]
         read_only_fields = [
             'id', 'email', 'username', 'date_joined', 'last_login',
-            'is_organizer', 'is_validator', 'is_guest', 'profile_completed_at'
+            'is_organizer', 'is_validator', 'is_guest', 'is_superuser', 'is_staff', 'profile_completed_at'
         ]
     
     def get_full_name(self, obj):

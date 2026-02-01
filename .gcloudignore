@@ -37,8 +37,8 @@ coverage.xml
 
 # Local development
 db.sqlite3
-media/
-staticfiles/
+/media/
+/staticfiles/
 
 # Docker files we don't need in Cloud Build
 docker-compose.yml

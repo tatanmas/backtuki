@@ -107,10 +107,24 @@ def send_order_confirmation_email_optimized(
         
         logger.info(f"📧 [EMAIL_OPTIMIZED] Found {len(regular_tickets)} regular tickets, {len(raffle_tickets)} raffle entries")
         
-        # 4. Group tickets by email
+        # 4. Group tickets by email (skip tickets without email or with placeholder emails)
         tickets_by_email = {}
+        tickets_without_email = {'regular': [], 'raffle': []}
+        
         for ticket in all_tickets:
             email = to_email or ticket.email
+            
+            # 🎫 COMPLIMENTARY: Skip emails that are placeholders or empty
+            # Placeholder format: cortesia-*@tuki.live
+            if not email or (email.endswith('@tuki.live') and email.startswith('cortesia-')):
+                # Group tickets without valid email
+                if ticket in regular_tickets:
+                    tickets_without_email['regular'].append(ticket)
+                else:
+                    tickets_without_email['raffle'].append(ticket)
+                logger.info(f"📧 [EMAIL_OPTIMIZED] Skipping email for ticket {ticket.ticket_number} - placeholder or empty email")
+                continue
+            
             if email not in tickets_by_email:
                 tickets_by_email[email] = {'regular': [], 'raffle': []}
             
@@ -121,6 +135,13 @@ def send_order_confirmation_email_optimized(
         
         emails_sent = 0
         failed_emails = []
+        
+        # Log if there are tickets without email
+        if tickets_without_email['regular'] or tickets_without_email['raffle']:
+            logger.info(
+                f"📧 [EMAIL_OPTIMIZED] {len(tickets_without_email['regular']) + len(tickets_without_email['raffle'])} "
+                f"tickets without email (complimentary tickets) - skipping email sending"
+            )
         
         # 5. Send email to each recipient
         for recipient_email, ticket_groups in tickets_by_email.items():

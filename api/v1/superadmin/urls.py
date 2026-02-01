@@ -10,6 +10,9 @@ from .views import (
     organizer_sales, 
     events_analytics, 
     update_organizer_template,
+    update_organizer_modules,
+    update_organizer_service_fee,
+    update_event_service_fee,
     # 🚀 ENTERPRISE: Platform Flow Monitoring
     ticket_delivery_funnel,
     ticket_delivery_issues,
@@ -23,6 +26,31 @@ from .views import (
     # 🚀 ENTERPRISE: Revenue Migration
     revenue_migration_status,
     migrate_revenue_data,
+    # 🚀 ENTERPRISE: JSON Experience Creation
+    create_experience_from_json,
+)
+from .whatsapp_views import (
+    whatsapp_status,
+    whatsapp_qr,
+    whatsapp_reservations,
+    whatsapp_operators,
+    whatsapp_bind_experience_operator,
+    whatsapp_messages,
+    whatsapp_mark_message_reservation,
+    whatsapp_chats,
+    whatsapp_chat_info,
+    whatsapp_update_chat,
+    whatsapp_mark_chat_read,
+    whatsapp_assign_chat_operator,
+    whatsapp_sync_chats,
+    whatsapp_send_message,
+    whatsapp_groups,
+    whatsapp_group_info,
+    whatsapp_assign_group_operator,
+    whatsapp_experiences,
+    whatsapp_experience_group,
+    whatsapp_operator_detail,
+    whatsapp_operator_default_group,
 )
 
 # Create router
@@ -37,6 +65,9 @@ urlpatterns = [
     path('organizer-sales/', organizer_sales, name='organizer-sales'),
     path('events-analytics/', events_analytics, name='events-analytics'),
     path('organizers/<str:organizer_id>/template/', update_organizer_template, name='update-organizer-template'),
+    path('organizers/<str:organizer_id>/modules/', update_organizer_modules, name='update-organizer-modules'),
+    path('organizers/<str:organizer_id>/service-fee/', update_organizer_service_fee, name='update-organizer-service-fee'),
+    path('events/<str:event_id>/service-fee/', update_event_service_fee, name='update-event-service-fee'),
     
     # 🚀 ENTERPRISE: Platform Flow Monitoring Endpoints
     path('ticket-delivery-funnel/', ticket_delivery_funnel, name='ticket-delivery-funnel'),
@@ -53,5 +84,31 @@ urlpatterns = [
     # 🚀 ENTERPRISE: Revenue Migration Endpoints
     path('revenue-migration/status/', revenue_migration_status, name='revenue-migration-status'),
     path('revenue-migration/migrate/', migrate_revenue_data, name='migrate-revenue-data'),
+    
+    # 🚀 ENTERPRISE: WhatsApp Integration Endpoints
+    path('whatsapp/status/', whatsapp_status, name='whatsapp-status'),
+    path('whatsapp/qr/', whatsapp_qr, name='whatsapp-qr'),
+    path('whatsapp/reservations/', whatsapp_reservations, name='whatsapp-reservations'),
+    path('whatsapp/operators/', whatsapp_operators, name='whatsapp-operators'),
+    path('whatsapp/bind-experience-operator/', whatsapp_bind_experience_operator, name='whatsapp-bind-experience-operator'),
+    path('whatsapp/messages/', whatsapp_messages, name='whatsapp-messages'),
+    path('whatsapp/messages/<str:message_id>/mark-reservation/', whatsapp_mark_message_reservation, name='whatsapp-mark-message-reservation'),
+    path('whatsapp/chats/', whatsapp_chats, name='whatsapp-chats'),
+    path('whatsapp/chats/sync/', whatsapp_sync_chats, name='whatsapp-sync-chats'),
+    path('whatsapp/chats/<str:chat_id>/', whatsapp_chat_info, name='whatsapp-chat-info'),
+    path('whatsapp/chats/<str:chat_id>/update/', whatsapp_update_chat, name='whatsapp-update-chat'),
+    path('whatsapp/chats/<str:chat_id>/mark-read/', whatsapp_mark_chat_read, name='whatsapp-mark-chat-read'),
+    path('whatsapp/chats/<str:chat_id>/assign-operator/', whatsapp_assign_chat_operator, name='whatsapp-assign-chat-operator'),
+    path('whatsapp/send-message/', whatsapp_send_message, name='whatsapp-send-message'),
+    path('whatsapp/groups/', whatsapp_groups, name='whatsapp-groups'),
+    path('whatsapp/groups/<str:group_id>/info/', whatsapp_group_info, name='whatsapp-group-info'),
+    path('whatsapp/groups/<str:group_id>/assign-operator/', whatsapp_assign_group_operator, name='whatsapp-assign-group-operator'),
+    path('whatsapp/experiences/', whatsapp_experiences, name='whatsapp-experiences'),
+    path('whatsapp/experiences/<str:experience_id>/group/', whatsapp_experience_group, name='whatsapp-experience-group'),
+    path('whatsapp/operators/<str:operator_id>/', whatsapp_operator_detail, name='whatsapp-operator-detail'),
+    path('whatsapp/operators/<str:operator_id>/default-group/', whatsapp_operator_default_group, name='whatsapp-operator-default-group'),
+    
+    # 🚀 ENTERPRISE: JSON Experience Creation
+    path('experiences/create-from-json/', create_experience_from_json, name='create-experience-from-json'),
 ]
 

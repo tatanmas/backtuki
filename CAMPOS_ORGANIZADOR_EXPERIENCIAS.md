@@ -7,7 +7,7 @@
 | Campo | Tipo | Valor | Descripción |
 |-------|------|-------|-------------|
 | `has_experience_module` | Boolean | `TRUE` | **CRÍTICO**: Activa el módulo de experiencias |
-| `experience_dashboard_template` | Char(20) | `'free_tours'` o `'standard'` | Template del dashboard |
+| `experience_dashboard_template` | Char(20) | `'principal'` o `'v0'` | Template del dashboard (default: 'principal') |
 | `status` | Char(20) | `'active'` | Estado del organizador |
 | `name` | Char(255) | Cualquier nombre | Nombre del organizador |
 | `slug` | SlugField | Único | Slug único del organizador |
@@ -36,7 +36,7 @@
 UPDATE organizers_organizer
 SET 
     has_experience_module = TRUE,
-    experience_dashboard_template = 'free_tours',
+    experience_dashboard_template = 'principal',
     status = 'active'
 WHERE slug = 'tu-slug-aqui';
 
@@ -54,7 +54,7 @@ from apps.organizers.models import Organizer, OrganizerUser
 # Actualizar organizador
 org = Organizer.objects.get(slug='tu-slug-aqui')
 org.has_experience_module = True
-org.experience_dashboard_template = 'free_tours'
+org.experience_dashboard_template = 'principal'
 org.status = 'active'
 org.save()
 
@@ -64,13 +64,13 @@ OrganizerUser.objects.filter(organizer=org).update(can_manage_experiences=True)
 
 ## 📝 Valores de `experience_dashboard_template`
 
-- `'standard'` → Dashboard estándar de experiencias
-- `'free_tours'` → Dashboard personalizado para Free Tours
+- `'principal'` → Dashboard principal de experiencias (default)
+- `'v0'` → Dashboard legacy de experiencias (versión antigua)
 
 ## ✅ Checklist de Verificación
 
 - [ ] `has_experience_module = TRUE` en `organizers_organizer`
-- [ ] `experience_dashboard_template = 'free_tours'` (o 'standard')
+- [ ] `experience_dashboard_template = 'principal'` (o 'v0' para legacy)
 - [ ] `status = 'active'` en `organizers_organizer`
 - [ ] `can_manage_experiences = TRUE` en `organizers_organizeruser`
 - [ ] Usuario vinculado en `organizers_organizeruser`

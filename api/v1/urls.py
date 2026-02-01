@@ -1,6 +1,7 @@
 """URL Configuration for API v1."""
 
 from django.urls import path, include
+from django.conf import settings
 from rest_framework.routers import DefaultRouter
 
 # Import viewsets
@@ -54,17 +55,25 @@ urlpatterns = [
     # 🎫 ENTERPRISE: Order tickets endpoint (ANTES del router para que tenga prioridad sobre OrderViewSet)
     path('orders/<str:order_number>/tickets/', get_order_tickets, name='get-order-tickets'),
     
+    # 🚀 ENTERPRISE: WhatsApp integration endpoints (ANTES del router para prioridad)
+    path('whatsapp/', include('api.v1.whatsapp.urls')),
+    
     path('', include(router.urls)),
     path('auth/', include('api.v1.auth.urls')),
     path('user/', include('api.v1.users.urls')),
     path('tickets/', include('api.v1.tickets.urls')),  # 🚀 ENTERPRISE: Ticket management endpoints
     path('media/', include('apps.media.urls')),  # 🚀 ENTERPRISE: Media Library System
     path('validation/', include('api.v1.validation.urls')),  # 🚀 ENTERPRISE: Validation system endpoints
-    path('sync-woocommerce/', include('apps.sync_woocommerce.urls')),  # 🚀 ENTERPRISE: WooCommerce Sync System
+    # WooCommerce Sync System (runtime toggle)
+    *( [path('sync-woocommerce/', include('apps.sync_woocommerce.urls'))]
+       if getattr(settings, 'WOOCOMMERCE_SYNC_ENABLED', False) else [] ),
     path('superadmin/', include('api.v1.superadmin.urls')),  # 🚀 ENTERPRISE: Super Admin management
     path('satisfaction/', include('apps.satisfaction.urls')),  # 🚀 ENTERPRISE: Satisfaction Survey System
+    path('migration/', include('api.v1.migration.urls')),  # 🚀 ENTERPRISE: Backend-to-Backend Migration System
     path('', include('api.v1.events.urls')),  # ✅ NUEVO: Incluir URLs de eventos (incluye endpoints públicos)
     path('', include('api.v1.experiences.urls')),  # 🚀 ENTERPRISE: Experiences/Tours endpoints
+    path('student-centers/', include('api.v1.student_centers.urls')),  # 🚀 ENTERPRISE: Student Centers endpoints
+    path('terminal/', include('apps.terminal.urls')),  # 🚀 ENTERPRISE: Terminal bus schedule management
     # Onboarding URLs
     path('organizers/onboarding/start/', CurrentOnboardingView.as_view(), name='onboarding-start'),
     path('organizers/onboarding/step/', OnboardingStepView.as_view(), name='onboarding-step'),

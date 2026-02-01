@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Script para configurar un organizador con módulo de experiencias (Free Tours)
+Script para configurar un organizador con módulo de experiencias (Template Principal)
 Uso: python manage.py shell < scripts/setup_free_tours_organizer.py
 O ejecutar directamente: python manage.py shell
 """
@@ -19,7 +19,7 @@ def setup_free_tours_organizer(
     contact_email: str = "contacto@freetours.cl"
 ):
     """
-    Configura un organizador para usar el módulo de experiencias con template Free Tours.
+    Configura un organizador para usar el módulo de experiencias con template Principal.
     
     Args:
         organizer_slug: Slug del organizador existente (si existe)
@@ -46,7 +46,7 @@ def setup_free_tours_organizer(
                 'contact_email': contact_email,
                 'status': 'active',
                 'has_experience_module': True,
-                'experience_dashboard_template': 'free_tours',
+                'experience_dashboard_template': 'principal',
                 'onboarding_completed': True,
                 'email_validated': True,
                 'is_temporary': False,
@@ -59,7 +59,7 @@ def setup_free_tours_organizer(
     
     # 2. Actualizar campos necesarios
     organizer.has_experience_module = True
-    organizer.experience_dashboard_template = 'free_tours'
+    organizer.experience_dashboard_template = 'principal'
     organizer.status = 'active'
     organizer.onboarding_completed = True
     organizer.email_validated = True
@@ -106,7 +106,7 @@ def setup_free_tours_organizer(
     print("\n🎉 Configuración completada!")
     print(f"\n📝 Para probar:")
     print(f"   1. Inicia sesión con el usuario: {user_email if user_email else 'N/A'}")
-    print(f"   2. Deberías ver el dashboard de Free Tours en: /organizer/experiences/dashboard")
+    print(f"   2. Deberías ver el dashboard Principal en: /organizer/experiences/dashboard")
     
     return organizer
 

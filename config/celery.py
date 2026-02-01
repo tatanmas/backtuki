@@ -9,6 +9,7 @@ from __future__ import absolute_import, unicode_literals
 import os
 from celery import Celery
 from celery.schedules import crontab
+from django.conf import settings
 
 # Set the default Django settings module for the 'celery' program.
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.development')
@@ -54,25 +55,8 @@ app.conf.beat_schedule = {
         }
     },
     
-    # 🚀 ENTERPRISE: WooCommerce Sync Tasks
-    'run-scheduled-woocommerce-syncs': {
-        'task': 'apps.sync_woocommerce.tasks.run_scheduled_syncs',
-        'schedule': crontab(minute='*/15'),  # Every 15 minutes
-        'options': {
-            'queue': 'default',
-            'routing_key': 'sync.scheduled',
-        }
-    },
-    
-    # Clean up old sync executions (weekly)
-    'cleanup-sync-executions': {
-        'task': 'apps.sync_woocommerce.tasks.cleanup_old_executions',
-        'schedule': crontab(hour=3, minute=0, day_of_week=1),  # Monday at 3 AM
-        'options': {
-            'queue': 'maintenance',
-            'routing_key': 'maintenance.cleanup_syncs',
-        }
-    },
+    # 🚀 ENTERPRISE: WooCommerce Sync Tasks (disabled by default)
+    # These are injected below only if WOOCOMMERCE_SYNC_ENABLED=True
     
     # 🚀 ENTERPRISE: Fallback automático para emails pendientes
     # Garantiza que TODOS los emails se envíen, incluso si el frontend falla
@@ -100,13 +84,35 @@ app.conf.task_routes = {
     # Experiences emails
     'apps.experiences.tasks.send_experience_confirmation_email': {'queue': 'emails'},
     
-    # 🚀 ENTERPRISE: WooCommerce Sync Task Routing
-    # sync_woocommerce_event va a cola dedicada 'sync-heavy' con concurrencia=1
+    # 🚀 ENTERPRISE: WooCommerce Sync Task Routing (disabled by default)
+}
+
+# Conditionally enable WooCommerce schedules/routes (runtime toggle)
+if getattr(settings, 'WOOCOMMERCE_SYNC_ENABLED', False):
+    app.conf.beat_schedule.update({
+        'run-scheduled-woocommerce-syncs': {
+            'task': 'apps.sync_woocommerce.tasks.run_scheduled_syncs',
+            'schedule': crontab(minute='*/15'),  # Every 15 minutes
+            'options': {
+                'queue': 'default',
+                'routing_key': 'sync.scheduled',
+            }
+        },
+        'cleanup-sync-executions': {
+            'task': 'apps.sync_woocommerce.tasks.cleanup_old_executions',
+            'schedule': crontab(hour=3, minute=0, day_of_week=1),  # Monday at 3 AM
+            'options': {
+                'queue': 'maintenance',
+                'routing_key': 'maintenance.cleanup_syncs',
+            }
+        },
+    })
+    app.conf.task_routes.update({
     'apps.sync_woocommerce.tasks.sync_woocommerce_event': {'queue': 'sync-heavy'},
     'apps.sync_woocommerce.tasks.run_scheduled_syncs': {'queue': 'default'},
     'apps.sync_woocommerce.tasks.cleanup_old_executions': {'queue': 'maintenance'},
     'apps.sync_woocommerce.tasks.test_woocommerce_connection': {'queue': 'default'},
-}
+    })
 
 # 🚀 ENTERPRISE CELERY CONFIGURATION
 app.conf.update(

@@ -19,10 +19,18 @@ User = get_user_model()
 
 
 class ExperienceSerializer(serializers.ModelSerializer):
-    """Serializer for Experience model."""
+    """
+    🚀 ENTERPRISE: Serializer for Experience model with robust validation.
+    
+    Includes comprehensive field validation with clear, actionable error messages.
+    """
     
     organizer_name = serializers.CharField(source='organizer.name', read_only=True)
-    country_name = serializers.CharField(source='country.name', read_only=True)
+    country_name = serializers.SerializerMethodField()
+    
+    def get_country_name(self, obj):
+        """Get country name, returning None if country is not set."""
+        return obj.country.name if obj.country else None
     
     class Meta:
         model = Experience
@@ -38,17 +46,182 @@ class ExperienceSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'slug', 'organizer', 'created_at', 'updated_at', 'views_count', 'deleted_at']
     
+    def validate_title(self, value):
+        """Validate title is not empty and has reasonable length."""
+        if not value or not value.strip():
+            raise serializers.ValidationError("El título es requerido y no puede estar vacío.")
+        if len(value.strip()) < 3:
+            raise serializers.ValidationError("El título debe tener al menos 3 caracteres.")
+        if len(value) > 200:
+            raise serializers.ValidationError("El título no puede exceder 200 caracteres.")
+        return value.strip()
+    
+    def validate_description(self, value):
+        """Validate description is not empty."""
+        if not value or not value.strip():
+            raise serializers.ValidationError("La descripción es requerida y no puede estar vacía.")
+        if len(value.strip()) < 10:
+            raise serializers.ValidationError("La descripción debe tener al menos 10 caracteres.")
+        return value.strip()
+    
+    def validate_location_name(self, value):
+        """Validate location name is provided."""
+        if not value or not value.strip():
+            raise serializers.ValidationError("El nombre del lugar es requerido.")
+        return value.strip()
+    
+    def validate_location_address(self, value):
+        """Validate location address is provided."""
+        if not value or not value.strip():
+            raise serializers.ValidationError("La dirección es requerida.")
+        return value.strip()
+    
+    def validate_duration_minutes(self, value):
+        """Validate duration is positive."""
+        if value is not None and value <= 0:
+            raise serializers.ValidationError("La duración debe ser mayor a 0 minutos.")
+        return value
+    
+    def validate_price(self, value):
+        """Validate price is non-negative."""
+        if value is not None and value < 0:
+            raise serializers.ValidationError("El precio no puede ser negativo.")
+        return value
+    
+    def validate_min_participants(self, value):
+        """Validate min participants is positive."""
+        if value is not None and value <= 0:
+            raise serializers.ValidationError("El número mínimo de participantes debe ser mayor a 0.")
+        return value
+    
+    def validate_max_participants(self, value):
+        """Validate max participants is greater than min."""
+        min_participants = self.initial_data.get('min_participants')
+        if value is not None and min_participants is not None:
+            if value < min_participants:
+                raise serializers.ValidationError(
+                    f"El número máximo de participantes ({value}) no puede ser menor "
+                    f"que el número mínimo ({min_participants})."
+                )
+        return value
+    
+    def validate(self, attrs):
+        """
+        🚀 ENTERPRISE: Cross-field validation with clear error messages.
+        
+        🔧 FIX: For partial updates (PATCH), use existing instance values when
+        fields are not being updated to avoid false validation errors.
+        """
+        errors = {}
+        
+        # 🔧 FIX: For partial updates, get values from instance if not in attrs
+        is_free_tour = attrs.get('is_free_tour')
+        if is_free_tour is None and self.instance:
+            # Partial update: use existing value from instance
+            is_free_tour = self.instance.is_free_tour
+        elif is_free_tour is None:
+            # New creation: default to False
+            is_free_tour = False
+        
+        # Validate free tour requirements
+        if is_free_tour:
+            credit_per_person = attrs.get('credit_per_person')
+            if credit_per_person is None and self.instance:
+                # Partial update: use existing value from instance
+                credit_per_person = self.instance.credit_per_person
+            # Only validate credit_per_person if it's being updated or it's a new creation
+            if 'credit_per_person' in attrs or not self.instance:
+                if credit_per_person is None or credit_per_person <= 0:
+                    errors['credit_per_person'] = [
+                        "El crédito por persona es requerido para tours gratuitos y debe ser mayor a 0."
+                    ]
+        
+        # Validate pricing for paid tours
+        if not is_free_tour:
+            price = attrs.get('price')
+            if price is None and self.instance:
+                # Partial update: use existing value from instance
+                price = self.instance.price
+            elif price is None:
+                # New creation: default to 0
+                price = 0
+            # Only validate price if it's being updated or it's a new creation
+            if 'price' in attrs or not self.instance:
+                if price is None or price <= 0:
+                    errors['price'] = [
+                        "El precio es requerido para tours pagados y debe ser mayor a 0."
+                    ]
+        
+        # Validate participants range
+        min_participants = attrs.get('min_participants')
+        max_participants = attrs.get('max_participants')
+        if min_participants and max_participants:
+            if max_participants < min_participants:
+                errors['max_participants'] = [
+                    f"El máximo ({max_participants}) no puede ser menor que el mínimo ({min_participants})."
+                ]
+        
+        if errors:
+            raise serializers.ValidationError(errors)
+        
+        return attrs
+    
     def create(self, validated_data):
-        """Create experience with slug generation."""
-        if 'slug' not in validated_data or not validated_data['slug']:
-            validated_data['slug'] = slugify(validated_data['title'])
-            # Ensure unique slug
-            base_slug = validated_data['slug']
-            counter = 1
-            while Experience.objects.filter(slug=validated_data['slug']).exists():
-                validated_data['slug'] = f"{base_slug}-{counter}"
-                counter += 1
-        return super().create(validated_data)
+        """
+        🚀 ENTERPRISE: Create experience with slug generation, error handling, and auto-create TourOperator.
+        
+        Uses ExperienceOperatorService for modular operator and binding management.
+        """
+        import logging
+        from apps.whatsapp.services.experience_operator_service import ExperienceOperatorService
+        
+        logger = logging.getLogger(__name__)
+        
+        try:
+            # Generate unique slug
+            if 'slug' not in validated_data or not validated_data['slug']:
+                validated_data['slug'] = slugify(validated_data['title'])
+                base_slug = validated_data['slug']
+                counter = 1
+                while Experience.objects.filter(slug=validated_data['slug']).exists():
+                    validated_data['slug'] = f"{base_slug}-{counter}"
+                    counter += 1
+            
+            organizer = validated_data.get('organizer')
+            
+            # Auto-create TourOperator if organizer exists
+            tour_operator = None
+            if organizer:
+                try:
+                    tour_operator, _ = ExperienceOperatorService.get_or_create_operator_for_organizer(organizer)
+                except Exception as e:
+                    logger.warning(f"Could not create/get TourOperator for organizer: {e}")
+                    # Continue without operator - experience can still be created
+            
+            # Create the experience
+            experience = super().create(validated_data)
+            
+            # Create ExperienceGroupBinding if operator has default group
+            if tour_operator:
+                try:
+                    ExperienceOperatorService.create_experience_group_binding(
+                        experience=experience,
+                        tour_operator=tour_operator,
+                        is_override=False
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not create ExperienceGroupBinding: {e}")
+                    # Continue - binding can be created later
+            
+            return experience
+        except serializers.ValidationError:
+            # Re-raise validation errors as-is
+            raise
+        except Exception as e:
+            logger.error(f"🔴 [EXPERIENCE_SERIALIZER] Error creating experience: {str(e)}", exc_info=True)
+            raise serializers.ValidationError({
+                'non_field_errors': [f"Error al crear la experiencia: {str(e)}"]
+            })
 
 
 class TourLanguageSerializer(serializers.ModelSerializer):

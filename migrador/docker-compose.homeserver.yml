@@ -1,0 +1,182 @@
+version: '3.8'
+
+# 🏠 TUKI PLATFORM - HOME SERVER DEPLOYMENT
+# Este docker-compose es para desplegar en el servidor local (tukitickets.duckdns.org)
+# Coexiste con Immich y TatanFoto usando puertos diferentes
+
+services:
+  # PostgreSQL 14 para Tuki
+  tuki-db:
+    image: postgres:14
+    container_name: tuki-db
+    environment:
+      POSTGRES_DB: tuki_production
+      POSTGRES_USER: tuki_user
+      POSTGRES_PASSWORD: TukiProd2025!
+    ports:
+      - "5435:5432"  # Puerto diferente para no chocar con AuroraDev (5434)
+    volumes:
+      - tuki_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tuki_user -d tuki_production"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tuki-network
+
+  # Redis para Celery
+  tuki-redis:
+    image: redis:7-alpine
+    container_name: tuki-redis
+    ports:
+      - "6380:6379"  # Puerto diferente para no chocar con Immich (6379)
+    volumes:
+      - tuki_redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    command: redis-server --appendonly yes
+    networks:
+      - tuki-network
+
+  # Backend Django
+  tuki-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tuki-backend
+    ports:
+      - "8000:8080"  # Puerto 8000 (ya expuesto en router, tatanfoto detenido)
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings.homeserver
+      - DEBUG=False
+      - DB_NAME=tuki_production
+      - DB_USER=tuki_user
+      - DB_PASSWORD=TukiProd2025!
+      - DB_HOST=tuki-db
+      - DB_PORT=5432
+      - REDIS_URL=redis://tuki-redis:6379/0
+      - CELERY_BROKER_URL=redis://tuki-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://tuki-redis:6379/0
+      - SECRET_KEY=tuki-super-secret-key-enterprise-2025-production
+      - ALLOWED_HOSTS=tukitickets.duckdns.org,prop.cl,tuki.cl,localhost,127.0.0.1
+      - CSRF_TRUSTED_ORIGINS=https://tukitickets.duckdns.org,https://prop.cl,https://tuki.cl,http://localhost:8000
+      - FRONTEND_URL=https://tuki.live
+      - USE_GCS_IN_DEV=False
+      - PORT=8080
+      # Email configuration
+      - EMAIL_HOST=mail.tuki.cl
+      - EMAIL_PORT=465
+      - EMAIL_USE_SSL=true
+      - EMAIL_HOST_USER=noreply@tuki.cl
+      - EMAIL_HOST_PASSWORD=-W7)HsC<Hsfk
+      - DEFAULT_FROM_EMAIL=Tuki <noreply@tuki.cl>
+      # Transbank WebPay Plus Production
+      - TRANSBANK_WEBPAY_PLUS_COMMERCE_CODE=597049073915
+      - TRANSBANK_WEBPAY_PLUS_API_KEY=f845fa3c-4d56-4060-9ba4-e3d4fc154b5b
+      - TRANSBANK_WEBPAY_PLUS_SANDBOX=false
+    depends_on:
+      tuki-db:
+        condition: service_healthy
+      tuki-redis:
+        condition: service_healthy
+    volumes:
+      - tuki_media:/app/media
+      - tuki_staticfiles:/app/staticfiles
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - tuki-network
+
+  # Celery Worker Unified
+  tuki-celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tuki-celery-worker
+    command: celery -A config worker -l info -Q sync-heavy,default,emails,critical,maintenance,documents --concurrency=4
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings.homeserver
+      - DEBUG=False
+      - DB_NAME=tuki_production
+      - DB_USER=tuki_user
+      - DB_PASSWORD=TukiProd2025!
+      - DB_HOST=tuki-db
+      - DB_PORT=5432
+      - REDIS_URL=redis://tuki-redis:6379/0
+      - CELERY_BROKER_URL=redis://tuki-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://tuki-redis:6379/0
+      - SECRET_KEY=tuki-super-secret-key-enterprise-2025-production
+      # Email configuration
+      - EMAIL_HOST=mail.tuki.cl
+      - EMAIL_PORT=465
+      - EMAIL_USE_SSL=true
+      - EMAIL_HOST_USER=noreply@tuki.cl
+      - EMAIL_HOST_PASSWORD=-W7)HsC<Hsfk
+      - DEFAULT_FROM_EMAIL=Tuki <noreply@tuki.cl>
+    depends_on:
+      - tuki-db
+      - tuki-redis
+      - tuki-backend
+    volumes:
+      - tuki_media:/app/media
+    restart: unless-stopped
+    networks:
+      - tuki-network
+
+  # Celery Beat (Scheduler)
+  tuki-celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tuki-celery-beat
+    command: celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings.homeserver
+      - DEBUG=False
+      - DB_NAME=tuki_production
+      - DB_USER=tuki_user
+      - DB_PASSWORD=TukiProd2025!
+      - DB_HOST=tuki-db
+      - DB_PORT=5432
+      - REDIS_URL=redis://tuki-redis:6379/0
+      - CELERY_BROKER_URL=redis://tuki-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://tuki-redis:6379/0
+      - SECRET_KEY=tuki-super-secret-key-enterprise-2025-production
+    depends_on:
+      - tuki-db
+      - tuki-redis
+      - tuki-backend
+    volumes:
+      - tuki_celerybeat_schedule:/app
+    restart: unless-stopped
+    networks:
+      - tuki-network
+
+volumes:
+  tuki_postgres_data:
+    name: tuki_postgres_data
+  tuki_redis_data:
+    name: tuki_redis_data
+  tuki_media:
+    name: tuki_media
+  tuki_staticfiles:
+    name: tuki_staticfiles
+  tuki_celerybeat_schedule:
+    name: tuki_celerybeat_schedule
+
+networks:
+  tuki-network:
+    name: tuki-network
+    driver: bridge
+

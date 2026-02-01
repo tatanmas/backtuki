@@ -24,6 +24,7 @@ from apps.events.models import (
     EventCommunication,
     SimpleBooking,
     TicketRequest,
+    ComplimentaryTicketInvitation,
 )
 from apps.forms.models import Form, FormField
 from apps.forms.serializers import FormFieldSerializer, FormSerializer
@@ -460,7 +461,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
         model = OrderItem
         fields = [
             'id', 'ticket_tier', 'ticket_tier_name', 'quantity', 'unit_price',
-            'unit_service_fee', 'subtotal', 'custom_price', 'tickets_count', 'attendees'
+            'unit_service_fee', 'subtotal', 'tickets_count', 'attendees'
         ]
         read_only_fields = ['id', 'ticket_tier_name', 'subtotal', 'tickets_count', 'attendees']
     
@@ -710,6 +711,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
     """
     # Map backend fields to frontend expected fields
     image = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
     price = serializers.SerializerMethodField()
     rating = serializers.SerializerMethodField()
     reviews = serializers.SerializerMethodField()
@@ -729,7 +731,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
     class Meta:
         model = Event
         fields = [
-            'id', 'title', 'image', 'price', 'rating', 'reviews', 
+            'id', 'title', 'image', 'description', 'price', 'rating', 'reviews',
             'location', 'date', 'time', 'ticketsAvailable', 'ticketsSold',
             # 🚀 ENTERPRISE: Availability fields for advanced filtering
             'is_sales_active', 'is_available_for_purchase', 'has_available_tickets',
@@ -745,6 +747,14 @@ class PublicEventSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(first_image.image.url)
         # Return None so frontend can handle default image
         return None
+
+    def get_description(self, obj):
+        """
+        Return a short description for cards/slider.
+        Prefer short_description; fallback to description; return null if empty.
+        """
+        text = (obj.short_description or obj.description or "").strip()
+        return text or None
 
     def get_price(self, obj) -> int:
         """Get the minimum ticket price or 0 if free."""
@@ -1588,22 +1598,65 @@ class BookingSerializer(serializers.Serializer):
         
         # 🚀 ENTERPRISE: Build items either from reservation holds or from payload
         from apps.events.models import TicketHold
+        from uuid import UUID
+        
         reservation_id = validated_data.get('reservationId') or self.initial_data.get('reservationId')
         items_source = []
 
         if reservation_id:
             # 🚀 ENTERPRISE: Use holds; do not change availability here (it was adjusted at reserve time)
             print(f"🔍 BOOKING DEBUG - Looking for reservation: {reservation_id}")
-            holds = TicketHold.objects.select_for_update().filter(order_id=reservation_id, released=False, event=event, expires_at__gt=timezone.now())
+            
+            # Convert reservation_id to UUID if it's a string
+            try:
+                if isinstance(reservation_id, str):
+                    reservation_uuid = UUID(reservation_id)
+                else:
+                    reservation_uuid = reservation_id
+            except (ValueError, TypeError) as e:
+                raise serializers.ValidationError({"detail": f"Invalid reservation ID format: {reservation_id}"})
+            
+            # Try to find the order first
+            try:
+                reservation_order = Order.objects.get(id=reservation_uuid, event=event)
+                print(f"🔍 BOOKING DEBUG - Found reservation order: {reservation_order.id}")
+            except Order.DoesNotExist:
+                raise serializers.ValidationError({"detail": f"Reservation {reservation_id} not found."})
+            
+            # Look for holds using the order object (more reliable than order_id lookup)
+            holds = TicketHold.objects.select_for_update().filter(
+                order=reservation_order, 
+                released=False, 
+                event=event, 
+                expires_at__gt=timezone.now()
+            )
             print(f"🔍 BOOKING DEBUG - Found {holds.count()} active holds")
             
             if not holds.exists():
-                # Debug: check if holds exist but are expired
-                all_holds = TicketHold.objects.filter(order_id=reservation_id, event=event)
-                print(f"🔍 BOOKING DEBUG - Total holds for reservation: {all_holds.count()}")
+                # Debug: check all holds for this order to provide detailed error
+                all_holds = TicketHold.objects.filter(order=reservation_order, event=event)
+                expired_holds = TicketHold.objects.filter(
+                    order=reservation_order, 
+                    event=event,
+                    expires_at__lte=timezone.now()
+                )
+                released_holds = TicketHold.objects.filter(
+                    order=reservation_order,
+                    event=event,
+                    released=True
+                )
+                
+                print(f"🔍 BOOKING DEBUG - Total holds: {all_holds.count()}, Expired: {expired_holds.count()}, Released: {released_holds.count()}")
                 for h in all_holds:
                     print(f"🔍 HOLD: tier={h.ticket_tier_id}, qty={h.quantity}, custom_price={h.custom_price}, expires={h.expires_at}, released={h.released}")
-                raise serializers.ValidationError({"detail": "Reservation has expired or is invalid."})
+                
+                error_msg = (
+                    f"Reservation has expired or is invalid. "
+                    f"Total holds: {all_holds.count()}, "
+                    f"Expired: {expired_holds.count()}, "
+                    f"Released: {released_holds.count()}"
+                )
+                raise serializers.ValidationError({"detail": error_msg})
             
             # 🚀 ENTERPRISE: Aggregate by tier AND custom_price for PWYW tickets
             # Group by (tier_id, custom_price) to handle multiple holds with different prices
@@ -2115,7 +2168,7 @@ class PublicEventCreateSerializer(serializers.ModelSerializer):
     Serializer para creación de eventos sin autenticación.
     Campos mínimos requeridos para el flujo público tipo Luma.
     """
-    location = LocationSerializer(required=False)
+    location = LocationSerializer(required=True)
     
     # Forzar que las fechas se devuelvan en UTC
     start_date = serializers.DateTimeField()
@@ -2153,6 +2206,25 @@ class PublicEventCreateSerializer(serializers.ModelSerializer):
         if not data.get('title') or len(data['title'].strip()) < 3:
             raise serializers.ValidationError({
                 'title': 'El título debe tener al menos 3 caracteres'
+            })
+        
+        # Validar ubicación (requerida)
+        location = data.get('location')
+        if not location:
+            raise serializers.ValidationError({
+                'location': 'La ubicación es requerida'
+            })
+        if not location.get('address') or not location['address'].strip():
+            raise serializers.ValidationError({
+                'location': 'La dirección de la ubicación es requerida'
+            })
+        
+        # Validar descripción (requerida)
+        description = data.get('description', '').strip() if data.get('description') else ''
+        short_description = data.get('short_description', '').strip() if data.get('short_description') else ''
+        if not description and not short_description:
+            raise serializers.ValidationError({
+                'description': 'La descripción es requerida'
             })
         
         return data
@@ -2220,3 +2292,141 @@ class PublicEventCreateSerializer(serializers.ModelSerializer):
             pass
         
         return event
+
+
+# 🎫 COMPLIMENTARY: Serializers for complimentary ticket invitations
+
+class ComplimentaryTicketInvitationSerializer(serializers.ModelSerializer):
+    """Serializer for complimentary ticket invitation."""
+    
+    public_url = serializers.SerializerMethodField()
+    full_name = serializers.ReadOnlyField()
+    has_email = serializers.ReadOnlyField()
+    event_title = serializers.CharField(source='event.title', read_only=True)
+    
+    class Meta:
+        model = ComplimentaryTicketInvitation
+        fields = [
+            'id',
+            'event',
+            'event_title',
+            'first_name',
+            'last_name',
+            'email',
+            'full_name',
+            'has_email',
+            'max_tickets',
+            'tickets_per_invitation',
+            'status',
+            'public_token',
+            'public_url',
+            'redeemed_at',
+            'redeemed_by_email',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['public_token', 'redeemed_at', 'redeemed_by_email', 'created_at', 'updated_at']
+    
+    def get_public_url(self, obj):
+        """Get public redemption URL."""
+        return obj.generate_public_url()
+
+
+class ComplimentaryTicketInvitationCreateEntrySerializer(serializers.Serializer):
+    """Serializer for a single entry in batch creation."""
+    
+    first_name = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    last_name = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    email = serializers.EmailField(required=False, allow_blank=True)
+
+
+class ComplimentaryTicketInvitationCreateBatchSerializer(serializers.Serializer):
+    """Serializer for batch creation of complimentary ticket invitations."""
+    
+    entries = ComplimentaryTicketInvitationCreateEntrySerializer(many=True)
+    tickets_per_invitation = serializers.IntegerField(default=1, min_value=1, max_value=2)
+    column_mapping = serializers.DictField(
+        required=False,
+        help_text="Mapping from original column names to field names"
+    )
+
+
+class ComplimentaryTicketInvitationPreviewSerializer(serializers.Serializer):
+    """Serializer for preview data from Excel/text parsing."""
+    
+    data = serializers.ListField(
+        child=serializers.DictField(),
+        help_text="Parsed data rows"
+    )
+    suggested_mapping = serializers.DictField(
+        required=False,
+        help_text="Suggested column mapping"
+    )
+    errors = serializers.ListField(
+        child=serializers.CharField(),
+        help_text="List of parsing errors"
+    )
+
+
+class ComplimentaryTicketInvitationRedeemSerializer(serializers.Serializer):
+    """Serializer for redeeming a complimentary ticket invitation."""
+    
+    first_name = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    last_name = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    ticket_quantity = serializers.IntegerField(min_value=1, max_value=2)
+
+
+class PublicComplimentaryTicketInvitationSerializer(serializers.ModelSerializer):
+    """Public serializer for complimentary ticket invitation (no sensitive data)."""
+    
+    public_url = serializers.SerializerMethodField()
+    event = serializers.SerializerMethodField()
+    full_name = serializers.ReadOnlyField()
+    
+    class Meta:
+        model = ComplimentaryTicketInvitation
+        fields = [
+            'id',
+            'event',
+            'first_name',
+            'last_name',
+            'email',
+            'full_name',
+            'max_tickets',
+            'public_url',
+            'status',
+            'has_email',
+        ]
+    
+    def get_public_url(self, obj):
+        """Get public redemption URL."""
+        return obj.generate_public_url()
+    
+    def get_event(self, obj):
+        """Get event basic info with image URL."""
+        request = self.context.get('request')
+        event = obj.event
+        
+        # Get first event image URL (same as PublicEventSerializer)
+        image_url = None
+        first_image = event.images.first()
+        if first_image and first_image.image:
+            image_url = request.build_absolute_uri(first_image.image.url)
+        
+        return {
+            'id': str(event.id),
+            'title': event.title,
+            'slug': event.slug,
+            'start_date': event.start_date.isoformat() if event.start_date else None,
+            'end_date': event.end_date.isoformat() if event.end_date else None,
+            'location': event.location.name if event.location else None,
+            'image_url': image_url,  # Add event image URL
+        }
+    
+    def to_representation(self, instance):
+        """Override to add status and has_email."""
+        data = super().to_representation(instance)
+        data['status'] = instance.status
+        data['has_email'] = bool(instance.email)
+        return data

@@ -68,14 +68,14 @@ class Organizer(TimeStampedModel):
     
     # Experience dashboard template (only for organizers with experience module)
     EXPERIENCE_DASHBOARD_TEMPLATE_CHOICES = (
-        ('standard', _('Standard')),
-        ('free_tours', _('Free Tours')),
+        ('v0', _('V0 (Legacy)')),
+        ('principal', _('Principal')),
     )
     experience_dashboard_template = models.CharField(
         _("experience dashboard template"),
         max_length=20,
         choices=EXPERIENCE_DASHBOARD_TEMPLATE_CHOICES,
-        default='standard',
+        default='principal',
         help_text=_("Template to use for experience dashboard (only applies if has_experience_module=True)")
     )
     
@@ -108,6 +108,13 @@ class Organizer(TimeStampedModel):
         null=True,
         blank=True,
         help_text=_("Default service fee rate for this organizer (e.g., 0.15 for 15%). If null, uses platform default.")
+    )
+    
+    # Student Center flag
+    is_student_center = models.BooleanField(
+        _("is student center"),
+        default=False,
+        help_text=_("Whether this organizer is a student center (Centro de Alumnos)")
     )
     
     class Meta:
@@ -489,3 +496,57 @@ class OrganizerSubscription(TimeStampedModel):
     def is_active(self):
         """Return True if the subscription is active."""
         return self.status in ['active', 'trial'] 
+
+
+class StudentCenterConfig(TimeStampedModel):
+    """Configuration for a student center's public page."""
+    
+    id = models.UUIDField(
+        primary_key=True,
+        default=UUIDModel._meta.get_field('id').default,
+        editable=False
+    )
+    organizer = models.OneToOneField(
+        Organizer,
+        on_delete=models.CASCADE,
+        related_name='student_center_config',
+        verbose_name=_("organizer"),
+        help_text=_("The organizer (student center) this configuration belongs to")
+    )
+    banner_image = models.ImageField(
+        _("banner image"),
+        upload_to='student_centers/banners',
+        blank=True,
+        null=True,
+        help_text=_("Banner image for the slider/hero section (uploaded file)")
+    )
+    banner_image_url = models.URLField(
+        _("banner image URL"),
+        blank=True,
+        null=True,
+        max_length=500,
+        help_text=_("Banner image URL from media library")
+    )
+    banner_text = models.TextField(
+        _("banner text"),
+        blank=True,
+        help_text=_("Custom text for the banner/slider section")
+    )
+    is_active = models.BooleanField(
+        _("is active"),
+        default=False,
+        help_text=_("Whether the student center page is active and visible publicly")
+    )
+    selected_experiences = models.JSONField(
+        _("selected experiences"),
+        default=list,
+        blank=True,
+        help_text=_("List of experience IDs that the student center wants to display on their public page")
+    )
+    
+    class Meta:
+        verbose_name = _("student center config")
+        verbose_name_plural = _("student center configs")
+    
+    def __str__(self):
+        return f"Config for {self.organizer.name}" 
