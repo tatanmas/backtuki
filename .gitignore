@@ -28,6 +28,12 @@ db.sqlite3-journal
 /media/
 /staticfiles/
 
+# Migration System - DATOS SENSIBLES
+/exports/
+/checkpoints/
+*.tar.gz
+*.json.gz
+
 # Environment variables
 .env
 .venv
