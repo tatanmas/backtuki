@@ -66,7 +66,7 @@ def start_export(request):
         # Configurar opciones
         include_media = request.data.get('include_media', True)
         compress = request.data.get('compress', True)
-        output_filename = request.data.get('output_filename', f'tuki-export-{job.id}.json.gz')
+        output_filename = request.data.get('output_filename', f'tuki-export-{job.id}.tar.gz')
         output_filename = sanitize_filename(output_filename)
         
         # Ejecutar export en background (o síncronamente para datasets pequeños)
@@ -126,7 +126,7 @@ def export_status(request, job_id):
 
 
 @api_view(['GET'])
-@permission_classes([HasMigrationToken])
+@permission_classes([IsSuperUserOrHasMigrationToken])
 def download_export(request, job_id):
     """
     Descarga el archivo de export generado.
@@ -712,3 +712,232 @@ def revoke_migration_token(request, token_id):
         return Response({
             'error': 'Token no encontrado o no tienes permisos para revocarlo'
         }, status=status.HTTP_404_NOT_FOUND)
+
+
+# ==========================================
+# BACKUP RESTORE ENDPOINTS
+# ==========================================
+
+@api_view(['POST'])
+@permission_classes([IsSuperUserOrHasMigrationToken])
+def upload_backup(request):
+    """
+    Sube un backup .tar.gz desde GCP para restaurar.
+    
+    POST /api/v1/migration/upload-backup/
+    Body (multipart/form-data):
+        - backup_file: archivo .tar.gz
+        - restore_sql: bool (default: true)
+        - restore_media: bool (default: true)
+        
+    Response:
+        {
+            "job_id": "uuid",
+            "status": "uploaded",
+            "file_size_mb": 123.45,
+            "original_filename": "backup.tar.gz"
+        }
+    """
+    from .models import BackupJob
+    from .serializers import BackupJobSerializer
+    
+    # Solo superusers
+    if not request.user.is_superuser:
+        return Response({
+            'error': 'Solo superusers pueden subir backups'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        # Validar archivo
+        if 'backup_file' not in request.FILES:
+            return Response({
+                'error': 'Se requiere archivo backup_file'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        backup_file = request.FILES['backup_file']
+        
+        # Validar extensión
+        if not backup_file.name.endswith('.tar.gz'):
+            return Response({
+                'error': 'El archivo debe ser .tar.gz'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Calcular tamaño en MB
+        file_size_mb = round(backup_file.size / (1024 * 1024), 2)
+        
+        # Crear job
+        job = BackupJob.objects.create(
+            backup_file=backup_file,
+            file_size_mb=file_size_mb,
+            original_filename=backup_file.name,
+            restore_sql=request.data.get('restore_sql', 'true').lower() == 'true',
+            restore_media=request.data.get('restore_media', 'true').lower() == 'true',
+            uploaded_by=request.user,
+            status='uploaded'
+        )
+        
+        logger.info(f"✅ Backup subido por {request.user.email}: {file_size_mb}MB")
+        
+        serializer = BackupJobSerializer(job, context={'request': request})
+        
+        return Response({
+            'success': True,
+            'message': 'Backup subido exitosamente',
+            'job': serializer.data
+        }, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        logger.exception("Error subiendo backup")
+        return Response({
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperUserOrHasMigrationToken])
+def restore_backup(request, job_id):
+    """
+    Ejecuta el restore desde un backup subido.
+    
+    POST /api/v1/migration/restore-backup/<job_id>/
+    Body:
+        {
+            "confirm": true  # REQUIRED para seguridad
+        }
+        
+    Response:
+        {
+            "job_id": "uuid",
+            "status": "restoring",
+            "message": "Restore iniciado"
+        }
+    """
+    from .models import BackupJob
+    from .services.backup_restore import RestoreService
+    
+    # Solo superusers
+    if not request.user.is_superuser:
+        return Response({
+            'error': 'Solo superusers pueden ejecutar restore'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        job = BackupJob.objects.get(id=job_id)
+        
+        # Validar estado
+        if job.status not in ['uploaded', 'validated', 'failed']:
+            return Response({
+                'error': f'No se puede restaurar desde estado: {job.status}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Requerir confirmación explícita
+        if not request.data.get('confirm'):
+            return Response({
+                'error': 'Se requiere confirmación explícita (confirm: true)',
+                'warning': '⚠️ ESTE RESTORE REEMPLAZARÁ TODOS LOS DATOS ACTUALES'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Ejecutar restore en thread separado (o Celery en producción)
+        import threading
+        
+        def run_restore():
+            service = RestoreService(job)
+            service.execute()
+        
+        thread = threading.Thread(target=run_restore, daemon=True)
+        thread.start()
+        
+        logger.info(f"✅ Restore iniciado por {request.user.email} - Job: {job_id}")
+        
+        return Response({
+            'success': True,
+            'job_id': str(job.id),
+            'status': 'restoring',
+            'message': 'Restore iniciado. Monitorea el progreso en /restore-status/'
+        }, status=status.HTTP_200_OK)
+        
+    except BackupJob.DoesNotExist:
+        return Response({
+            'error': 'Backup job no encontrado'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.exception("Error iniciando restore")
+        return Response({
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperUserOrHasMigrationToken])
+def restore_status(request, job_id):
+    """
+    Obtiene el estado de un restore en progreso.
+    
+    GET /api/v1/migration/restore-status/<job_id>/
+    
+    Response:
+        {
+            "job_id": "uuid",
+            "status": "restoring",
+            "progress_percent": 45,
+            "current_step": "Restaurando SQL...",
+            "sql_records_restored": 1234,
+            "media_files_restored": 567
+        }
+    """
+    from .models import BackupJob
+    from .serializers import BackupJobSerializer
+    
+    try:
+        job = BackupJob.objects.get(id=job_id)
+        serializer = BackupJobSerializer(job, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    except BackupJob.DoesNotExist:
+        return Response({
+            'error': 'Backup job no encontrado'
+        }, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperUserOrHasMigrationToken])
+def list_backup_jobs(request):
+    """
+    Lista todos los backup jobs.
+    
+    GET /api/v1/migration/backup-jobs/
+    Query params:
+        - status: filtrar por estado
+        - limit: límite de resultados (default: 20)
+        
+    Response:
+        {
+            "jobs": [...],
+            "total": 10
+        }
+    """
+    from .models import BackupJob
+    from .serializers import BackupJobSerializer
+    
+    try:
+        queryset = BackupJob.objects.all()
+        
+        # Filtros
+        if request.query_params.get('status'):
+            queryset = queryset.filter(status=request.query_params['status'])
+        
+        # Límite
+        limit = int(request.query_params.get('limit', 20))
+        queryset = queryset[:limit]
+        
+        serializer = BackupJobSerializer(queryset, many=True, context={'request': request})
+        
+        return Response({
+            'jobs': serializer.data,
+            'total': BackupJob.objects.count()
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.exception("Error listando backup jobs")
+        return Response({
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

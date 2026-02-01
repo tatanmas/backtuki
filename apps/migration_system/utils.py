@@ -125,12 +125,17 @@ def calculate_file_checksum(file_field, algorithm='md5'):
         algorithm: 'md5' o 'sha256'
         
     Returns:
-        str: Checksum en formato hexadecimal
+        str: Checksum en formato hexadecimal, None si el archivo no existe
     """
     if not file_field:
         return None
     
     try:
+        # Verificar si el archivo existe físicamente antes de intentar abrirlo
+        from django.core.files.storage import default_storage
+        if not default_storage.exists(file_field.name):
+            return None
+        
         if algorithm == 'md5':
             hasher = hashlib.md5()
         elif algorithm == 'sha256':

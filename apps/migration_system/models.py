@@ -594,3 +594,190 @@ class MigrationToken(models.Model):
     def generate_token(cls):
         """Genera un token único."""
         return str(uuid.uuid4())
+
+
+class BackupJob(TimeStampedModel):
+    """
+    Job para restore desde backup GCP (alternativa al sistema de migración URL+token).
+    Permite subir un backup .tar.gz y restaurar SQL + media files.
+    """
+    
+    STATUS_CHOICES = (
+        ('uploaded', _('Uploaded')),
+        ('validating', _('Validating')),
+        ('validated', _('Validated')),
+        ('restoring', _('Restoring')),
+        ('completed', _('Completed')),
+        ('failed', _('Failed')),
+        ('cancelled', _('Cancelled')),
+    )
+    
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False
+    )
+    
+    # Archivo de backup
+    backup_file = models.FileField(
+        _("backup file"),
+        upload_to='backups/%Y/%m/',
+        help_text=_("Archivo .tar.gz con el backup de GCP")
+    )
+    file_size_mb = models.DecimalField(
+        _("file size (MB)"),
+        max_digits=10,
+        decimal_places=2
+    )
+    original_filename = models.CharField(
+        _("original filename"),
+        max_length=255
+    )
+    
+    # Estado
+    status = models.CharField(
+        _("status"),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='uploaded'
+    )
+    progress_percent = models.IntegerField(
+        _("progress percentage"),
+        default=0
+    )
+    current_step = models.CharField(
+        _("current step"),
+        max_length=255,
+        blank=True
+    )
+    
+    # Opciones de restore
+    restore_sql = models.BooleanField(
+        _("restore SQL"),
+        default=True,
+        help_text=_("Restaurar base de datos PostgreSQL")
+    )
+    restore_media = models.BooleanField(
+        _("restore media"),
+        default=True,
+        help_text=_("Restaurar archivos media")
+    )
+    create_backup_before = models.BooleanField(
+        _("create backup before"),
+        default=True,
+        help_text=_("Crear backup de seguridad antes de restaurar")
+    )
+    
+    # Metadata del backup
+    backup_metadata = models.JSONField(
+        _("backup metadata"),
+        default=dict,
+        blank=True,
+        help_text=_("Metadata extraída del backup (timestamp, counts, etc)")
+    )
+    
+    # Resultados
+    sql_records_restored = models.IntegerField(
+        _("SQL records restored"),
+        default=0
+    )
+    media_files_restored = models.IntegerField(
+        _("media files restored"),
+        default=0
+    )
+    media_size_mb = models.DecimalField(
+        _("media size (MB)"),
+        max_digits=10,
+        decimal_places=2,
+        default=0
+    )
+    
+    # Tiempos
+    started_at = models.DateTimeField(
+        _("started at"),
+        null=True,
+        blank=True
+    )
+    completed_at = models.DateTimeField(
+        _("completed at"),
+        null=True,
+        blank=True
+    )
+    duration_seconds = models.IntegerField(
+        _("duration (seconds)"),
+        null=True,
+        blank=True
+    )
+    
+    # Errores
+    error_message = models.TextField(
+        _("error message"),
+        blank=True
+    )
+    error_traceback = models.TextField(
+        _("error traceback"),
+        blank=True
+    )
+    
+    # Auditoría
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='backup_jobs',
+        verbose_name=_("uploaded by")
+    )
+    
+    # Backup de seguridad pre-restore
+    safety_backup_path = models.CharField(
+        _("safety backup path"),
+        max_length=500,
+        blank=True,
+        help_text=_("Ruta del backup de seguridad creado antes del restore")
+    )
+    
+    class Meta:
+        verbose_name = _("backup job")
+        verbose_name_plural = _("backup jobs")
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status', 'created_at']),
+            models.Index(fields=['uploaded_by', 'created_at']),
+        ]
+    
+    def __str__(self):
+        return f"Backup Restore - {self.get_status_display()} ({self.progress_percent}%)"
+    
+    def start(self):
+        """Marca el job como iniciado."""
+        self.status = 'restoring'
+        self.started_at = timezone.now()
+        self.save(update_fields=['status', 'started_at'])
+    
+    def complete(self):
+        """Marca el job como completado."""
+        self.status = 'completed'
+        self.completed_at = timezone.now()
+        if self.started_at:
+            self.duration_seconds = int((self.completed_at - self.started_at).total_seconds())
+        self.progress_percent = 100
+        self.save(update_fields=['status', 'completed_at', 'duration_seconds', 'progress_percent'])
+    
+    def fail(self, error_message, traceback=None):
+        """Marca el job como fallido."""
+        self.status = 'failed'
+        self.completed_at = timezone.now()
+        self.error_message = error_message
+        if traceback:
+            self.error_traceback = traceback
+        if self.started_at:
+            self.duration_seconds = int((self.completed_at - self.started_at).total_seconds())
+        self.save(update_fields=['status', 'completed_at', 'error_message', 'error_traceback', 'duration_seconds'])
+    
+    def update_progress(self, percent, step_description=None):
+        """Actualiza el progreso del job."""
+        self.progress_percent = min(percent, 100)
+        if step_description:
+            self.current_step = step_description
+        self.save(update_fields=['progress_percent', 'current_step'])

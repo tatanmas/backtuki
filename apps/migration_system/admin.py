@@ -2,7 +2,7 @@
 
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import MigrationJob, MigrationLog, MigrationCheckpoint, MigrationToken
+from .models import MigrationJob, MigrationLog, MigrationCheckpoint, MigrationToken, BackupJob
 
 
 @admin.register(MigrationJob)
@@ -193,3 +193,69 @@ class MigrationTokenAdmin(admin.ModelAdmin):
             return format_html('<span style="color: orange;">✗ Expired/Used</span>')
         return format_html('<span style="color: green;">✓ Valid</span>')
     validity_status.short_description = 'Status'
+
+
+@admin.register(BackupJob)
+class BackupJobAdmin(admin.ModelAdmin):
+    """Admin for backup/restore jobs."""
+    
+    list_display = ('id', 'original_filename', 'status_badge', 'progress_bar', 'file_size_mb', 
+                   'sql_records_restored', 'media_files_restored', 'created_at', 'uploaded_by')
+    list_filter = ('status', 'restore_sql', 'restore_media', 'created_at')
+    search_fields = ('id', 'original_filename', 'uploaded_by__email')
+    readonly_fields = ('id', 'file_size_mb', 'backup_metadata', 'sql_records_restored', 
+                      'media_files_restored', 'media_size_mb', 'safety_backup_path',
+                      'started_at', 'completed_at', 'duration_seconds', 'created_at', 'updated_at')
+    
+    fieldsets = (
+        ('Archivo de Backup', {
+            'fields': ('id', 'backup_file', 'original_filename', 'file_size_mb', 'uploaded_by')
+        }),
+        ('Estado', {
+            'fields': ('status', 'progress_percent', 'current_step')
+        }),
+        ('Opciones de Restore', {
+            'fields': ('restore_sql', 'restore_media', 'create_backup_before')
+        }),
+        ('Resultados', {
+            'fields': ('sql_records_restored', 'media_files_restored', 'media_size_mb', 
+                      'safety_backup_path', 'backup_metadata')
+        }),
+        ('Tiempos', {
+            'fields': ('started_at', 'completed_at', 'duration_seconds', 'created_at', 'updated_at')
+        }),
+        ('Errores', {
+            'fields': ('error_message', 'error_traceback'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def status_badge(self, obj):
+        """Display status with color."""
+        colors = {
+            'uploaded': 'gray',
+            'validating': 'blue',
+            'validated': 'lightblue',
+            'restoring': 'orange',
+            'completed': 'green',
+            'failed': 'red',
+            'cancelled': 'darkgray',
+        }
+        color = colors.get(obj.status, 'gray')
+        return format_html(
+            '<span style="background-color: {}; color: white; padding: 3px 10px; border-radius: 3px;">{}</span>',
+            color,
+            obj.get_status_display()
+        )
+    status_badge.short_description = 'Status'
+    
+    def progress_bar(self, obj):
+        """Display progress bar."""
+        return format_html(
+            '<div style="width: 100px; background-color: #f0f0f0; border-radius: 3px;">'
+            '<div style="width: {}%; background-color: #FF6B35; padding: 2px 0; text-align: center; color: white; border-radius: 3px; font-size: 11px;">{}</div>'
+            '</div>',
+            obj.progress_percent,
+            f"{obj.progress_percent}%"
+        )
+    progress_bar.short_description = 'Progress'

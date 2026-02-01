@@ -9,12 +9,15 @@ import json
 import logging
 import uuid
 import decimal
+import tarfile
+import shutil
 from datetime import datetime, date
 from pathlib import Path
 from django.apps import apps
 from django.conf import settings
 from django.utils import timezone
 from django.db import connection
+from django.core.files.storage import default_storage
 
 from ..models import MigrationJob, MigrationLog
 from ..utils import (
@@ -172,7 +175,7 @@ class PlatformExportService:
                 export_data['media_files'] = self.export_media_metadata()
                 
                 if self.job:
-                    self.job.update_progress(95, "Metadatos de archivos exportados")
+                    self.job.update_progress(85, "Metadatos de archivos exportados")
             
             # Generar estadísticas
             export_data['statistics'] = self.generate_statistics(export_data)
@@ -185,16 +188,33 @@ class PlatformExportService:
             # Guardar a archivo si se especificó
             if output_file:
                 self.log('info', f"Guardando export a {output_file}")
-                file_path, file_size = self.save_to_file(
+                
+                # Guardar primero el JSON
+                json_path = output_file.replace('.tar.gz', '_data.json.gz')
+                _, json_size = self.save_to_file(
                     export_data,
-                    output_file,
+                    json_path,
                     options.get('compress', True)
                 )
+                
+                # Crear archivo TAR.GZ con JSON + archivos media
+                if self.job:
+                    self.job.update_progress(90, "Empaquetando archivos media")
+                
+                file_path, file_size = self.create_full_backup(
+                    json_path,
+                    export_data['media_files'],
+                    output_file
+                )
+                
+                # Limpiar JSON temporal
+                Path(json_path).unlink(missing_ok=True)
                 
                 if self.job:
                     self.job.export_file_path = file_path
                     self.job.export_file_size_mb = file_size
-                    self.job.save(update_fields=['export_file_path', 'export_file_size_mb'])
+                    self.job.files_transferred = len(export_data['media_files'])
+                    self.job.save(update_fields=['export_file_path', 'export_file_size_mb', 'files_transferred'])
             
             duration = (datetime.now() - start_time).total_seconds()
             
@@ -259,15 +279,20 @@ class PlatformExportService:
     
     def export_media_metadata(self):
         """
-        Exporta metadatos de todos los archivos media.
+        Exporta metadatos de todos los archivos media que existen físicamente.
         
         Returns:
             dict: {file_path: metadata}
         """
+        from django.core.files.storage import default_storage
+        
         media_files = {}
         file_fields = find_all_file_fields()
         
         self.log('info', f"Encontrados {len(file_fields)} campos de archivo")
+        
+        total_found = 0
+        total_skipped = 0
         
         for model, field_name in file_fields:
             queryset = model.objects.exclude(**{f"{field_name}": ''}).exclude(**{f"{field_name}__isnull": True})
@@ -276,13 +301,21 @@ class PlatformExportService:
                 try:
                     file_field = getattr(obj, field_name)
                     if file_field and hasattr(file_field, 'name') and file_field.name:
+                        total_found += 1
+                        
+                        # Verificar que el archivo existe físicamente ANTES de procesarlo
+                        if not default_storage.exists(file_field.name):
+                            total_skipped += 1
+                            logger.debug(f"Archivo no existe físicamente, omitiendo: {file_field.name}")
+                            continue
+                        
                         # Obtener URL (funciona tanto para GCS como filesystem local)
                         try:
                             file_url = file_field.url
                         except Exception:
                             file_url = None
                         
-                        # Calcular checksum
+                        # Calcular checksum (ya maneja archivos faltantes)
                         checksum = calculate_file_checksum(file_field)
                         
                         media_files[file_field.name] = {
@@ -297,7 +330,10 @@ class PlatformExportService:
                     logger.warning(f"Error procesando archivo de {model._meta.label}.{field_name}: {e}")
                     continue
         
-        self.log('info', f"Exportados metadatos de {len(media_files)} archivos")
+        if total_skipped > 0:
+            self.log('warning', f"Se omitieron {total_skipped} archivos de {total_found} que no existen físicamente")
+        
+        self.log('info', f"Exportados metadatos de {len(media_files)} archivos válidos")
         return media_files
     
     def generate_statistics(self, export_data):
@@ -365,6 +401,96 @@ class PlatformExportService:
         self.log('info', f"Archivo guardado: {output_path} ({size_mb} MB)")
         
         return str(output_path), size_mb
+    
+    def create_full_backup(self, json_path, media_files_metadata, output_tar_path):
+        """
+        Crea un archivo TAR.GZ con datos JSON + archivos media físicos.
+        
+        Args:
+            json_path: Ruta al archivo JSON con metadatos
+            media_files_metadata: dict con metadatos de archivos
+            output_tar_path: Ruta del archivo TAR.GZ de salida
+            
+        Returns:
+            tuple: (file_path, size_in_mb)
+        """
+        output_path = Path(output_tar_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        self.log('info', f"Creando backup completo con {len(media_files_metadata)} archivos")
+        
+        # Crear directorio temporal para staging
+        temp_dir = output_path.parent / f"temp_export_{uuid.uuid4().hex[:8]}"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            # Copiar JSON a temp dir
+            temp_json = temp_dir / 'data.json.gz'
+            shutil.copy2(json_path, temp_json)
+            
+            # Crear directorio media en temp
+            temp_media_dir = temp_dir / 'media'
+            temp_media_dir.mkdir(exist_ok=True)
+            
+            # Copiar archivos media
+            files_copied = 0
+            files_skipped = 0
+            
+            for file_path, metadata in media_files_metadata.items():
+                try:
+                    # Verificar si el archivo existe
+                    if not default_storage.exists(file_path):
+                        files_skipped += 1
+                        logger.warning(f"Archivo no existe, omitiendo: {file_path}")
+                        continue
+                    
+                    # Ruta de destino en temp
+                    dest_path = temp_media_dir / file_path
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Copiar archivo
+                    with default_storage.open(file_path, 'rb') as src:
+                        with open(dest_path, 'wb') as dst:
+                            shutil.copyfileobj(src, dst)
+                    
+                    files_copied += 1
+                    
+                    # Actualizar progreso cada 10 archivos
+                    if files_copied % 10 == 0 and self.job:
+                        progress = 90 + int((files_copied / len(media_files_metadata)) * 8)
+                        self.job.update_progress(
+                            min(progress, 98),
+                            f"Copiando archivos: {files_copied}/{len(media_files_metadata)}"
+                        )
+                        self.job.files_transferred = files_copied
+                        self.job.save(update_fields=['files_transferred'])
+                    
+                except Exception as e:
+                    files_skipped += 1
+                    logger.warning(f"Error copiando {file_path}: {e}")
+                    continue
+            
+            self.log('info', f"Archivos copiados: {files_copied}, omitidos: {files_skipped}")
+            
+            # Crear archivo TAR.GZ
+            self.log('info', f"Creando archivo TAR.GZ: {output_path}")
+            with tarfile.open(output_path, 'w:gz') as tar:
+                tar.add(temp_json, arcname='data.json.gz')
+                if files_copied > 0:
+                    tar.add(temp_media_dir, arcname='media')
+            
+            # Calcular tamaño
+            file_size = output_path.stat().st_size
+            size_mb = round(file_size / (1024 * 1024), 2)
+            
+            self.log('info', f"Backup completo creado: {output_path} ({size_mb} MB, {files_copied} archivos)")
+            
+            return str(output_path), size_mb
+            
+        finally:
+            # Limpiar directorio temporal
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
     
     def _get_models_to_export(self, options):
         """

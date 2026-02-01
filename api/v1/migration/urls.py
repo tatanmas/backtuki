@@ -32,4 +32,10 @@ urlpatterns = [
     # Token management (SuperAdmin only)
     path('tokens/', views.manage_migration_tokens, name='migration-tokens'),
     path('tokens/<uuid:token_id>/', views.revoke_migration_token, name='revoke-migration-token'),
+    
+    # Backup/Restore endpoints (SuperAdmin only)
+    path('upload-backup/', views.upload_backup, name='upload-backup'),
+    path('restore-backup/<uuid:job_id>/', views.restore_backup, name='restore-backup'),
+    path('restore-status/<uuid:job_id>/', views.restore_status, name='restore-status'),
+    path('backup-jobs/', views.list_backup_jobs, name='list-backup-jobs'),
 ]
