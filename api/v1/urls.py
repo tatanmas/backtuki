@@ -62,7 +62,7 @@ urlpatterns = [
     path('auth/', include('api.v1.auth.urls')),
     path('user/', include('api.v1.users.urls')),
     path('tickets/', include('api.v1.tickets.urls')),  # 🚀 ENTERPRISE: Ticket management endpoints
-    # path('media/', include('apps.media.urls')),  # 🚀 ENTERPRISE: Media Library System (TODO: crear módulo)
+    path('media/', include('apps.media.urls')),  # 🚀 ENTERPRISE: Media Library System
     path('validation/', include('api.v1.validation.urls')),  # 🚀 ENTERPRISE: Validation system endpoints
     # WooCommerce Sync System (runtime toggle)
     *( [path('sync-woocommerce/', include('apps.sync_woocommerce.urls'))]

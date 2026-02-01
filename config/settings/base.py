@@ -55,7 +55,7 @@ INSTALLED_APPS = [
     'apps.otp',  # 🔐 OTP Authentication System
     'apps.validation',  # 🚀 Enterprise Validation System
     'apps.sync_woocommerce',  # 🚀 ENTERPRISE: WooCommerce Sync System
-    # 'apps.media',  # 🚀 ENTERPRISE: Media Library System (TODO: crear módulo)
+    'apps.media',  # 🚀 ENTERPRISE: Media Library System
     'apps.whatsapp',  # 🚀 ENTERPRISE: WhatsApp Integration
     'apps.terminal',  # 🚀 ENTERPRISE: Terminal bus schedule management
     'payment_processor',  # 🚀 ENTERPRISE Payment System
