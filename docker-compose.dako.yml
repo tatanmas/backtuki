@@ -60,7 +60,7 @@ services:
       dockerfile: Dockerfile
     container_name: tuki-backend
     ports:
-      - "8000:8000"
+      - "8000:8080"
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.homeserver
       - DEBUG=False
