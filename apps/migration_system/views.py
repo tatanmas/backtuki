@@ -210,7 +210,18 @@ def receive_import(request):
         
         # Guardar archivo temporalmente
         import tempfile
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.json.gz')
+        import os as os_module
+        
+        # Determinar el sufijo basado en el nombre original del archivo
+        original_name = export_file.name.lower()
+        if original_name.endswith('.tar.gz') or original_name.endswith('.tgz'):
+            suffix = '.tar.gz'
+        elif original_name.endswith('.gz'):
+            suffix = '.json.gz'
+        else:
+            suffix = os_module.path.splitext(original_name)[1] or '.json'
+        
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
         
         for chunk in export_file.chunks():
             temp_file.write(chunk)
