@@ -197,12 +197,15 @@ def receive_import(request):
         
         export_file = request.FILES['export_file']
         
+        # Crear config excluyendo el archivo (no es serializable a JSON)
+        config_data = {k: v for k, v in request.data.items() if k != 'export_file'}
+        
         # Crear job
         job = MigrationJob.objects.create(
             direction='import',
             status='pending',
             executed_by=request.user if request.user.is_authenticated else None,
-            config=request.data.dict()
+            config=config_data
         )
         
         # Guardar archivo temporalmente
