@@ -35,6 +35,9 @@ def get_all_models_in_order():
         'events.EventCategory',
         'events.Event',
         'events.EventImage',
+        'events.EventView',
+        'events.ConversionFunnel',
+        'events.EventPerformanceMetrics',
         'events.TicketCategory',
         'events.TicketTier',
         'events.Order',
@@ -51,16 +54,33 @@ def get_all_models_in_order():
         'events.SimpleBooking',
         'events.TicketRequest',
         
+        # Media
+        'media.MediaAsset',
+        'media.MediaUsage',
+        
         # Forms
         'forms.Form',
         'forms.FormField',
+        'forms.FieldOption',
+        'forms.FieldValidation',
+        'forms.ConditionalLogic',
         'forms.FormResponse',
         'forms.FormResponseFile',
         
         # Experiences
+        'experiences.TourLanguage',
         'experiences.Experience',
+        'experiences.TourInstance',
         'experiences.TimeSlot',
+        'experiences.ExperienceResource',
         'experiences.ExperienceReservation',
+        'experiences.TourBooking',
+        'experiences.ExperienceResourceHold',
+        'experiences.ExperienceCapacityHold',
+        'experiences.ExperienceDatePriceOverride',
+        'experiences.OrganizerCredit',
+        'experiences.StudentCenterTimelineItem',
+        'experiences.StudentInterest',
         
         # Accommodations
         'accommodations.Accommodation',
@@ -71,17 +91,33 @@ def get_all_models_in_order():
         
         # Satisfaction
         'satisfaction.SatisfactionSurvey',
+        'satisfaction.SatisfactionQuestion',
+        'satisfaction.SatisfactionQuestionOption',
         'satisfaction.SatisfactionSurveySubmission',
+        'satisfaction.SatisfactionResponse',
+        'satisfaction.SatisfactionAnswer',
         
         # WhatsApp
         'whatsapp.TourOperator',
         'whatsapp.WhatsAppSession',
+        'whatsapp.WhatsAppChat',
         'whatsapp.WhatsAppMessage',
+        'whatsapp.ExperienceOperatorBinding',
+        'whatsapp.ExperienceGroupBinding',
+        'whatsapp.WhatsAppReservationRequest',
+        'whatsapp.WhatsAppReservationCode',
         
-        # Terminal (si existe)
+        # Terminal
+        'terminal.TerminalCompany',
+        'terminal.TerminalDestination',
         'terminal.TerminalRoute',
+        'terminal.TerminalTrip',
         'terminal.TerminalSchedule',
         'terminal.TerminalBooking',
+        'terminal.TerminalExcelUpload',
+        'terminal.TerminalAdvertisingSpace',
+        'terminal.TerminalAdvertisingInteraction',
+        'terminal.TerminalDestinationExperienceConfig',
     ]
     
     # Filtrar solo modelos que existen
@@ -152,6 +188,39 @@ def calculate_file_checksum(file_field, algorithm='md5'):
         return hasher.hexdigest()
     except Exception as e:
         print(f"Error calculando checksum: {e}")
+        return None
+
+
+def calculate_file_checksum_from_path(file_path, algorithm='md5'):
+    """
+    Calcula el checksum de un archivo desde su path.
+    
+    Args:
+        file_path: Path al archivo
+        algorithm: 'md5' o 'sha256'
+        
+    Returns:
+        str: Checksum en formato "algorithm:hash", None si el archivo no existe
+    """
+    if not os.path.exists(file_path):
+        return None
+    
+    try:
+        if algorithm == 'md5':
+            hasher = hashlib.md5()
+        elif algorithm == 'sha256':
+            hasher = hashlib.sha256()
+        else:
+            raise ValueError(f"Algoritmo no soportado: {algorithm}")
+        
+        # Leer archivo en chunks para no cargar todo en memoria
+        with open(file_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                hasher.update(chunk)
+        
+        return f"{algorithm}:{hasher.hexdigest()}"
+    except Exception as e:
+        print(f"Error calculando checksum desde path: {e}")
         return None
 
 

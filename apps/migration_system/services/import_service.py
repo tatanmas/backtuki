@@ -175,16 +175,22 @@ class PlatformImportService:
                         self.log('info', f"[DRY RUN] Importaría {len(model_data)} registros de {model_path}")
             
             # Extraer archivos media del archivo fuente (si es tar.gz)
-            media_result = {'extracted': 0, 'skipped': 0, 'errors': []}
+            media_result = {'extracted': 0, 'skipped': 0, 'errors': [], 'checksum_errors': []}
             if source_file_path and not options.get('dry_run'):
                 if self.job:
                     self.job.update_progress(92, "Extrayendo archivos media")
                 
-                media_result = self.extract_media_files(source_file_path)
+                # Pasar metadatos de media para validación de checksums
+                media_metadata = input_data.get('media_files', {})
+                media_result = self.extract_media_files(source_file_path, media_metadata=media_metadata)
                 
                 if self.job:
                     self.job.files_transferred = media_result['extracted']
                     self.job.save(update_fields=['files_transferred'])
+                
+                # Advertir sobre errores de checksum
+                if media_result.get('checksum_errors'):
+                    self.log('warning', f"{len(media_result['checksum_errors'])} archivos con checksums inválidos")
             
             # Verificar integridad si se solicita
             if options.get('verify', True) and not options.get('dry_run'):
@@ -416,7 +422,7 @@ class PlatformImportService:
     
     def validate_export_format(self, export_data):
         """
-        Valida que el formato del export sea correcto.
+        Valida que el formato del export sea correcto y completo.
         
         Args:
             export_data: dict con datos exportados
@@ -435,11 +441,47 @@ class PlatformImportService:
         if export_data['version'] != PlatformExportService.EXPORT_VERSION:
             self.log('warning', f"Versión de export diferente: {export_data['version']}")
         
+        # Validar estructura de modelos
+        if not isinstance(export_data['models'], dict):
+            self.log('error', "Campo 'models' debe ser un diccionario")
+            return False
+        
+        # Validar modelos críticos presentes
+        critical_models = [
+            'users.User',
+            'events.Event',
+            'events.Order',
+            'experiences.Experience',
+            'organizers.Organizer',
+        ]
+        
+        missing_critical = []
+        for model in critical_models:
+            if model not in export_data['models']:
+                missing_critical.append(model)
+        
+        if missing_critical:
+            self.log('warning', f"Modelos críticos faltantes: {', '.join(missing_critical)}")
+        
+        # Validar estructura de cada modelo (debe tener 'pk' y 'fields')
+        invalid_models = []
+        for model_path, records in export_data['models'].items():
+            if records and isinstance(records, list) and len(records) > 0:
+                first_record = records[0]
+                if not isinstance(first_record, dict):
+                    invalid_models.append(f"{model_path}: registros no son diccionarios")
+                elif 'pk' not in first_record or 'fields' not in first_record:
+                    invalid_models.append(f"{model_path}: registros sin 'pk' o 'fields'")
+        
+        if invalid_models:
+            self.log('error', f"Modelos con estructura inválida: {', '.join(invalid_models[:5])}")
+            return False
+        
         return True
     
     def verify_import(self, expected_statistics):
         """
-        Verifica que el import fue exitoso comparando estadísticas.
+        Verifica que el import fue exitoso comparando estadísticas y validando FK.
         
         Args:
             expected_statistics: dict con estadísticas esperadas
@@ -467,6 +509,23 @@ class PlatformImportService:
                     
                 except LookupError:
                     warnings.append(f"Modelo {model_path} no encontrado en destino")
+        
+        # Validar relaciones FK (usando IntegrityVerificationService si existe)
+        try:
+            from apps.migration_system.services.integrity_verification import IntegrityVerificationService
+            integrity_service = IntegrityVerificationService()
+            fk_verification = integrity_service.verify_relationships()
+            
+            if not fk_verification['success']:
+                broken_fk_count = len(fk_verification.get('broken_relationships', []))
+                if broken_fk_count > 0:
+                    errors.append(f"FK rotas detectadas: {broken_fk_count} relaciones")
+                    # Agregar detalles de las primeras 5 FK rotas
+                    for broken in fk_verification.get('broken_relationships', [])[:5]:
+                        warnings.append(f"FK rota: {broken['model']} campo {broken['field']}")
+        except (ImportError, AttributeError):
+            # IntegrityVerificationService no existe, skip
+            pass
         
         success = len(errors) == 0
         
@@ -546,13 +605,15 @@ class PlatformImportService:
         with open(file_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     
-    def extract_media_files(self, archive_path, target_dir=None):
+    def extract_media_files(self, archive_path, target_dir=None, media_metadata=None):
         """
         Extrae archivos media de un archivo TAR.GZ al directorio de media.
+        Valida checksums MD5 si se proporcionan metadatos.
         
         Args:
             archive_path: ruta al archivo tar.gz
             target_dir: directorio destino (default: MEDIA_ROOT)
+            media_metadata: dict con metadatos de archivos (para validación checksums)
             
         Returns:
             dict con estadísticas de extracción
@@ -560,11 +621,12 @@ class PlatformImportService:
         import tarfile
         from django.conf import settings
         from django.core.files.storage import default_storage
+        from apps.migration_system.utils import calculate_file_checksum_from_path
         
         archive_path = Path(archive_path)
         
         if not archive_path.exists():
-            return {'extracted': 0, 'skipped': 0, 'errors': []}
+            return {'extracted': 0, 'skipped': 0, 'errors': [], 'checksum_errors': []}
         
         # Verificar si es un tar.gz
         with open(archive_path, 'rb') as f:
@@ -572,7 +634,7 @@ class PlatformImportService:
         
         if magic != b'\x1f\x8b':
             self.log('info', "Archivo no es tar.gz, omitiendo extracción de media")
-            return {'extracted': 0, 'skipped': 0, 'errors': []}
+            return {'extracted': 0, 'skipped': 0, 'errors': [], 'checksum_errors': []}
         
         try:
             with tarfile.open(archive_path, 'r:gz') as tar:
@@ -582,7 +644,7 @@ class PlatformImportService:
                 
                 if not media_members:
                     self.log('info', "No hay archivos media en el archivo")
-                    return {'extracted': 0, 'skipped': 0, 'errors': []}
+                    return {'extracted': 0, 'skipped': 0, 'errors': [], 'checksum_errors': []}
                 
                 self.log('info', f"Encontrados {len(media_members)} archivos media para extraer")
                 
@@ -597,6 +659,7 @@ class PlatformImportService:
                 extracted = 0
                 skipped = 0
                 errors = []
+                checksum_errors = []
                 
                 for member in media_members:
                     try:
@@ -618,6 +681,20 @@ class PlatformImportService:
                             with open(dest_path, 'wb') as dest_file:
                                 import shutil
                                 shutil.copyfileobj(file_obj, dest_file)
+                            
+                            # Validar checksum si se proporcionaron metadatos
+                            if media_metadata and relative_path in media_metadata:
+                                expected_checksum = media_metadata[relative_path].get('checksum')
+                                if expected_checksum:
+                                    actual_checksum = calculate_file_checksum_from_path(str(dest_path))
+                                    if actual_checksum != expected_checksum:
+                                        checksum_errors.append({
+                                            'file': relative_path,
+                                            'expected': expected_checksum,
+                                            'actual': actual_checksum
+                                        })
+                                        logger.error(f"Checksum inválido para {relative_path}: esperado {expected_checksum}, actual {actual_checksum}")
+                            
                             extracted += 1
                             
                             # Actualizar progreso cada 10 archivos
@@ -630,13 +707,16 @@ class PlatformImportService:
                         logger.warning(f"Error extrayendo {member.name}: {e}")
                 
                 self.log('info', f"Media extraídos: {extracted}, omitidos: {skipped}, errores: {len(errors)}")
+                if checksum_errors:
+                    self.log('warning', f"Archivos con checksum inválido: {len(checksum_errors)}")
                 
                 return {
                     'extracted': extracted,
                     'skipped': skipped,
-                    'errors': errors
+                    'errors': errors,
+                    'checksum_errors': checksum_errors
                 }
                 
         except tarfile.TarError as e:
             self.log('warning', f"Error abriendo archivo tar: {e}")
-            return {'extracted': 0, 'skipped': 0, 'errors': [str(e)]}
+            return {'extracted': 0, 'skipped': 0, 'errors': [str(e)], 'checksum_errors': []}
