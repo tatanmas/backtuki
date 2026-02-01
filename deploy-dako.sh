@@ -58,7 +58,7 @@ echo "   NPM version: $(npm --version)"
 
 # Instalar dependencias
 echo "   📦 Instalando dependencias..."
-npm install
+npm install --legacy-peer-deps
 
 # Crear archivo .env para build
 echo "   📝 Creando .env para producción..."
