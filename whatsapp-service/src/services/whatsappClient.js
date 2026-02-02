@@ -11,48 +11,60 @@ const logger = createLogger('WhatsAppClient');
 function initClient() {
     logger.info('Creating WhatsApp client instance...');
     
-    // Get Chromium path from env or use default
-    const chromiumPath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser';
-    logger.info(`Using Chromium at: ${chromiumPath}`);
+    // Build puppeteer config based on environment
+    const isProduction = process.env.NODE_ENV === 'production';
+    const chromiumPath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    
+    const puppeteerConfig = {
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--disable-extensions',
+            '--disable-background-networking',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-breakpad',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-component-update',
+            '--disable-default-apps',
+            '--disable-features=TranslateUI',
+            '--disable-hang-monitor',
+            '--disable-ipc-flooding-protection',
+            '--disable-popup-blocking',
+            '--disable-prompt-on-repost',
+            '--disable-renderer-backgrounding',
+            '--disable-sync',
+            '--enable-features=NetworkService,NetworkServiceInProcess',
+            '--force-color-profile=srgb',
+            '--metrics-recording-only',
+            '--no-default-browser-check',
+            '--password-store=basic',
+            '--use-mock-keychain'
+        ]
+    };
+    
+    // Only set executablePath in production (Docker) or if explicitly set
+    if (chromiumPath) {
+        puppeteerConfig.executablePath = chromiumPath;
+        logger.info(`Using Chromium at: ${chromiumPath}`);
+    } else if (isProduction) {
+        puppeteerConfig.executablePath = '/usr/bin/chromium-browser';
+        logger.info('Using Chromium at: /usr/bin/chromium-browser (production)');
+    } else {
+        logger.info('Using Puppeteer bundled Chromium (development)');
+    }
     
     const client = new Client({
         authStrategy: new LocalAuth({
             dataPath: './sessions'
         }),
-        puppeteer: {
-            headless: true,
-            executablePath: chromiumPath,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-gpu',
-                '--disable-extensions',
-                '--disable-background-networking',
-                '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-breakpad',
-                '--disable-component-extensions-with-background-pages',
-                '--disable-component-update',
-                '--disable-default-apps',
-                '--disable-features=TranslateUI',
-                '--disable-hang-monitor',
-                '--disable-ipc-flooding-protection',
-                '--disable-popup-blocking',
-                '--disable-prompt-on-repost',
-                '--disable-renderer-backgrounding',
-                '--disable-sync',
-                '--enable-features=NetworkService,NetworkServiceInProcess',
-                '--force-color-profile=srgb',
-                '--metrics-recording-only',
-                '--no-default-browser-check',
-                '--password-store=basic',
-                '--use-mock-keychain'
-            ]
-        },
+        puppeteer: puppeteerConfig,
         webVersionCache: {
             type: 'remote',
             remotePath: 'https://raw.githubusercontent.com/AironDev/whatsapp-web.js/main/src/util/Injected.js'
