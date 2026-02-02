@@ -254,7 +254,9 @@ class PlatformExportService:
                 'file_path': output_file,
                 'size_mb': file_size if output_file else None,
                 'statistics': export_data['statistics'],
-                'duration_seconds': duration
+                'duration_seconds': duration,
+                'export_date': export_data['export_date'],
+                'source_environment': export_data['source_environment'],
             }
             
         except Exception as e:
