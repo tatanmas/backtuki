@@ -89,6 +89,8 @@ services:
       - TRANSBANK_WEBPAY_PLUS_COMMERCE_CODE=597049073915
       - TRANSBANK_WEBPAY_PLUS_API_KEY=f845fa3c-4d56-4060-9ba4-e3d4fc154b5b
       - TRANSBANK_WEBPAY_PLUS_SANDBOX=false
+      # WhatsApp Service URL
+      - WHATSAPP_SERVICE_URL=http://tuki-whatsapp-service:3001
     depends_on:
       tuki-db:
         condition: service_healthy
@@ -135,6 +137,8 @@ services:
       - EMAIL_HOST_USER=noreply@tuki.cl
       - EMAIL_HOST_PASSWORD=-W7)HsC<Hsfk
       - DEFAULT_FROM_EMAIL=Tuki <noreply@tuki.cl>
+      # WhatsApp Service URL
+      - WHATSAPP_SERVICE_URL=http://tuki-whatsapp-service:3001
     depends_on:
       - tuki-db
       - tuki-redis
@@ -208,6 +212,34 @@ services:
     networks:
       - tuki-network
 
+  # ═══════════════════════════════════════════════════════════════
+  # 📱 WhatsApp Web Service (Node.js)
+  # ═══════════════════════════════════════════════════════════════
+  tuki-whatsapp-service:
+    build:
+      context: ./backtuki/whatsapp-service
+      dockerfile: Dockerfile
+    container_name: tuki-whatsapp-service
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - DJANGO_API_URL=http://tuki-backend:8080
+      - NODE_ENV=production
+    volumes:
+      - tuki_whatsapp_sessions:/app/sessions
+    depends_on:
+      - tuki-backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - tuki-network
+
 volumes:
   tuki_postgres_data:
     name: tuki_postgres_data
@@ -217,6 +249,8 @@ volumes:
     name: tuki_media
   tuki_staticfiles:
     name: tuki_staticfiles
+  tuki_whatsapp_sessions:
+    name: tuki_whatsapp_sessions
 
 networks:
   tuki-network:

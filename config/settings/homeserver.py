@@ -197,3 +197,6 @@ FRONTEND_URL = config('FRONTEND_URL', default='https://tuki.live')
 # Transbank settings for production
 TRANSBANK_WEBPAY_PLUS_SANDBOX = config('TRANSBANK_WEBPAY_PLUS_SANDBOX', default=False, cast=bool)
 
+# WhatsApp Service URL
+WHATSAPP_SERVICE_URL = config('WHATSAPP_SERVICE_URL', default='http://tuki-whatsapp-service:3001')
+

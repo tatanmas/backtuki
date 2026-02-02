@@ -229,10 +229,30 @@ sleep 5
 echo "   ✅ Celery corriendo"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 11: Levantar Frontend
+# PASO 11: Construir y levantar WhatsApp Service
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🌐 Paso 11: Levantando Frontend (Nginx)..."
+echo "📱 Paso 11: Construyendo y levantando WhatsApp Service..."
+
+docker-compose build tuki-whatsapp-service
+docker-compose up -d tuki-whatsapp-service
+
+echo "   ⏳ Esperando WhatsApp Service..."
+sleep 10
+
+# Verificar que está corriendo
+if docker ps | grep -q tuki-whatsapp-service; then
+    echo "   ✅ WhatsApp Service corriendo en puerto 3001"
+else
+    echo "   ⚠️ WhatsApp Service no arrancó (puede requerir QR)"
+    docker logs tuki-whatsapp-service --tail 20 2>/dev/null || true
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PASO 12: Levantar Frontend
+# ═══════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "🌐 Paso 12: Levantando Frontend (Nginx)..."
 
 docker-compose up -d tuki-frontend
 sleep 3
@@ -269,6 +289,22 @@ else
     echo "   ⚠️ Frontend: verificar manualmente"
 fi
 
+# WhatsApp Service
+if curl -s http://localhost:3001/health | grep -q "ok\|status"; then
+    echo "   ✅ WhatsApp Service: http://localhost:3001 ✓"
+    # Check if WhatsApp is connected
+    WA_STATUS=$(curl -s http://localhost:3001/api/status 2>/dev/null || echo '{}')
+    if echo "$WA_STATUS" | grep -q '"isReady":true'; then
+        echo "   ✅ WhatsApp: Conectado y listo"
+    else
+        echo "   📱 WhatsApp: Requiere escanear QR"
+        echo "      → Ver QR: curl http://localhost:3001/api/qr"
+        echo "      → O acceder a SuperAdmin para escanear"
+    fi
+else
+    echo "   ⚠️ WhatsApp Service: verificar manualmente"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # RESUMEN
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -287,16 +323,24 @@ echo "   • Email:    admin@tuki.cl"
 echo "   • Password: TukiAdmin2025!"
 echo ""
 echo "📦 Volumes persistentes (datos seguros):"
-echo "   • tuki_postgres_data  → Base de datos"
-echo "   • tuki_media          → Archivos subidos"
-echo "   • tuki_staticfiles    → Archivos estáticos"
-echo "   • tuki_redis_data     → Cache Redis"
+echo "   • tuki_postgres_data     → Base de datos"
+echo "   • tuki_media             → Archivos subidos"
+echo "   • tuki_staticfiles       → Archivos estáticos"
+echo "   • tuki_redis_data        → Cache Redis"
+echo "   • tuki_whatsapp_sessions → Sesiones WhatsApp"
+echo ""
+echo "📱 WhatsApp Service:"
+echo "   • Health:    http://localhost:3001/health"
+echo "   • Status:    http://localhost:3001/api/status"
+echo "   • QR Code:   http://localhost:3001/api/qr"
+echo "   • Logs:      docker-compose logs -f tuki-whatsapp-service"
 echo ""
 echo "📋 Comandos útiles:"
-echo "   • Ver logs:        docker-compose logs -f"
-echo "   • Ver logs back:   docker-compose logs -f tuki-backend"
-echo "   • Reiniciar:       docker-compose restart"
-echo "   • Detener todo:    docker-compose down"
-echo "   • Actualizar:      ./backtuki/deploy-dako.sh"
+echo "   • Ver logs:          docker-compose logs -f"
+echo "   • Ver logs back:     docker-compose logs -f tuki-backend"
+echo "   • Ver logs whatsapp: docker-compose logs -f tuki-whatsapp-service"
+echo "   • Reiniciar:         docker-compose restart"
+echo "   • Detener todo:      docker-compose down"
+echo "   • Actualizar:        ./backtuki/deploy-dako.sh"
 echo ""
 echo "═══════════════════════════════════════════════════════════════════════════════"

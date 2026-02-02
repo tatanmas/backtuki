@@ -6,6 +6,7 @@ import uuid
 import logging
 
 from apps.whatsapp.models import WhatsAppReservationRequest
+from apps.whatsapp.services.group_notification_service import GroupNotificationService
 from apps.experiences.models import Experience, ExperienceReservation, TourInstance
 
 logger = logging.getLogger(__name__)
