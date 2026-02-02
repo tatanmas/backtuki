@@ -44,55 +44,98 @@ def start_export(request):
         {
             "include_media": true,
             "compress": true,
-            "output_filename": "tuki-export.json.gz"
+            "output_filename": "tuki-export.json.gz",
+            "storage_backend": "gcs"  // "local" o "gcs" (default: auto-detect)
         }
         
     Response:
         {
             "job_id": "uuid",
             "status": "in_progress",
-            "message": "Export iniciado"
+            "message": "Export iniciado",
+            "storage_backend": "gcs"
         }
     """
     try:
+        # Configurar opciones
+        include_media = request.data.get('include_media', True)
+        compress = request.data.get('compress', True)
+        
+        # Detectar storage backend (auto o manual)
+        from django.conf import settings
+        storage_backend = request.data.get('storage_backend', 'auto')
+        
+        # Auto-detect: usa GCS si está configurado, sino local
+        if storage_backend == 'auto':
+            storage_backend = 'gcs' if hasattr(settings, 'GS_BUCKET_NAME') else 'local'
+        
+        # Validar storage backend
+        if storage_backend not in ['local', 'gcs']:
+            return Response({
+                'error': 'storage_backend debe ser "local", "gcs" o "auto"'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Verificar que GCS esté disponible si se solicita
+        if storage_backend == 'gcs' and not hasattr(settings, 'GS_BUCKET_NAME'):
+            return Response({
+                'error': 'Google Cloud Storage no está configurado. Use storage_backend="local"'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         # Crear job
         job = MigrationJob.objects.create(
             direction='export',
             status='pending',
             executed_by=request.user if request.user.is_authenticated else None,
-            config=request.data
+            config=request.data,
+            storage_backend=storage_backend
         )
         
-        # Configurar opciones
-        include_media = request.data.get('include_media', True)
-        compress = request.data.get('compress', True)
         output_filename = request.data.get('output_filename', f'tuki-export-{job.id}.tar.gz')
         output_filename = sanitize_filename(output_filename)
         
-        # Ejecutar export en background (o síncronamente para datasets pequeños)
-        from django.conf import settings
-        export_dir = Path(getattr(settings, 'MIGRATION_SYSTEM', {}).get('EXPORT_DIR', '/tmp/exports'))
-        export_dir.mkdir(parents=True, exist_ok=True)
-        output_file = export_dir / output_filename
-        
+        # Ejecutar export según backend
         service = PlatformExportService(job=job)
         
-        # TODO: Para producción, ejecutar en Celery task
-        # Por ahora, ejecutar síncronamente
-        result = service.export_all(
-            output_file=str(output_file),
-            include_media=include_media,
-            compress=compress
-        )
-        
-        return Response({
-            'job_id': str(job.id),
-            'status': job.status,
-            'message': 'Export completado',
-            'file_path': str(output_file),
-            'size_mb': result['size_mb'],
-            'statistics': result['statistics']
-        }, status=status.HTTP_200_OK)
+        if storage_backend == 'local':
+            # Export a filesystem local
+            export_dir = Path(getattr(settings, 'MIGRATION_SYSTEM', {}).get('EXPORT_DIR', '/tmp/exports'))
+            export_dir.mkdir(parents=True, exist_ok=True)
+            output_file = export_dir / output_filename
+            
+            result = service.export_all(
+                output_file=str(output_file),
+                include_media=include_media,
+                compress=compress
+            )
+            
+            return Response({
+                'job_id': str(job.id),
+                'status': job.status,
+                'message': 'Export completado',
+                'file_path': str(output_file),
+                'size_mb': result['size_mb'],
+                'statistics': result['statistics'],
+                'storage_backend': 'local'
+            }, status=status.HTTP_200_OK)
+            
+        else:  # storage_backend == 'gcs'
+            # Export directamente a GCS
+            result = service.export_all_to_gcs(
+                filename=output_filename,
+                include_media=include_media,
+                compress=compress
+            )
+            
+            return Response({
+                'job_id': str(job.id),
+                'status': job.status,
+                'message': 'Export completado y subido a GCS',
+                'file_path': result['gcs_path'],
+                'size_mb': result['size_mb'],
+                'statistics': result['statistics'],
+                'storage_backend': 'gcs',
+                'download_url': result.get('download_url')
+            }, status=status.HTTP_200_OK)
         
     except Exception as e:
         logger.exception("Error en start_export")
@@ -131,8 +174,12 @@ def download_export(request, job_id):
     """
     Descarga el archivo de export generado.
     
+    Soporta ambos backends:
+    - local: descarga desde filesystem local
+    - gcs: redirige a signed URL de Google Cloud Storage
+    
     Response:
-        Binary file (application/gzip)
+        Binary file (application/gzip) o redirect
     """
     try:
         job = MigrationJob.objects.get(id=job_id)
@@ -148,25 +195,70 @@ def download_export(request, job_id):
                 'error': 'Archivo de export no encontrado'
             }, status=status.HTTP_404_NOT_FOUND)
         
-        file_path = Path(job.export_file_path)
+        # Manejar según storage backend
+        if job.storage_backend == 'gcs':
+            # Export en GCS - generar signed URL
+            from google.cloud import storage
+            from django.conf import settings
+            from django.http import HttpResponseRedirect
+            
+            try:
+                client = storage.Client(project=settings.GS_PROJECT_ID)
+                bucket = client.bucket(settings.GS_BUCKET_NAME)
+                blob = bucket.blob(job.export_file_path)
+                
+                # Verificar que existe
+                if not blob.exists():
+                    return Response({
+                        'error': 'Archivo no existe en GCS',
+                        'path': job.export_file_path
+                    }, status=status.HTTP_404_NOT_FOUND)
+                
+                # Generar signed URL válida por 1 hora
+                signed_url = blob.generate_signed_url(
+                    version='v4',
+                    expiration=3600,  # 1 hora
+                    method='GET',
+                    response_disposition=f'attachment; filename="{Path(job.export_file_path).name}"'
+                )
+                
+                # Redirigir al signed URL
+                return HttpResponseRedirect(signed_url)
+                
+            except Exception as e:
+                logger.exception(f"Error generando signed URL para GCS: {e}")
+                return Response({
+                    'error': f'Error accediendo a GCS: {str(e)}',
+                    'path': job.export_file_path
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
-        if not file_path.exists():
-            return Response({
-                'error': 'Archivo no existe en disco'
-            }, status=status.HTTP_404_NOT_FOUND)
-        
-        # Retornar archivo
-        response = FileResponse(
-            open(file_path, 'rb'),
-            content_type='application/gzip',
-            as_attachment=True,
-            filename=file_path.name
-        )
-        
-        return response
+        else:  # storage_backend == 'local'
+            # Export en filesystem local
+            file_path = Path(job.export_file_path)
+            
+            if not file_path.exists():
+                return Response({
+                    'error': 'Archivo no existe en disco',
+                    'path': str(file_path)
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Retornar archivo
+            response = FileResponse(
+                open(file_path, 'rb'),
+                content_type='application/gzip',
+                as_attachment=True,
+                filename=file_path.name
+            )
+            
+            return response
         
     except MigrationJob.DoesNotExist:
         raise Http404("Job no encontrado")
+    except Exception as e:
+        logger.exception(f"Error en download_export: {e}")
+        return Response({
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])

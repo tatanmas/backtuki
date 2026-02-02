@@ -18,7 +18,7 @@ class MigrationJobSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'direction', 'direction_display', 'status', 'status_display',
             'source_url', 'target_url', 'progress_percent', 'current_step',
-            'export_file_path', 'export_file_size_mb',
+            'export_file_path', 'export_file_size_mb', 'storage_backend',
             'total_models', 'models_completed', 'total_records', 'records_processed',
             'total_files', 'files_transferred',
             'started_at', 'completed_at', 'duration_seconds',
@@ -26,7 +26,7 @@ class MigrationJobSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             'id', 'status', 'progress_percent', 'current_step',
-            'export_file_path', 'export_file_size_mb',
+            'export_file_path', 'export_file_size_mb', 'storage_backend',
             'models_completed', 'records_processed', 'files_transferred',
             'started_at', 'completed_at', 'duration_seconds',
             'error_message', 'created_at', 'updated_at'

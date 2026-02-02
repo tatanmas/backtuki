@@ -104,6 +104,19 @@ class MigrationJob(TimeStampedModel):
         blank=True
     )
     
+    # Storage backend donde se guardó el export
+    STORAGE_BACKEND_CHOICES = (
+        ('local', _('Local Filesystem')),
+        ('gcs', _('Google Cloud Storage')),
+    )
+    storage_backend = models.CharField(
+        _("storage backend"),
+        max_length=20,
+        choices=STORAGE_BACKEND_CHOICES,
+        default='local',
+        help_text=_("Backend donde se guardó el archivo de export")
+    )
+    
     # Estadísticas
     total_models = models.IntegerField(
         _("total models"),

@@ -545,3 +545,122 @@ class PlatformExportService:
         """Obtiene versión de Django."""
         import django
         return django.get_version()
+    
+    def export_all_to_gcs(self, filename=None, **options):
+        """
+        Exporta toda la plataforma directamente a Google Cloud Storage.
+        
+        Args:
+            filename: Nombre del archivo en GCS (opcional)
+            **options: Mismas opciones que export_all()
+                include_media: bool - Incluir archivos media (default True)
+                compress: bool - Comprimir con gzip (default True)
+                
+        Returns:
+            dict con resultado del export:
+            {
+                'gcs_path': 'exports/tuki-export.tar.gz',
+                'size_mb': 123.45,
+                'statistics': {...},
+                'download_url': 'https://...' (opcional si público)
+            }
+        """
+        from google.cloud import storage
+        from django.conf import settings
+        import tempfile
+        import os
+        
+        start_time = datetime.now()
+        self.log('info', "Iniciando export a Google Cloud Storage")
+        
+        if self.job:
+            self.job.start()
+        
+        try:
+            # 1. Exportar a archivo temporal local primero
+            temp_dir = Path(tempfile.mkdtemp(prefix='tuki_export_'))
+            
+            if not filename:
+                filename = f'tuki-export-{uuid.uuid4()}.tar.gz'
+            
+            temp_export_file = temp_dir / filename
+            
+            # Ejecutar export normal a temp file
+            result = self.export_all(
+                output_file=str(temp_export_file),
+                **options
+            )
+            
+            # 2. Subir a GCS
+            self.log('info', f"Subiendo {filename} a Google Cloud Storage...")
+            
+            if self.job:
+                self.job.update_progress(95, "Subiendo a Google Cloud Storage...")
+            
+            client = storage.Client(project=settings.GS_PROJECT_ID)
+            bucket = client.bucket(settings.GS_BUCKET_NAME)
+            
+            # Ruta en GCS: exports/YYYY/MM/filename
+            now = timezone.now()
+            gcs_path = f"exports/{now.year}/{now.month:02d}/{filename}"
+            blob = bucket.blob(gcs_path)
+            
+            # Subir archivo
+            blob.upload_from_filename(str(temp_export_file))
+            
+            # Configurar metadata
+            blob.metadata = {
+                'export_version': self.EXPORT_VERSION,
+                'export_date': result['export_date'],
+                'source_environment': result['source_environment'],
+                'total_records': str(result['statistics']['total_records']),
+                'total_models': str(result['statistics']['total_models']),
+            }
+            blob.patch()
+            
+            self.log('info', f"✅ Export subido exitosamente a gs://{settings.GS_BUCKET_NAME}/{gcs_path}")
+            
+            # 3. Actualizar job con path de GCS
+            if self.job:
+                self.job.export_file_path = gcs_path
+                self.job.export_file_size_mb = result['size_mb']
+                self.job.storage_backend = 'gcs'
+                self.job.complete()
+            
+            # 4. Limpiar archivo temporal
+            temp_export_file.unlink()
+            temp_dir.rmdir()
+            
+            # 5. Generar URL de descarga (opcional, si el bucket es público)
+            download_url = None
+            try:
+                # Para buckets públicos o con signed URLs
+                download_url = f"https://storage.googleapis.com/{settings.GS_BUCKET_NAME}/{gcs_path}"
+            except:
+                pass
+            
+            duration = (datetime.now() - start_time).total_seconds()
+            self.log('info', f"Export a GCS completado en {duration:.2f}s")
+            
+            return {
+                'gcs_path': gcs_path,
+                'size_mb': result['size_mb'],
+                'statistics': result['statistics'],
+                'download_url': download_url,
+                'export_date': result['export_date'],
+                'source_environment': result['source_environment']
+            }
+            
+        except Exception as e:
+            self.log('error', f"Error en export_all_to_gcs: {str(e)}")
+            if self.job:
+                self.job.fail(str(e))
+            raise
+        finally:
+            # Asegurar limpieza de archivos temporales
+            try:
+                if temp_dir.exists():
+                    shutil.rmtree(temp_dir)
+            except:
+                pass
+
