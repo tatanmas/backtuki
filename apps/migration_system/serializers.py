@@ -146,6 +146,83 @@ class BackupJobSerializer(serializers.ModelSerializer):
 # MIGRATION SERIALIZER - Para export/import con FKs planos
 # =============================================================================
 
+def _make_json_serializable(value):
+    """
+    Convierte cualquier valor a un tipo JSON-serializable.
+    
+    Maneja:
+    - Objetos Django (Model instances) -> str(pk) o str(value)
+    - UUID -> str
+    - Datetime/Date -> isoformat
+    - Decimal -> float
+    - QuerySets -> list de IDs
+    - Bytes -> base64
+    - Sets/Tuples -> list
+    - Otros objetos -> str(value) como fallback
+    
+    Args:
+        value: Cualquier valor
+        
+    Returns:
+        Valor JSON-serializable
+    """
+    import uuid
+    import decimal
+    import base64
+    from datetime import datetime, date, time
+    
+    # None
+    if value is None:
+        return None
+    
+    # Primitivos JSON (str, int, float, bool)
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    
+    # UUID
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    
+    # Datetime/Date/Time
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    
+    # Decimal
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    
+    # Bytes
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode('utf-8')
+    
+    # Django Model instance
+    if isinstance(value, django_models.Model):
+        # Retornar PK si existe, sino str(value)
+        return str(value.pk) if hasattr(value, 'pk') else str(value)
+    
+    # QuerySet o Manager
+    if hasattr(value, 'all') and callable(value.all):
+        # Es un related manager o queryset
+        try:
+            return list(value.all().values_list('pk', flat=True))
+        except Exception:
+            return []
+    
+    # List/Tuple/Set - recursivo
+    if isinstance(value, (list, tuple, set)):
+        return [_make_json_serializable(item) for item in value]
+    
+    # Dict - recursivo
+    if isinstance(value, dict):
+        return {k: _make_json_serializable(v) for k, v in value.items()}
+    
+    # Fallback: convertir a string
+    try:
+        return str(value)
+    except Exception:
+        return None
+
+
 class MigrationSerializer(serializers.ModelSerializer):
     """
     Serializer base optimizado para migración que exporta:
@@ -231,9 +308,17 @@ class MigrationSerializer(serializers.ModelSerializer):
                     # Decimal - convertir a float
                     elif hasattr(value, 'as_tuple'):
                         data[field_name] = float(value)
-                    # Otros tipos - directo
+                    # Otros tipos - convertir a JSON-safe
                     else:
-                        data[field_name] = value
+                        # Log si es un objeto Django inesperado
+                        if isinstance(value, django_models.Model):
+                            import logging
+                            logger = logging.getLogger(__name__)
+                            logger.warning(
+                                f"Campo {field_name} en {instance._meta.label} contiene "
+                                f"objeto Django ({type(value).__name__}), convirtiendo a string"
+                            )
+                        data[field_name] = _make_json_serializable(value)
                         
             except Exception as e:
                 # Si hay error obteniendo el campo, skip silenciosamente

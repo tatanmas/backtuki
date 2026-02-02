@@ -30,15 +30,63 @@ echo ""
 # ═══════════════════════════════════════════════════════════════════════════════
 echo "📥 Paso 1: Actualizando repositorios..."
 
+# Backend
 cd "$TUKI_DIR/backtuki"
-git fetch origin main
-git reset --hard origin/main
-echo "   ✅ Backend actualizado"
+echo "   📡 Verificando estado del repositorio backend..."
+if [ -d ".git" ]; then
+    # Guardar cambios locales si los hay
+    if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+        echo "   ⚠️ Hay cambios locales, haciendo stash..."
+        git stash save "Auto-stash antes de deploy $(date +%Y%m%d-%H%M%S)" || true
+    fi
+    
+    # Obtener rama actual
+    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+    echo "   📍 Rama actual: $CURRENT_BRANCH"
+    
+    # Fetch y pull
+    echo "   📥 Haciendo fetch..."
+    git fetch origin "$CURRENT_BRANCH" || git fetch origin main || true
+    
+    echo "   📥 Haciendo pull..."
+    git pull origin "$CURRENT_BRANCH" || git pull origin main || {
+        echo "   ⚠️ Pull falló, intentando reset..."
+        git reset --hard "origin/$CURRENT_BRANCH" || git reset --hard origin/main || true
+    }
+    
+    echo "   ✅ Backend actualizado ($(git rev-parse --short HEAD))"
+else
+    echo "   ⚠️ No es un repositorio git, saltando actualización"
+fi
 
+# Frontend
 cd "$TUKI_DIR/tuki-experiencias"
-git fetch origin main
-git reset --hard origin/main
-echo "   ✅ Frontend actualizado"
+echo "   📡 Verificando estado del repositorio frontend..."
+if [ -d ".git" ]; then
+    # Guardar cambios locales si los hay
+    if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+        echo "   ⚠️ Hay cambios locales, haciendo stash..."
+        git stash save "Auto-stash antes de deploy $(date +%Y%m%d-%H%M%S)" || true
+    fi
+    
+    # Obtener rama actual
+    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+    echo "   📍 Rama actual: $CURRENT_BRANCH"
+    
+    # Fetch y pull
+    echo "   📥 Haciendo fetch..."
+    git fetch origin "$CURRENT_BRANCH" || git fetch origin main || true
+    
+    echo "   📥 Haciendo pull..."
+    git pull origin "$CURRENT_BRANCH" || git pull origin main || {
+        echo "   ⚠️ Pull falló, intentando reset..."
+        git reset --hard "origin/$CURRENT_BRANCH" || git reset --hard origin/main || true
+    }
+    
+    echo "   ✅ Frontend actualizado ($(git rev-parse --short HEAD))"
+else
+    echo "   ⚠️ No es un repositorio git, saltando actualización"
+fi
 
 cd "$TUKI_DIR"
 

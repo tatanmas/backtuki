@@ -11,6 +11,7 @@ import uuid
 import decimal
 import tarfile
 import shutil
+import base64
 from datetime import datetime, date
 from pathlib import Path
 from django.apps import apps
@@ -18,6 +19,7 @@ from django.conf import settings
 from django.utils import timezone
 from django.db import connection
 from django.core.files.storage import default_storage
+from django.db import models as django_models
 
 from ..models import MigrationJob, MigrationLog
 from ..utils import (
@@ -36,14 +38,25 @@ logger = logging.getLogger(__name__)
 class DjangoJSONEncoder(json.JSONEncoder):
     """
     Custom JSON encoder que maneja tipos de Django.
+    Última capa de defensa para tipos no serializables.
     """
     def default(self, obj):
+        # UUID
         if isinstance(obj, uuid.UUID):
             return str(obj)
+        # Datetime/Date
         if isinstance(obj, (datetime, date)):
             return obj.isoformat()
+        # Decimal
         if isinstance(obj, decimal.Decimal):
             return float(obj)
+        # Django Model - último recurso
+        if isinstance(obj, django_models.Model):
+            return str(obj.pk) if hasattr(obj, 'pk') else str(obj)
+        # Bytes
+        if isinstance(obj, bytes):
+            return base64.b64encode(obj).decode('utf-8')
+        # Fallback
         return super().default(obj)
 
 
