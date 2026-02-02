@@ -28,6 +28,7 @@ from ..utils import (
     get_serializer_for_model,
     format_file_size,
 )
+from ..serializers import get_migration_serializer_for_model
 
 logger = logging.getLogger(__name__)
 
@@ -252,16 +253,17 @@ class PlatformExportService:
     
     def export_model(self, model, batch_size=1000):
         """
-        Exporta un modelo específico.
+        Exporta un modelo específico usando MigrationSerializer.
         
         Args:
             model: Django model class
             batch_size: Tamaño del batch para procesar
             
         Returns:
-            List de registros serializados
+            List de registros serializados con FKs planos y M2M separados
         """
-        serializer_class = get_serializer_for_model(model)
+        # Usar MigrationSerializer optimizado para migración
+        serializer_class = get_migration_serializer_for_model(model)
         
         queryset = model.objects.all()
         total = queryset.count()
@@ -272,13 +274,13 @@ class PlatformExportService:
         for i in range(0, total, batch_size):
             batch = queryset[i:i+batch_size]
             
-            # Serializar batch
+            # Serializar batch con MigrationSerializer
             try:
                 serializer = serializer_class(batch, many=True)
                 exported.extend(serializer.data)
             except Exception as e:
                 # Si el serializer falla, usar values() como fallback
-                logger.warning(f"Serializer falló para {model._meta.label}, usando values(): {e}")
+                logger.warning(f"MigrationSerializer falló para {model._meta.label}, usando values(): {e}")
                 batch_data = list(batch.values())
                 # Convertir dates/datetimes a strings
                 for item in batch_data:
@@ -663,4 +665,3 @@ class PlatformExportService:
                     shutil.rmtree(temp_dir)
             except:
                 pass
-

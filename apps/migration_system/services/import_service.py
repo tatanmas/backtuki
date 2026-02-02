@@ -61,22 +61,114 @@ class PlatformImportService:
         
         # Crear directorio si no existe
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Buffer de logs para evitar corrupciones de transacciones
+        self._log_buffer = []
+        self._use_log_buffer = False
     
     def log(self, level, message, model_name=None, record_count=None, duration_ms=None):
-        """Helper para crear logs."""
-        if self.job:
-            MigrationLog.objects.create(
-                job=self.job,
-                level=level,
-                message=message,
-                model_name=model_name,
-                record_count=record_count,
-                duration_ms=duration_ms
-            )
+        """
+        Helper para crear logs con soporte de buffering.
+        
+        Durante transacciones atómicas, los logs se almacenan en buffer y se 
+        escriben a DB después del commit para evitar corrupción de transacciones.
+        """
+        # Siempre logear a Python logger
         logger.log(
             getattr(logging, level.upper()),
             f"[Import] {message}"
         )
+        
+        # Si estamos en modo buffer, guardar en memoria
+        if self._use_log_buffer:
+            self._log_buffer.append({
+                'level': level,
+                'message': message,
+                'model_name': model_name,
+                'record_count': record_count,
+                'duration_ms': duration_ms
+            })
+        # Si no, escribir directamente a DB
+        elif self.job:
+            try:
+                MigrationLog.objects.create(
+                    job=self.job,
+                    level=level,
+                    message=message,
+                    model_name=model_name,
+                    record_count=record_count,
+                    duration_ms=duration_ms
+                )
+            except Exception as e:
+                # Si falla crear el log en DB, solo logear a consola
+                logger.warning(f"No se pudo crear MigrationLog en DB: {e}")
+    
+    def _flush_log_buffer(self):
+        """
+        Escribe todos los logs del buffer a la base de datos.
+        Se llama después de un commit exitoso.
+        """
+        if not self.job or not self._log_buffer:
+            return
+        
+        # Crear todos los logs en batch
+        logs_to_create = []
+        for log_entry in self._log_buffer:
+            logs_to_create.append(
+                MigrationLog(
+                    job=self.job,
+                    level=log_entry['level'],
+                    message=log_entry['message'],
+                    model_name=log_entry.get('model_name'),
+                    record_count=log_entry.get('record_count'),
+                    duration_ms=log_entry.get('duration_ms')
+                )
+            )
+        
+        try:
+            # Bulk create para eficiencia
+            MigrationLog.objects.bulk_create(logs_to_create, batch_size=100)
+            logger.debug(f"Flushed {len(logs_to_create)} logs to database")
+        except Exception as e:
+            logger.error(f"Error flushing log buffer to DB: {e}")
+        finally:
+            # Limpiar buffer
+            self._log_buffer = []
+    
+    def _flush_log_buffer_to_file(self):
+        """
+        Escribe logs del buffer a archivo cuando falla la transacción.
+        Útil para debugging cuando el import falla.
+        """
+        if not self._log_buffer:
+            return
+        
+        try:
+            import tempfile
+            from pathlib import Path
+            
+            log_file = Path(tempfile.gettempdir()) / f"migration_import_error_{timezone.now().strftime('%Y%m%d_%H%M%S')}.log"
+            
+            with open(log_file, 'w') as f:
+                f.write(f"Migration Import Error Log - {timezone.now().isoformat()}\n")
+                f.write(f"Job ID: {self.job.id if self.job else 'N/A'}\n")
+                f.write("=" * 80 + "\n\n")
+                
+                for log_entry in self._log_buffer:
+                    f.write(f"[{log_entry['level'].upper()}] {log_entry['message']}\n")
+                    if log_entry.get('model_name'):
+                        f.write(f"  Model: {log_entry['model_name']}\n")
+                    if log_entry.get('record_count') is not None:
+                        f.write(f"  Records: {log_entry['record_count']}\n")
+                    if log_entry.get('duration_ms') is not None:
+                        f.write(f"  Duration: {log_entry['duration_ms']}ms\n")
+                    f.write("\n")
+            
+            logger.info(f"Logs de error guardados en: {log_file}")
+        except Exception as e:
+            logger.error(f"No se pudo guardar logs a archivo: {e}")
+        finally:
+            self._log_buffer = []
     
     def import_all(self, input_data, **options):
         """
@@ -137,36 +229,52 @@ class PlatformImportService:
             imported_counts = {}
             
             if not options.get('dry_run'):
-                with transaction.atomic():
-                    for idx, model_path in enumerate(self.MODEL_IMPORT_ORDER, 1):
-                        model_data = input_data['models'].get(model_path, [])
-                        
-                        if not model_data:
-                            continue
-                        
-                        self.log('info', f"Importando {model_path}...", model_name=model_path)
-                        
-                        model_start = datetime.now()
-                        count = self.import_model(model_path, model_data, **options)
-                        model_duration = (datetime.now() - model_start).total_seconds() * 1000
-                        
-                        imported_counts[model_path] = count
-                        
-                        self.log(
-                            'info',
-                            f"Importados {count}/{len(model_data)} registros de {model_path}",
-                            model_name=model_path,
-                            record_count=count,
-                            duration_ms=int(model_duration)
-                        )
-                        
-                        # Actualizar progreso
-                        if self.job:
-                            progress = int((idx / total_models) * 90)  # 90% para datos
-                            self.job.update_progress(progress, f"Importando {model_path}")
-                            self.job.models_completed = idx
-                            self.job.records_processed = sum(imported_counts.values())
-                            self.job.save(update_fields=['models_completed', 'records_processed'])
+                # Activar buffer de logs para evitar corrupción de transacciones
+                self._use_log_buffer = True
+                self._log_buffer = []
+                
+                try:
+                    with transaction.atomic():
+                        for idx, model_path in enumerate(self.MODEL_IMPORT_ORDER, 1):
+                            model_data = input_data['models'].get(model_path, [])
+                            
+                            if not model_data:
+                                continue
+                            
+                            self.log('info', f"Importando {model_path}...", model_name=model_path)
+                            
+                            model_start = datetime.now()
+                            count = self.import_model(model_path, model_data, **options)
+                            model_duration = (datetime.now() - model_start).total_seconds() * 1000
+                            
+                            imported_counts[model_path] = count
+                            
+                            self.log(
+                                'info',
+                                f"Importados {count}/{len(model_data)} registros de {model_path}",
+                                model_name=model_path,
+                                record_count=count,
+                                duration_ms=int(model_duration)
+                            )
+                            
+                            # Actualizar progreso (esto está fuera de log buffer)
+                            if self.job:
+                                progress = int((idx / total_models) * 90)  # 90% para datos
+                                self.job.update_progress(progress, f"Importando {model_path}")
+                                self.job.models_completed = idx
+                                self.job.records_processed = sum(imported_counts.values())
+                                self.job.save(update_fields=['models_completed', 'records_processed'])
+                    
+                    # Si llegamos aquí, la transacción fue exitosa
+                    # Desactivar buffer y escribir logs a DB
+                    self._use_log_buffer = False
+                    self._flush_log_buffer()
+                    
+                except Exception as e:
+                    # Error durante import - guardar logs a archivo
+                    self._use_log_buffer = False
+                    self._flush_log_buffer_to_file()
+                    raise
             else:
                 # Dry run - solo contar
                 for model_path, model_data in input_data['models'].items():
@@ -298,39 +406,202 @@ class PlatformImportService:
         
         return imported
     
-    def _create_instance(self, model, data):
-        """Crea una nueva instancia del modelo."""
-        # Remover campos que no son del modelo
-        model_fields = [f.name for f in model._meta.get_fields()]
-        clean_data = {k: v for k, v in data.items() if k in model_fields}
+    def _resolve_foreign_keys(self, model, data):
+        """
+        Convierte ForeignKeys nested (dicts) o strings a IDs simples.
+        También maneja campos terminados en _id que son FKs.
         
-        # Crear instancia
+        Args:
+            model: Django model class
+            data: dict con datos a importar
+            
+        Returns:
+            dict con FKs resueltos a IDs
+        """
+        resolved_data = data.copy()
+        
+        for field in model._meta.get_fields():
+            # Solo procesar ForeignKey y OneToOne
+            if not (hasattr(field, 'related_model') and field.many_to_one):
+                continue
+            
+            field_name = field.name
+            field_id_name = f"{field_name}_id"
+            
+            # Caso 1: Campo FK viene como dict nested (de serializers DRF viejos)
+            if field_name in resolved_data and isinstance(resolved_data[field_name], dict):
+                fk_dict = resolved_data[field_name]
+                fk_id = fk_dict.get('id') or fk_dict.get('pk')
+                if fk_id:
+                    resolved_data[field_id_name] = fk_id
+                # Remover el dict nested
+                del resolved_data[field_name]
+            
+            # Caso 2: Campo FK_id ya viene correcto (de MigrationSerializer)
+            elif field_id_name in resolved_data:
+                # Ya está en formato correcto, no hacer nada
+                pass
+            
+            # Caso 3: Campo FK viene como string/int directo
+            elif field_name in resolved_data and not isinstance(resolved_data[field_name], dict):
+                fk_value = resolved_data[field_name]
+                if fk_value is not None:
+                    resolved_data[field_id_name] = fk_value
+                # Remover el campo FK directo
+                if field_name in resolved_data:
+                    del resolved_data[field_name]
+        
+        return resolved_data
+    
+    def _create_instance(self, model, data):
+        """
+        Crea una nueva instancia del modelo manejando correctamente M2M y FKs.
+        
+        Args:
+            model: Django model class
+            data: dict con datos a importar
+            
+        Returns:
+            instancia creada
+        """
+        # Paso 1: Resolver ForeignKeys nested a IDs simples
+        data = self._resolve_foreign_keys(model, data)
+        
+        # Paso 2: Separar campos M2M del resto
+        m2m_data = {}
+        clean_data = {}
+        
+        # Extraer metadata de M2M si existe
+        if '_m2m_relations' in data:
+            m2m_data = data.pop('_m2m_relations')
+        
+        # Separar campos según tipo
+        for field in model._meta.get_fields():
+            # Skip campos auto-creados y reverse relations
+            if field.auto_created and not field.concrete:
+                continue
+            
+            field_name = field.name
+            
+            # Many-to-Many: extraer a m2m_data
+            if field.many_to_many:
+                if field_name in data:
+                    m2m_data[field_name] = data[field_name]
+            # Campos normales (incluyendo FKs ya resueltos a _id)
+            elif field_name in data:
+                clean_data[field_name] = data[field_name]
+            # FK fields terminados en _id
+            elif hasattr(field, 'related_model') and f"{field_name}_id" in data:
+                clean_data[f"{field_name}_id"] = data[f"{field_name}_id"]
+        
+        # Paso 3: Crear instancia SIN M2M
         instance = model.objects.create(**clean_data)
+        
+        # Paso 4: Asignar M2M después de crear la instancia
+        for field_name, value in m2m_data.items():
+            if hasattr(instance, field_name):
+                try:
+                    # Usar .set() para M2M (no asignación directa)
+                    m2m_field = getattr(instance, field_name)
+                    if hasattr(m2m_field, 'set'):
+                        # value debe ser una lista de IDs
+                        if isinstance(value, list):
+                            m2m_field.set(value)
+                        else:
+                            logger.warning(f"M2M field {field_name} tiene valor no-lista: {type(value)}")
+                except Exception as e:
+                    logger.warning(f"Error asignando M2M {field_name}: {e}")
+        
         return instance
     
     def _update_instance(self, instance, data):
-        """Actualiza una instancia existente con nuevos datos."""
-        model_fields = [f.name for f in instance._meta.get_fields()]
+        """
+        Actualiza una instancia existente con nuevos datos.
+        Maneja correctamente M2M y FKs.
+        """
+        model = instance.__class__
+        
+        # Resolver FKs
+        data = self._resolve_foreign_keys(model, data)
+        
+        # Separar M2M
+        m2m_data = {}
+        if '_m2m_relations' in data:
+            m2m_data = data.pop('_m2m_relations')
+        
+        # Identificar campos M2M del modelo
+        for field in model._meta.get_fields():
+            if field.many_to_many and field.name in data:
+                m2m_data[field.name] = data.pop(field.name)
+        
+        # Actualizar campos normales
+        model_fields = [f.name for f in model._meta.get_fields() 
+                       if not f.many_to_many and (not f.auto_created or f.concrete)]
         
         for key, value in data.items():
             if key in model_fields and hasattr(instance, key):
                 setattr(instance, key, value)
+            # También manejar campos _id para FKs
+            elif key.endswith('_id') and hasattr(instance, key):
+                setattr(instance, key, value)
         
         instance.save()
+        
+        # Actualizar M2M
+        for field_name, value in m2m_data.items():
+            if hasattr(instance, field_name):
+                try:
+                    m2m_field = getattr(instance, field_name)
+                    if hasattr(m2m_field, 'set') and isinstance(value, list):
+                        m2m_field.set(value)
+                except Exception as e:
+                    logger.warning(f"Error actualizando M2M {field_name}: {e}")
+        
         return instance
     
     def _merge_instance(self, instance, data):
-        """Merge de instancia existente con nuevos datos (solo campos no nulos)."""
-        model_fields = [f.name for f in instance._meta.get_fields()]
+        """
+        Merge de instancia existente con nuevos datos (solo campos no nulos).
+        Maneja correctamente M2M y FKs.
+        """
+        model = instance.__class__
+        
+        # Resolver FKs
+        data = self._resolve_foreign_keys(model, data)
+        
+        # Separar M2M
+        m2m_data = {}
+        if '_m2m_relations' in data:
+            m2m_data = data.pop('_m2m_relations')
+        
+        for field in model._meta.get_fields():
+            if field.many_to_many and field.name in data:
+                m2m_data[field.name] = data.pop(field.name)
+        
+        # Merge campos normales (solo si actual es None/vacío)
+        model_fields = [f.name for f in model._meta.get_fields() 
+                       if not f.many_to_many and (not f.auto_created or f.concrete)]
         
         for key, value in data.items():
-            if key in model_fields and value is not None and hasattr(instance, key):
-                # Solo actualizar si el valor actual es None o vacío
-                current_value = getattr(instance, key)
-                if current_value is None or current_value == '':
-                    setattr(instance, key, value)
+            if (key in model_fields or key.endswith('_id')) and value is not None:
+                if hasattr(instance, key):
+                    current_value = getattr(instance, key)
+                    if current_value is None or current_value == '':
+                        setattr(instance, key, value)
         
         instance.save()
+        
+        # Merge M2M solo si actual está vacío
+        for field_name, value in m2m_data.items():
+            if hasattr(instance, field_name):
+                try:
+                    m2m_field = getattr(instance, field_name)
+                    if hasattr(m2m_field, 'count') and m2m_field.count() == 0:
+                        if hasattr(m2m_field, 'set') and isinstance(value, list):
+                            m2m_field.set(value)
+                except Exception as e:
+                    logger.warning(f"Error mergeando M2M {field_name}: {e}")
+        
         return instance
     
     def create_checkpoint(self, name=None, description=None):

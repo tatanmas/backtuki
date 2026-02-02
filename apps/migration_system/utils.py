@@ -33,6 +33,7 @@ def get_all_models_in_order():
         
         # Events
         'events.EventCategory',
+        'events.Location',  # Must be before Event (FK dependency)
         'events.Event',
         'events.EventImage',
         'events.EventView',
