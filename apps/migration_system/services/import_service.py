@@ -346,12 +346,20 @@ class PlatformImportService:
     
     def import_model(self, model_path, data_list, **options):
         """
-        Importa un modelo específico.
+        Importa un modelo específico con manejo robusto de conflictos.
+        
+        Verifica duplicados por:
+        - PK (id)
+        - Campos con unique=True
+        - Combinaciones unique_together
         
         Args:
             model_path: str como 'events.Event'
             data_list: lista de dicts con datos
             **options: opciones de import
+                - skip_existing: saltar registros existentes (default: True)
+                - overwrite: sobrescribir registros existentes
+                - merge: mergear campos no-nulos en existentes
             
         Returns:
             int: cantidad de registros importados
@@ -367,28 +375,44 @@ class PlatformImportService:
             try:
                 pk = item_data.get('id') or item_data.get('pk')
                 
-                # Verificar si existe
-                exists = model.objects.filter(pk=pk).exists() if pk else False
+                # Verificar existencia por TODOS los campos únicos (no solo PK)
+                exists, existing_instance, conflict_field = self._check_exists_by_unique_fields(
+                    model, item_data
+                )
                 
                 if exists:
                     if options.get('skip_existing', False):
                         skipped += 1
+                        logger.debug(
+                            f"Saltando {model_path} pk={pk} "
+                            f"(conflicto en: {conflict_field})"
+                        )
                         continue
                     elif options.get('overwrite', False):
-                        instance = model.objects.get(pk=pk)
-                        self._update_instance(instance, item_data)
+                        self._update_instance(existing_instance, item_data)
                         imported += 1
+                        logger.debug(
+                            f"Actualizado {model_path} pk={pk} "
+                            f"(conflicto en: {conflict_field})"
+                        )
                     elif options.get('merge', False):
-                        instance = model.objects.get(pk=pk)
-                        self._merge_instance(instance, item_data)
+                        self._merge_instance(existing_instance, item_data)
                         imported += 1
+                        logger.debug(
+                            f"Mergeado {model_path} pk={pk} "
+                            f"(conflicto en: {conflict_field})"
+                        )
                     else:
                         # Default: skip existentes
                         skipped += 1
+                        logger.debug(
+                            f"Saltando {model_path} pk={pk} "
+                            f"(conflicto en: {conflict_field})"
+                        )
                         continue
                 else:
-                    # Crear nuevo
-                    self._create_instance(model, item_data)
+                    # No existe, crear nuevo con manejo de IntegrityError
+                    self._create_instance_safe(model, item_data)
                     imported += 1
                     
             except Exception as e:
@@ -398,13 +422,128 @@ class PlatformImportService:
                     'error': str(e)
                 })
                 logger.error(f"Error importando {model_path} pk={pk}: {e}")
+                # NO re-raise para no corromper la transacción
         
         if errors:
             self.log('warning', f"{model_path}: {len(errors)} errores de {len(data_list)} registros")
-        if skipped:
+        if skipped > 0:
             self.log('info', f"{model_path}: {skipped} registros saltados (ya existentes)")
         
         return imported
+    
+    def _get_unique_fields(self, model):
+        """
+        Obtiene todos los campos con constraint de unicidad.
+        
+        Args:
+            model: Django model class
+            
+        Returns:
+            tuple: (unique_fields: list, unique_together: list)
+                - unique_fields: lista de nombres de campos individuales con unique=True
+                - unique_together: lista de tuplas con combinaciones de campos únicos
+        """
+        unique_fields = []
+        unique_together = []
+        
+        # Campos individuales con unique=True
+        for field in model._meta.get_fields():
+            if hasattr(field, 'unique') and field.unique and not field.primary_key:
+                unique_fields.append(field.name)
+        
+        # unique_together constraints
+        if hasattr(model._meta, 'unique_together') and model._meta.unique_together:
+            unique_together = list(model._meta.unique_together)
+        
+        # También revisar constraints modernos (Django 2.2+)
+        if hasattr(model._meta, 'constraints'):
+            for constraint in model._meta.constraints:
+                # UniqueConstraint
+                if constraint.__class__.__name__ == 'UniqueConstraint':
+                    if hasattr(constraint, 'fields'):
+                        fields_tuple = tuple(constraint.fields)
+                        if fields_tuple not in unique_together:
+                            unique_together.append(fields_tuple)
+        
+        return unique_fields, unique_together
+    
+    def _check_exists_by_unique_fields(self, model, data):
+        """
+        Verifica si existe una instancia con los mismos valores en campos únicos.
+        
+        Verifica en este orden:
+        1. Por PK (id)
+        2. Por campos individuales con unique=True
+        3. Por combinaciones unique_together
+        
+        Args:
+            model: Django model class
+            data: dict con datos a importar
+            
+        Returns:
+            tuple: (exists: bool, instance: Model|None, conflict_field: str|None)
+        """
+        # 1. Verificar por PK primero
+        pk = data.get('id') or data.get('pk')
+        if pk:
+            try:
+                instance = model.objects.get(pk=pk)
+                return True, instance, 'pk'
+            except model.DoesNotExist:
+                pass
+        
+        # 2. Obtener campos únicos del modelo
+        unique_fields, unique_together = self._get_unique_fields(model)
+        
+        # 3. Verificar por campos individuales únicos
+        for field_name in unique_fields:
+            if field_name in data and data[field_name] is not None:
+                try:
+                    instance = model.objects.get(**{field_name: data[field_name]})
+                    return True, instance, field_name
+                except model.DoesNotExist:
+                    continue
+                except model.MultipleObjectsReturned:
+                    # Si hay múltiples, hay un problema de datos
+                    logger.warning(
+                        f"Múltiples instancias de {model.__name__} con "
+                        f"{field_name}={data[field_name]}"
+                    )
+                    instance = model.objects.filter(**{field_name: data[field_name]}).first()
+                    return True, instance, field_name
+        
+        # 4. Verificar por unique_together
+        for fields_tuple in unique_together:
+            lookup = {}
+            all_present = True
+            
+            for field_name in fields_tuple:
+                # Verificar tanto field_name como field_name_id para FKs
+                if field_name in data and data[field_name] is not None:
+                    lookup[field_name] = data[field_name]
+                elif f"{field_name}_id" in data and data[f"{field_name}_id"] is not None:
+                    lookup[f"{field_name}_id"] = data[f"{field_name}_id"]
+                else:
+                    all_present = False
+                    break
+            
+            if all_present and lookup:
+                try:
+                    instance = model.objects.get(**lookup)
+                    conflict_desc = f"unique_together({', '.join(fields_tuple)})"
+                    return True, instance, conflict_desc
+                except model.DoesNotExist:
+                    continue
+                except model.MultipleObjectsReturned:
+                    logger.warning(
+                        f"Múltiples instancias de {model.__name__} con "
+                        f"unique_together: {lookup}"
+                    )
+                    instance = model.objects.filter(**lookup).first()
+                    conflict_desc = f"unique_together({', '.join(fields_tuple)})"
+                    return True, instance, conflict_desc
+        
+        return False, None, None
     
     def _resolve_foreign_keys(self, model, data):
         """
@@ -513,6 +652,95 @@ class PlatformImportService:
                     logger.warning(f"Error asignando M2M {field_name}: {e}")
         
         return instance
+    
+    def _create_instance_safe(self, model, data):
+        """
+        Crea instancia con manejo robusto de IntegrityError.
+        Si falla por constraint de unicidad, intenta encontrar la instancia existente
+        y la retorna en lugar de fallar.
+        
+        Args:
+            model: Django model class
+            data: dict con datos a importar
+            
+        Returns:
+            instancia creada o encontrada
+            
+        Raises:
+            Exception: si es un error diferente a IntegrityError de unicidad
+        """
+        try:
+            return self._create_instance(model, data)
+        except DBIntegrityError as e:
+            error_msg = str(e)
+            
+            # Verificar si es un error de constraint de unicidad
+            if 'duplicate key' in error_msg or 'UNIQUE constraint' in error_msg or 'unique constraint' in error_msg:
+                logger.warning(
+                    f"IntegrityError al crear {model.__name__}: {error_msg[:200]}"
+                )
+                
+                # Intentar encontrar la instancia existente por campos únicos
+                unique_fields, unique_together = self._get_unique_fields(model)
+                
+                # Buscar por campos individuales únicos
+                for field_name in unique_fields:
+                    if field_name in data and data[field_name] is not None:
+                        try:
+                            instance = model.objects.get(**{field_name: data[field_name]})
+                            logger.info(
+                                f"Encontrada instancia existente de {model.__name__} "
+                                f"por campo único: {field_name}={data[field_name]}"
+                            )
+                            return instance
+                        except model.DoesNotExist:
+                            continue
+                        except model.MultipleObjectsReturned:
+                            instance = model.objects.filter(**{field_name: data[field_name]}).first()
+                            logger.warning(
+                                f"Múltiples instancias encontradas por {field_name}, "
+                                f"usando la primera"
+                            )
+                            return instance
+                
+                # Buscar por unique_together
+                for fields_tuple in unique_together:
+                    lookup = {}
+                    all_present = True
+                    
+                    for field_name in fields_tuple:
+                        if field_name in data and data[field_name] is not None:
+                            lookup[field_name] = data[field_name]
+                        elif f"{field_name}_id" in data and data[f"{field_name}_id"] is not None:
+                            lookup[f"{field_name}_id"] = data[f"{field_name}_id"]
+                        else:
+                            all_present = False
+                            break
+                    
+                    if all_present and lookup:
+                        try:
+                            instance = model.objects.get(**lookup)
+                            logger.info(
+                                f"Encontrada instancia existente de {model.__name__} "
+                                f"por unique_together: {fields_tuple}"
+                            )
+                            return instance
+                        except model.DoesNotExist:
+                            continue
+                        except model.MultipleObjectsReturned:
+                            instance = model.objects.filter(**lookup).first()
+                            return instance
+                
+                # Si no encontramos la instancia por campos únicos, re-raise
+                logger.error(
+                    f"IntegrityError pero no se pudo encontrar instancia existente "
+                    f"para {model.__name__}"
+                )
+                raise
+            else:
+                # Otro tipo de IntegrityError (FK inválido, etc.)
+                logger.error(f"IntegrityError en {model.__name__}: {error_msg}")
+                raise
     
     def _update_instance(self, instance, data):
         """
