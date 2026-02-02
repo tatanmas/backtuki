@@ -119,9 +119,9 @@ fi
 
 echo "   Node: $(node --version)"
 
-# Crear .env.production (HTTP porque no hay SSL)
+# Crear .env.production (HTTPS con Cloudflare Tunnel)
 cat > .env.production << 'EOF'
-VITE_API_BASE_URL=http://tukitickets.duckdns.org/api/v1
+VITE_API_BASE_URL=https://tuki.cl/api/v1
 VITE_APP_ENV=production
 EOF
 echo "   ✅ .env.production creado"
@@ -278,9 +278,9 @@ echo "✅ DEPLOY COMPLETADO EXITOSAMENTE"
 echo "═══════════════════════════════════════════════════════════════════════════════"
 echo ""
 echo "🌐 URLs de acceso:"
-echo "   • Frontend:     http://tukitickets.duckdns.org"
-echo "   • Backend API:  http://tukitickets.duckdns.org:8000/api/v1/"
-echo "   • Admin Django: http://tukitickets.duckdns.org:8000/admin/"
+echo "   • Frontend:     https://tuki.cl"
+echo "   • Backend API:  https://tuki.cl/api/v1/"
+echo "   • Admin Django: https://tuki.cl/admin/"
 echo ""
 echo "🔐 Credenciales SuperAdmin:"
 echo "   • Email:    admin@tuki.cl"
