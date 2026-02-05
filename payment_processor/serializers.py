@@ -199,42 +199,77 @@ class PaymentSerializer(serializers.ModelSerializer):
     completedAt = serializers.DateTimeField(source='completed_at', read_only=True)
     
     def get_event_info(self, obj):
-        """Get event information for the payment."""
+        """Get event or experience information for the payment."""
         try:
-            event = obj.order.event
-            
-            # Get event image - build absolute URL for robustness
-            event_image = None
-            if event.images.exists():
-                first_image = event.images.first()
-                if first_image and first_image.image:
-                    event_image = self._build_absolute_image_url(first_image.image.url)
-            
-            # Get location info
-            location_info = {
-                'name': 'Ubicación no disponible',
-                'address': ''
-            }
-            if event.location:
+            order = obj.order
+            # Event order (order_kind='event')
+            if order.event:
+                event = order.event
+                event_image = None
+                if hasattr(event, 'images') and event.images.exists():
+                    first_image = event.images.first()
+                    if first_image and first_image.image:
+                        event_image = self._build_absolute_image_url(first_image.image.url)
                 location_info = {
-                    'name': event.location.name,
-                    'address': event.location.address
+                    'name': 'Ubicación no disponible',
+                    'address': ''
                 }
-            
-            return {
-                'id': str(event.id),
-                'title': event.title,
-                'date': event.start_date.isoformat() if event.start_date else None,
-                'location': location_info,
-                'image': event_image,
-                'ticket_holders': self._get_ticket_holders(obj.order)
-            }
+                if event.location:
+                    location_info = {'name': event.location.name, 'address': event.location.address}
+                return {
+                    'id': str(event.id),
+                    'title': event.title,
+                    'date': event.start_date.isoformat() if event.start_date else None,
+                    'location': location_info,
+                    'image': event_image,
+                    'ticket_holders': self._get_ticket_holders(order)
+                }
+            # Experience order (order_kind='experience')
+            if order.experience_reservation:
+                res = order.experience_reservation
+                exp = res.experience
+                event_image = None
+                if exp.images and isinstance(exp.images, list) and len(exp.images) > 0:
+                    img_url = exp.images[0] if isinstance(exp.images[0], str) else exp.images[0].get('url', '')
+                    if img_url:
+                        event_image = self._build_absolute_image_url(img_url)
+                location_info = {
+                    'name': exp.location_name or 'Ubicación no disponible',
+                    'address': exp.location_address or ''
+                }
+                instance = getattr(res, 'instance', None)
+                start_date = instance.start_datetime if instance else None
+                return {
+                    'id': str(exp.id),
+                    'title': exp.title,
+                    'date': start_date.isoformat() if start_date else None,
+                    'location': location_info,
+                    'image': event_image,
+                    'ticket_holders': self._get_experience_holders(order)
+                }
+            return None
         except Exception as e:
-            print(f"Error getting event info for payment {obj.id}: {e}")
-            import traceback
-            traceback.print_exc()
+            import logging
+            logging.getLogger(__name__).exception("Error getting event info for payment %s: %s", obj.id, e)
             return None
     
+    def _get_experience_holders(self, order):
+        """Get participant info for experience orders."""
+        holders = []
+        try:
+            res = order.experience_reservation
+            if res:
+                holders.append({
+                    'name': f"{res.first_name} {res.last_name}".strip(),
+                    'email': res.email,
+                    'tier_name': 'Experiencia',
+                    'ticket_number': res.reservation_id or order.order_number,
+                    'ticket_id': str(res.id),
+                })
+        except Exception:
+            pass
+        return holders
+
     def _get_ticket_holders(self, order):
         """
         Get ticket holders information including ticket numbers for PDF generation.

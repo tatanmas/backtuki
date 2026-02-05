@@ -732,34 +732,50 @@ class PublicExperienceListView(APIView):
         return Response(serializer.data)
 
 
+def _allow_checkout_by_codigo(request):
+    """If valid codigo in request, allow loading draft experiences for checkout."""
+    codigo = request.query_params.get('codigo') or request.query_params.get('code')
+    if not codigo:
+        return False
+    try:
+        from apps.whatsapp.models import WhatsAppReservationCode
+        code_obj = WhatsAppReservationCode.objects.select_related('experience').get(code=codigo)
+        return not code_obj.is_expired() and code_obj.status != 'expired'
+    except Exception:
+        return False
+
+
 class PublicExperienceDetailView(APIView):
     """
     Public API to get experience details.
     🚀 ENTERPRISE: Only shows active, non-deleted experiences.
+    With ?codigo=X (valid WhatsApp reservation code), allows loading for checkout even if draft.
     """
     
     permission_classes = [permissions.AllowAny]
     
     def get(self, request, slug_or_id):
         """Get experience details by slug or ID."""
+        allow_checkout = _allow_checkout_by_codigo(request)
+
+        base_filters = {'deleted_at__isnull': True}
+        if not allow_checkout:
+            base_filters['status'] = 'published'
+            base_filters['is_active'] = True
+
         try:
-            # Try by slug first - only show active, non-deleted experiences
-            experience = Experience.objects.get(
-                slug=slug_or_id,
-                status='published',
-                is_active=True,
-                deleted_at__isnull=True
-            )
+            experience = Experience.objects.get(slug=slug_or_id, **base_filters)
         except Experience.DoesNotExist:
-            # Try by ID
             try:
-                experience = Experience.objects.get(
-                    id=slug_or_id,
-                    status='published',
-                    is_active=True,
-                    deleted_at__isnull=True
+                uuid.UUID(str(slug_or_id))
+            except (ValueError, TypeError):
+                return Response(
+                    {'error': 'Experience not found'},
+                    status=status.HTTP_404_NOT_FOUND
                 )
-            except (Experience.DoesNotExist, ValueError):
+            try:
+                experience = Experience.objects.get(id=slug_or_id, **base_filters)
+            except Experience.DoesNotExist:
                 return Response(
                     {'error': 'Experience not found'},
                     status=status.HTTP_404_NOT_FOUND
@@ -774,6 +790,34 @@ class PublicExperienceDetailView(APIView):
         return Response(serializer.data)
 
 
+class PublicExperienceResourcesView(APIView):
+    """Public API to get resources for an experience (guest checkout)."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, experience_id):
+        """List active resources for an experience."""
+        allow_checkout = _allow_checkout_by_codigo(request)
+        filters = {'id': experience_id, 'deleted_at__isnull': True}
+        if not allow_checkout:
+            filters['status'] = 'published'
+        try:
+            experience = Experience.objects.get(**filters)
+        except Experience.DoesNotExist:
+            return Response(
+                {'error': 'Experience not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        queryset = ExperienceResource.objects.filter(
+            experience=experience,
+            is_active=True
+        ).order_by('display_order', 'name')
+
+        serializer = ExperienceResourceSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+
 class PublicExperienceInstancesView(APIView):
     """Public API to get available instances for an experience."""
     
@@ -781,8 +825,12 @@ class PublicExperienceInstancesView(APIView):
     
     def get(self, request, experience_id):
         """Get available instances with filters."""
+        allow_checkout = _allow_checkout_by_codigo(request)
+        filters = {'id': experience_id, 'deleted_at__isnull': True}
+        if not allow_checkout:
+            filters['status'] = 'published'
         try:
-            experience = Experience.objects.get(id=experience_id, status='published')
+            experience = Experience.objects.get(**filters)
         except Experience.DoesNotExist:
             return Response(
                 {'error': 'Experience not found'},

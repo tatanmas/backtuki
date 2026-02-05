@@ -10,7 +10,7 @@ from django.db import transaction
 import logging
 
 from apps.whatsapp.models import (
-    WhatsAppMessage, WhatsAppReservationRequest, TourOperator, 
+    WhatsAppMessage, WhatsAppReservationRequest, TourOperator,
     WhatsAppSession, WhatsAppChat, WhatsAppReservationCode
 )
 from apps.whatsapp.services.reservation_handler import ReservationHandler
@@ -20,6 +20,7 @@ from apps.whatsapp.services.message_processor import MessageProcessor
 from apps.whatsapp.services.reservation_code_generator import ReservationCodeGenerator
 from apps.whatsapp.services.group_notification_service import GroupNotificationService
 from apps.experiences.models import Experience
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,11 @@ def process_message(request):
     """Process incoming WhatsApp message - now using MessageProcessor service."""
     try:
         data = request.data
-        logger.info(f"Received message: {data.get('id')} from {data.get('phone')} (FromMe: {data.get('from_me', False)})")
+        text = data.get('text', '') or ''
+        logger.info(
+            f"Received message: id={data.get('id')} from={data.get('phone')} from_me={data.get('from_me', False)} "
+            f"text_len={len(text)} text_preview={repr(text[:150]) if text else '(empty)'}"
+        )
         
         # Use MessageProcessor service for all processing
         result = MessageProcessor.process_incoming_message(data)
@@ -232,5 +237,131 @@ def generate_reservation_code(request):
         return Response({
             'error': 'Internal server error'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def _serialize_decimal(value):
+    """Convert Decimal or nested structures to JSON-safe primitives."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {key: _serialize_decimal(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_serialize_decimal(item) for item in value]
+    return value
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def reservation_by_code(request):
+    """
+    Retrieve reservation details linked to a WhatsApp code.
+
+    Used by the checkout frontend to pre-fill information when a customer
+    follows the payment link shared via WhatsApp.
+    """
+    code = request.query_params.get('codigo') or request.query_params.get('code')
+    if not code:
+        return Response(
+            {'error': 'El parámetro codigo es obligatorio.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        code_obj = WhatsAppReservationCode.objects.select_related(
+            'experience', 'linked_reservation', 'linked_reservation__linked_experience_reservation',
+            'linked_reservation__whatsapp_message'
+        ).get(code=code)
+    except WhatsAppReservationCode.DoesNotExist:
+        return Response(
+            {'error': 'El código indicado no existe o no pertenece a esta instancia.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if code_obj.status == 'expired' or code_obj.is_expired():
+        return Response(
+            {'error': 'El código de reserva ha expirado.'},
+            status=status.HTTP_410_GONE
+        )
+
+    reservation = code_obj.linked_reservation
+    if not reservation:
+        return Response(
+            {'error': 'La solicitud aún no ha sido vinculada a una reserva.'},
+            status=status.HTTP_409_CONFLICT
+        )
+
+    if reservation.status not in ['availability_confirmed', 'confirmed']:
+        return Response(
+            {
+                'error': 'La reserva todavía no está lista para el pago.',
+                'status': reservation.status
+            },
+            status=status.HTTP_409_CONFLICT
+        )
+
+    checkout_data = code_obj.checkout_data or {}
+    participants = checkout_data.get('participants') or {}
+    pricing = _serialize_decimal(checkout_data.get('pricing') or {})
+    total = pricing.get('total') or checkout_data.get('total_price')
+    if isinstance(total, Decimal):
+        total = float(total)
+
+    experience = code_obj.experience
+    experience_data = None
+    if experience:
+        experience_data = {
+            'id': str(experience.id),
+            'title': experience.title,
+            'slug': experience.slug,
+            'price': float(experience.price) if isinstance(experience.price, Decimal) else experience.price,
+            'currency': getattr(experience, 'currency', 'CLP'),
+        }
+
+    exp_res = getattr(reservation, 'linked_experience_reservation', None)
+    experience_reservation_id = str(exp_res.reservation_id) if exp_res else None
+
+    # Customer: merge checkout_data.customer with WhatsApp phone from sender
+    customer = dict(checkout_data.get('customer') or {})
+    if not customer.get('phone') and reservation.whatsapp_message:
+        msg = reservation.whatsapp_message
+        # Try message.phone (for individual chats it's the contact; for groups it's group id)
+        raw = getattr(msg, 'phone', '') or ''
+        # Also try metadata (sender_phone/author_phone for group messages)
+        meta = getattr(msg, 'metadata', None) or {}
+        raw = raw or meta.get('sender_phone') or meta.get('author_phone') or meta.get('phone') or ''
+        raw = (raw or '').replace('@c.us', '').replace('@g.us', '').replace('@lid', '').replace(' ', '').strip()
+        if raw.isdigit():
+            # Chile: 11 digits 56XXXXXXXXX or 9 digits 9XXXXXXXX
+            if len(raw) == 9 and raw.startswith('9'):
+                raw = '56' + raw
+            if len(raw) >= 10:
+                if raw.startswith('56') and len(raw) == 11:
+                    customer['phone'] = f"+{raw[:2]} {raw[2:3]} {raw[3:7]} {raw[7:]}"
+                else:
+                    customer['phone'] = f"+{raw}"
+
+    response_data = {
+        'code': code_obj.code,
+        'status': reservation.status,
+        'expires_at': code_obj.expires_at.isoformat() if code_obj.expires_at else None,
+        'experience': experience_data,
+        'experience_reservation_id': experience_reservation_id,
+        'participants': {
+            'adults': participants.get('adults', 0),
+            'children': participants.get('children', 0),
+            'infants': participants.get('infants', 0),
+        },
+        'date': checkout_data.get('date'),
+        'time': checkout_data.get('time'),
+        'pricing': pricing,
+        'total': total,
+        'currency': pricing.get('currency') or getattr(experience, 'currency', 'CLP') if experience else None,
+        'customer': customer,
+        'payment_link': reservation.payment_link,
+        'payment_link_sent_at': reservation.payment_link_sent_at.isoformat() if reservation.payment_link_sent_at else None,
+        'allow_payment': reservation.payment_received_at is None,
+    }
+
+    return Response(response_data, status=status.HTTP_200_OK)
 
 

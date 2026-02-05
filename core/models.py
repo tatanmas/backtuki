@@ -133,6 +133,15 @@ class PlatformFlow(BaseModel):
         related_name='flows',
         help_text="Experience associated with this flow (if applicable)"
     )
+    # TUKI Creators: attribution for creator commission
+    creator = models.ForeignKey(
+        'creators.CreatorProfile',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='flows',
+        help_text="Creator (influencer) who referred this flow (for commission)"
+    )
     # Future: accommodation field
     
     # Timing

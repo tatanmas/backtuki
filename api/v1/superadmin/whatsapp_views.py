@@ -67,6 +67,30 @@ def whatsapp_status(request):
     })
 
 
+@api_view(['POST'])
+@permission_classes([IsSuperUser])
+def whatsapp_disconnect(request):
+    """Desconectar sesión de WhatsApp para poder vincular otra cuenta."""
+    try:
+        service = WhatsAppWebService()
+        ok = service.disconnect()
+        if ok:
+            session = WhatsAppSession.objects.first()
+            if session:
+                session.status = 'disconnected'
+                session.phone_number = ''
+                session.name = ''
+                session.qr_code = ''
+                session.save()
+            return Response({'success': True, 'message': 'Sesión desconectada. Reinicia el servicio para mostrar el QR.'})
+        return Response({'success': False, 'error': 'No se pudo desconectar'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.exception(f"Error disconnecting WhatsApp: {e}")
+        return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(['GET'])
 @permission_classes([IsSuperUser])  # ENTERPRISE: Solo superusers
 def whatsapp_qr(request):
@@ -93,7 +117,8 @@ def whatsapp_qr(request):
             
             return Response({'qr': qr})
         else:
-            return Response({'qr': None}, status=status.HTTP_404_NOT_FOUND)
+            # 200 con qr: null = "esperando QR" (ej. post-disconnect), no es error
+            return Response({'qr': None})
     except Exception as e:
         return Response({'qr': None, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -368,12 +393,21 @@ def whatsapp_messages(request):
     
     logger = logging.getLogger(__name__)
     chat_id = request.query_params.get('chat_id')
+    sync = request.query_params.get('sync', '').lower() in ('1', 'true', 'yes')
     is_reservation_related = request.query_params.get('is_reservation_related')
     has_code = request.query_params.get('has_code')
     date_from = request.query_params.get('date_from')
     date_to = request.query_params.get('date_to')
     
     try:
+        if chat_id and sync:
+            try:
+                from apps.whatsapp.services.sync_service import WhatsAppSyncService
+                sync_service = WhatsAppSyncService()
+                sync_service.sync_chat_messages(chat_id)
+            except Exception as sync_err:
+                logger.warning(f"Sync chat messages failed (continuing with DB): {sync_err}")
+        
         # Construir queryset de forma robusta
         # Evitar select_related con linked_reservation_request para evitar error de confirmation_token
         queryset = WhatsAppMessage.objects.select_related('chat')
@@ -399,9 +433,9 @@ def whatsapp_messages(request):
             queryset = queryset.filter(timestamp__lte=date_to)
         
         messages = []
-        # Ordenar por timestamp ascendente (cronológico: más antiguos primero)
-        # Los mensajes sin timestamp se mostrarán al final
-        for msg in queryset.order_by('timestamp')[:100]:
+        # Tomar los 100 más recientes, luego ordenar cronológicamente para mostrar
+        recent = list(queryset.order_by('-timestamp')[:100])
+        for msg in reversed(recent):
             # Obtener datos de forma segura
             chat_data = None
             try:
@@ -441,8 +475,6 @@ def whatsapp_messages(request):
             timestamp_value = None
             if msg.timestamp:
                 timestamp_value = msg.timestamp.isoformat()
-                # Log detallado para debugging
-                logger.info(f"📨 API Response - Message {msg.id}: timestamp={timestamp_value}, type={msg.type}, year={msg.timestamp.year if msg.timestamp else 'N/A'}")
             elif hasattr(msg, 'created_at') and msg.created_at:
                 # Fallback a created_at si timestamp no está disponible
                 timestamp_value = msg.created_at.isoformat()
@@ -452,12 +484,15 @@ def whatsapp_messages(request):
                 timestamp_value = timezone.now().isoformat()
                 logger.warning(f"⚠️ Message {msg.id} using now() as timestamp: {timestamp_value}")
             
+            # Enterprise: media_type, reply_to (safe getattr for migration rollback)
+            media_type = getattr(msg, 'media_type', None)
+            reply_to_whatsapp_id = getattr(msg, 'reply_to_whatsapp_id', None)
             messages.append({
                 'id': str(msg.id),
                 'whatsapp_id': msg.whatsapp_id,
                 'phone': msg.phone,
                 'type': msg.type,
-                'content': msg.content[:200] if msg.content else '',  # Truncate for list view
+                'content': msg.content[:200] if msg.content else '',
                 'full_content': msg.content or '',
                 'timestamp': timestamp_value,
                 'processed': msg.processed,
@@ -466,7 +501,9 @@ def whatsapp_messages(request):
                 'is_reservation_related': msg.is_reservation_related,
                 'linked_reservation_request_id': linked_reservation_request_id,
                 'is_automated': is_automated,
-                'metadata': message_metadata  # Incluir metadata con sender_name para grupos
+                'metadata': message_metadata,
+                'media_type': media_type,
+                'reply_to_whatsapp_id': reply_to_whatsapp_id,
             })
         
         return Response({'messages': messages})
@@ -513,16 +550,15 @@ def whatsapp_chats(request):
     try:
         from django.db.models import Count
         
-        # Sincronizar chats desde Node.js para mantener información actualizada
+        # Sincronizar chats desde Node.js (puede fallar con 503 si servicio no listo)
         try:
             from apps.whatsapp.services.sync_service import WhatsAppSyncService
-            
             sync_service = WhatsAppSyncService()
             sync_result = sync_service.sync_all_chats()
             logger.info(f"Chats sync: {sync_result['created']} created, {sync_result['updated']} updated")
         except Exception as sync_error:
-            logger.error(f"Error syncing chats from Node.js service: {sync_error}", exc_info=True)
-            # Continuar con chats existentes
+            # 503/connection errors: usar solo DB sin fallar
+            logger.warning(f"Chat sync skipped (service unavailable): {sync_error}")
         
         chats = WhatsAppChat.objects.select_related('assigned_operator').annotate(
             message_count=Count('messages')
@@ -566,6 +602,7 @@ def whatsapp_chats(request):
                 } if chat.assigned_operator else None,
                 'is_active': chat.is_active,
                 'last_message_at': chat.last_message_at.isoformat() if chat.last_message_at else None,
+                'last_message_preview': getattr(chat, 'last_message_preview', '') or '',
                 'message_count': getattr(chat, 'message_count', 0),
                 'unread_count': chat.unread_count or 0,
                 'tags': tags
@@ -589,6 +626,41 @@ def whatsapp_chats(request):
     except Exception as e:
         logger.exception(f"Error fetching chats: {e}")
         return Response({'chats': []})
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperUser])  # ENTERPRISE: Solo superusers
+def whatsapp_profile_picture(request, chat_id):
+    """
+    Proxy for WhatsApp profile pictures. Fetches from Node.js service to avoid CORS
+    and URL expiration. Returns image binary.
+    chat_id: WhatsApp chat_id (e.g. 56912345678@c.us or 120363...@g.us)
+    """
+    import logging
+    from django.http import HttpResponse
+
+    logger = logging.getLogger(__name__)
+    try:
+        whatsapp_service = WhatsAppWebService()
+        url = f"{whatsapp_service.base_url}/api/profile-picture/{chat_id}"
+        resp = whatsapp_service._get_raw(url)
+        if resp is None or resp.status_code != 200:
+            return Response(
+                {'error': 'No se pudo obtener la foto de perfil'},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+        content_type = resp.headers.get('Content-Type', 'image/jpeg')
+        return HttpResponse(
+            resp.content,
+            content_type=content_type,
+            headers={'Cache-Control': 'private, max-age=300'}
+        )
+    except Exception as e:
+        logger.exception(f"Error proxying profile picture for {chat_id}: {e}")
+        return Response(
+            {'error': 'Error al obtener foto de perfil'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 
 @api_view(['GET'])
@@ -626,6 +698,7 @@ def whatsapp_chat_info(request, chat_id):
             } if chat.assigned_operator else None,
             'is_active': chat.is_active,
             'last_message_at': chat.last_message_at.isoformat() if chat.last_message_at else None,
+            'last_message_preview': getattr(chat, 'last_message_preview', '') or '',
             'created_at': chat.created_at.isoformat() if chat.created_at else None
         }
         
@@ -834,13 +907,10 @@ def whatsapp_send_message(request):
         whatsapp_service = WhatsAppWebService()
         
         if is_group:
-            # Para grupos, usar el chat_id completo (ya incluye @g.us)
             result = whatsapp_service.send_message(phone, text, group_id=chat_id)
         else:
-            # Para chats individuales, usar el número de teléfono
-            # Asegurarse de que el chat_id no tenga @c.us si es individual
-            clean_phone = phone.replace('@c.us', '').replace('@g.us', '')
-            result = whatsapp_service.send_message(clean_phone, text)
+            clean_phone = WhatsAppWebService.clean_phone_number(phone)
+            result = whatsapp_service.send_message(clean_phone, text, chat_id=chat_id)
         
         # Guardar mensaje en la base de datos
         try:

@@ -18,8 +18,10 @@ from apps.whatsapp.models import (
 )
 from apps.whatsapp.services.message_parser import MessageParser
 from apps.whatsapp.services.reservation_handler import ReservationHandler
+from apps.whatsapp.services.group_notification_service import GroupNotificationService
 from apps.whatsapp.services.operator_notifier import OperatorNotifier
 from apps.whatsapp.services.experience_operator_service import ExperienceOperatorService
+from apps.whatsapp.services.whatsapp_client import WhatsAppWebService
 from apps.experiences.models import Experience
 
 logger = logging.getLogger(__name__)
@@ -155,15 +157,17 @@ class MessageProcessor:
         whatsapp_name: Optional[str] = None,
         profile_picture_url: Optional[str] = None,
         sender_name: Optional[str] = None,
-        sender_phone: Optional[str] = None
+        sender_phone: Optional[str] = None,
+        media_type: Optional[str] = None,
+        reply_to_whatsapp_id: Optional[str] = None,
     ) -> Tuple[Optional[WhatsAppMessage], bool]:
         """
-        Save a WhatsApp message with idempotency.
+        Save a WhatsApp message with idempotency (enterprise: media, reply).
         
         Args:
             whatsapp_id: Unique WhatsApp message ID
             phone: Phone number or group ID
-            text: Message text
+            text: Message text (or placeholder for media)
             chat_id: WhatsApp chat ID
             chat_type: 'individual' or 'group'
             timestamp: Message timestamp
@@ -173,6 +177,8 @@ class MessageProcessor:
             profile_picture_url: Profile picture URL
             sender_name: Sender name (for group messages)
             sender_phone: Sender phone (for group messages)
+            media_type: chat, ptt, audio, image, video, document, etc.
+            reply_to_whatsapp_id: WhatsApp ID of quoted message
             
         Returns:
             Tuple of (WhatsAppMessage or None, is_new: bool)
@@ -204,20 +210,36 @@ class MessageProcessor:
         # Determine message type
         message_type = 'out' if from_me else 'in'
         
-        # Create message
-        message = WhatsAppMessage.objects.create(
-            whatsapp_id=whatsapp_id,
-            phone=phone,
-            type=message_type,
-            content=text,
-            timestamp=timestamp,
-            chat=chat,
-            is_automated=False if from_me else False,  # Messages from phone are not automated
-            metadata=message_metadata if message_metadata else {}
-        )
-        
+        create_kwargs = {
+            'whatsapp_id': whatsapp_id,
+            'phone': phone,
+            'type': message_type,
+            'content': text,
+            'timestamp': timestamp,
+            'chat': chat,
+            'is_automated': False,
+            'metadata': message_metadata if message_metadata else {},
+        }
+        if media_type:
+            create_kwargs['media_type'] = media_type
+        if reply_to_whatsapp_id:
+            create_kwargs['reply_to_whatsapp_id'] = reply_to_whatsapp_id
+        message = WhatsAppMessage.objects.create(**create_kwargs)
+
+        # Update chat last_message_at and last_message_preview for ordering/preview
+        update_fields = []
+        if not chat.last_message_at or timestamp > chat.last_message_at:
+            chat.last_message_at = timestamp
+            update_fields.append('last_message_at')
+        preview = (text or '')[:255]
+        if preview and preview != (chat.last_message_preview or ''):
+            chat.last_message_preview = preview
+            update_fields.append('last_message_preview')
+        if update_fields:
+            chat.save(update_fields=update_fields)
+
         logger.info(f"💾 Saved message {message.id} (type: {message_type}, from_me: {from_me})")
-        
+
         return message, True
     
     @staticmethod
@@ -240,13 +262,19 @@ class MessageProcessor:
         try:
             code_obj = WhatsAppReservationCode.objects.get(code=reservation_code)
         except WhatsAppReservationCode.DoesNotExist:
-            logger.warning(f"Reservation code {reservation_code} not found")
+            logger.warning(
+                f"Reservation code {reservation_code} NOT FOUND in DB. "
+                "Code must be generated via frontend before sending WhatsApp message."
+            )
             return None
-        
+
         # Validate code is not expired
         from apps.whatsapp.services.reservation_code_generator import ReservationCodeGenerator
         if not ReservationCodeGenerator.validate_code(reservation_code):
-            logger.warning(f"Reservation code {reservation_code} is invalid or expired")
+            logger.warning(
+                f"Reservation code {reservation_code} is EXPIRED or status != pending. "
+                f"Expires: {code_obj.expires_at}, status: {code_obj.status}"
+            )
             return None
         
         # Check if already processed
@@ -254,9 +282,10 @@ class MessageProcessor:
             logger.info(f"Reservation code {reservation_code} already linked to reservation {code_obj.linked_reservation.id}")
             return code_obj.linked_reservation
         
-        # Get experience from checkout data
-        experience = None
-        if code_obj.checkout_data:
+        # Get experience - first try direct relation, then checkout_data
+        experience = code_obj.experience
+        
+        if not experience and code_obj.checkout_data:
             experience_id = code_obj.checkout_data.get('experience_id')
             if experience_id:
                 try:
@@ -265,22 +294,30 @@ class MessageProcessor:
                     logger.warning(f"Experience {experience_id} not found for code {reservation_code}")
         
         if not experience:
-            logger.warning(f"No experience found for reservation code {reservation_code}")
+            logger.warning(
+                f"No experience found for reservation code {reservation_code}. "
+                f"code_obj.experience={code_obj.experience_id}, checkout_data.experience_id={code_obj.checkout_data.get('experience_id') if code_obj.checkout_data else None}"
+            )
             return None
-        
+
+        logger.info(f"Experience found: {experience.title} (id={experience.id})")
+
         # Get operator and group for this experience
         group_info = ExperienceOperatorService.get_experience_whatsapp_group(experience)
         if not group_info:
-            logger.warning(f"No WhatsApp group configured for experience {experience.title}")
-            # Still create reservation, but operator will need to be assigned manually
+            logger.warning(
+                f"No WhatsApp group configured for experience {experience.title}. "
+                "Operator must have default_whatsapp_group or experience must have ExperienceGroupBinding."
+            )
             operator = None
         else:
-            # Find operator from group assignment
-            chat = message.chat
-            if chat.assigned_operator:
-                operator = chat.assigned_operator
-            else:
-                # Try to find operator from experience bindings
+            # Operator: 1) from group_info (binding/group), 2) chat.assigned_operator, 3) operator_bindings
+            operator = group_info.get('operator')
+            if not operator:
+                chat = message.chat
+                if chat and chat.assigned_operator:
+                    operator = chat.assigned_operator
+            if not operator:
                 operator_binding = experience.operator_bindings.filter(is_active=True).first()
                 operator = operator_binding.tour_operator if operator_binding else None
         
@@ -302,6 +339,26 @@ class MessageProcessor:
             code_obj.save()
             
             logger.info(f"Created reservation {reservation.id} without operator (needs manual assignment)")
+            
+            # Enterprise: notify group if experience has one (operator responds from group)
+            reservation.status = 'operator_notified'
+            reservation.save(update_fields=['status'])
+            try:
+                GroupNotificationService.send_reservation_notification(reservation)
+            except Exception as e:
+                logger.error(f"Error sending reservation to group (no operator): {e}")
+            
+            # Enterprise: send waiting message to customer even without operator
+            try:
+                customer_phone = WhatsAppWebService.clean_phone_number(message.phone)
+                chat_id = getattr(message.chat, 'chat_id', None) if message.chat else None
+                waiting_message = GroupNotificationService.format_waiting_message(reservation)
+                service = WhatsAppWebService()
+                service.send_message(customer_phone, waiting_message, chat_id=chat_id)
+                logger.info(f"✅ Sent waiting message to customer {customer_phone} (no operator)")
+            except Exception as e:
+                logger.error(f"Error sending waiting message to customer (no operator): {e}")
+            
             return reservation
         
         # Parse message for additional info
@@ -326,6 +383,16 @@ class MessageProcessor:
         # Notify operator (handled by ReservationHandler.mark_operator_notified)
         ReservationHandler.mark_operator_notified(reservation)
         logger.info(f"✅ Notified operator for reservation {reservation.id}")
+        
+        # Send waiting message to customer
+        try:
+            customer_phone = WhatsAppWebService.clean_phone_number(message.phone)
+            waiting_message = GroupNotificationService.format_waiting_message(reservation)
+            service = WhatsAppWebService()
+            service.send_message(customer_phone, waiting_message)
+            logger.info(f"✅ Sent waiting message to customer {customer_phone}")
+        except Exception as e:
+            logger.error(f"Error sending waiting message to customer: {e}")
         
         return reservation
     
@@ -358,7 +425,6 @@ class MessageProcessor:
         raw_timestamp = data.get('timestamp')
         message_timestamp = MessageProcessor.parse_timestamp(raw_timestamp)
         
-        # Save message
         message, is_new = MessageProcessor.save_message(
             whatsapp_id=whatsapp_id,
             phone=data.get('phone', ''),
@@ -371,7 +437,9 @@ class MessageProcessor:
             whatsapp_name=data.get('whatsapp_name'),
             profile_picture_url=data.get('profile_picture_url'),
             sender_name=data.get('sender_name'),
-            sender_phone=data.get('sender_phone')
+            sender_phone=data.get('sender_phone'),
+            media_type=data.get('media_type') or None,
+            reply_to_whatsapp_id=data.get('reply_to_whatsapp_id') or None,
         )
         
         if not message:
@@ -392,9 +460,13 @@ class MessageProcessor:
         # Check for reservation code
         parsed = MessageParser.parse_message(message.content)
         reservation_code = parsed.get('reservation_code')
-        
+        logger.info(
+            f"Message content_len={len(message.content or '')} parsed_reservation_code={reservation_code} "
+            f"content_preview={repr((message.content or '')[:100])}"
+        )
         if reservation_code:
             try:
+                logger.info(f"📩 Processing reservation code: {reservation_code}")
                 reservation = MessageProcessor.process_reservation_code(message, reservation_code)
                 if reservation:
                     return {
@@ -402,10 +474,35 @@ class MessageProcessor:
                         'message_id': str(message.id),
                         'reservation_id': str(reservation.id)
                     }
+                # Code was extracted but processing failed - notify customer
+                MessageProcessor._send_code_error_message(message, reservation_code)
             except Exception as e:
                 logger.exception(f"Error processing reservation code {reservation_code}: {e}")
-                # Continue - message is saved even if reservation processing fails
+                MessageProcessor._send_code_error_message(message, reservation_code)
         
+        # Check for operator response (1/2, sí/no, etc.) - from group, use sender_phone
+        text = data.get('text', '').strip().lower()
+        sender_phone = data.get('sender_phone', '')
+        if text in ['1', '2', 'sí', 'si', 'yes', 'no', 'confirmar', 'rechazar'] and sender_phone:
+            operator_data = {
+                'text': text,
+                'phone': sender_phone,
+                'chat_id': data.get('chat_id'),
+            }
+            operator_result = MessageProcessor._process_operator_response(operator_data)
+            if operator_result.get('status') in ['availability_confirmed', 'rejected']:
+                return {
+                    'status': 'operator_response_processed',
+                    'message_id': str(message.id),
+                    'reservation_status': operator_result.get('status')
+                }
+
+        # Check for customer confirmation (SI/sí/yes) - free reservation, from customer
+        if text in ['sí', 'si', 'yes', 'confirmar']:
+            customer_result = MessageProcessor._process_customer_confirmation(message, data)
+            if customer_result:
+                return customer_result
+
         return {
             'status': 'processed',
             'message_id': str(message.id)
@@ -415,49 +512,123 @@ class MessageProcessor:
     def _process_operator_response(data: Dict) -> Dict:
         """
         Process operator response (1=confirm, 2=reject).
-        
-        Args:
-            data: Message data with text and phone
-            
-        Returns:
-            Dict with processing result
+        Enterprise: match by group first (when message from group), then by operator phone.
         """
+        from apps.whatsapp.models import ExperienceGroupBinding
+        
         text = data.get('text', '').strip().lower()
         is_confirm = text in ['1', 'sí', 'si', 'yes', 'confirmar']
         phone = data.get('phone', '')
+        chat_id = data.get('chat_id', '')
         
-        # Find operator by phone
-        operator = TourOperator.objects.filter(
-            whatsapp_number=phone
-        ).first() or TourOperator.objects.filter(
-            contact_phone=phone
-        ).first()
+        reservation = None
+        operator = None
         
-        if not operator:
-            logger.warning(f"Operator not found for phone {phone}")
-            return {'status': 'operator_not_found'}
+        # 1) Group-based: message from group → find reservation by experience's group
+        if chat_id and '@g.us' in str(chat_id):
+            group_chat = WhatsAppChat.objects.filter(chat_id=chat_id, type='group').first()
+            if group_chat:
+                exp_ids = list(
+                    ExperienceGroupBinding.objects.filter(
+                        whatsapp_group=group_chat,
+                        is_active=True
+                    ).values_list('experience_id', flat=True)
+                )
+                if exp_ids:
+                    reservation = WhatsAppReservationRequest.objects.filter(
+                        experience_id__in=exp_ids,
+                        status='operator_notified'
+                    ).order_by('-created_at').first()
+                    if reservation:
+                        operator = reservation.operator
         
-        # Find most recent pending reservation for this operator
-        reservation = WhatsAppReservationRequest.objects.filter(
-            operator=operator,
-            status='operator_notified'
-        ).order_by('-created_at').first()
+        # 2) Operator-by-phone fallback
+        if not reservation and phone:
+            operator = (
+                TourOperator.objects.filter(whatsapp_number=phone).first()
+                or TourOperator.objects.filter(contact_phone=phone).first()
+            )
+            if operator:
+                reservation = WhatsAppReservationRequest.objects.filter(
+                    operator=operator,
+                    status='operator_notified'
+                ).order_by('-created_at').first()
         
         if not reservation:
-            logger.info(f"No pending reservation found for operator {phone}")
+            logger.info(f"No pending reservation found for chat/operator (chat_id={chat_id}, phone={phone})")
             return {'status': 'no_pending_reservation'}
         
-        # Update reservation status (notifications are handled by ReservationHandler)
+        # Operator confirmed availability (1) or rejected (2)
+        op_name = operator.name if operator else 'grupo'
         if is_confirm:
-            ReservationHandler.confirm_reservation(reservation)
-            logger.info(f"Reservation {reservation.id} confirmed by operator {operator.name}")
+            ReservationHandler.confirm_availability(reservation)
+            logger.info(f"Reservation {reservation.id} availability confirmed by {op_name}")
+            return {
+                'status': 'availability_confirmed',
+                'confirmed': True,
+                'reservation_id': str(reservation.id)
+            }
         else:
             ReservationHandler.reject_reservation(reservation)
-            logger.info(f"Reservation {reservation.id} rejected by operator {operator.name}")
-        
+            logger.info(f"Reservation {reservation.id} rejected by {op_name}")
         return {
-            'status': 'processed',
-            'confirmed': is_confirm,
+            'status': 'rejected',
+            'confirmed': False,
             'reservation_id': str(reservation.id)
         }
+
+    @staticmethod
+    def _send_code_error_message(message: WhatsAppMessage, reservation_code: str) -> None:
+        """
+        Send a helpful message to the customer when reservation code processing fails.
+        """
+        try:
+            customer_phone = WhatsAppWebService.clean_phone_number(message.phone)
+            if not customer_phone:
+                logger.warning("Cannot send code error message: no phone number")
+                return
+            msg = (
+                f"Hola. Recibimos su mensaje con el código {reservation_code}, pero no pudimos procesarlo. "
+                "Puede que el código haya expirado o no exista. Por favor, genere un nuevo código desde la página de la experiencia y envíe el mensaje nuevamente."
+            )
+            service = WhatsAppWebService()
+            service.send_message(customer_phone, msg)
+            logger.info(f"Sent code error message to customer {customer_phone} for code {reservation_code}")
+        except Exception as e:
+            logger.error(f"Failed to send code error message: {e}")
+
+    @staticmethod
+    def _process_customer_confirmation(message, data: Dict) -> Optional[Dict]:
+        """
+        Process customer "SI" for free reservation confirmation.
+        Returns result dict if processed, None otherwise.
+        """
+        customer_phone_raw = data.get('phone', '') or (message.phone if message else '')
+        if not customer_phone_raw:
+            return None
+        customer_phone = WhatsAppWebService.clean_phone_number(customer_phone_raw)
+        if not customer_phone:
+            return None
+
+        # Find reservation in availability_confirmed (free) for this customer
+        reservations = WhatsAppReservationRequest.objects.filter(
+            status='availability_confirmed'
+        ).select_related('whatsapp_message').order_by('-created_at')
+
+        for reservation in reservations:
+            msg_phone = WhatsAppWebService.clean_phone_number(
+                reservation.whatsapp_message.phone
+            )
+            if msg_phone == customer_phone:
+                total = ReservationHandler._get_total_from_checkout(reservation)
+                if total <= 0:
+                    ReservationHandler.confirm_reservation(reservation)
+                    logger.info(f"Customer confirmed free reservation {reservation.id}")
+                    return {
+                        'status': 'customer_confirmed',
+                        'message_id': str(message.id),
+                        'reservation_id': str(reservation.id)
+                    }
+                break
+        return None
 

@@ -35,6 +35,10 @@ python manage.py collectstatic --noinput --clear || { echo "collectstatic falló
 echo "Verificando superusuario..."
 python manage.py create_initial_superuser 2>/dev/null || echo "Superusuario ya existe o variables no definidas"
 
+# Activar medios de pago (Transbank WebPay Plus) - idempotente
+echo "Configurando medios de pago..."
+python manage.py setup_payment_providers 2>/dev/null || echo "Payment setup falló o ya configurado"
+
 # Iniciar servidor con Gunicorn (para producción) o runserver (para desarrollo)
 if [ "$DEBUG" = "True" ]; then
     echo "Iniciando servidor Django en modo desarrollo..."

@@ -32,15 +32,16 @@ class OperatorNotifier:
         reservation.confirmation_token = token
         reservation.save()
         
-        # Build message
-        message = f"""🔔 NUEVA RESERVA
-Tour: {experience.title if experience else reservation.tour_code}
-Código: {reservation.tour_code}
-Cliente: +{reservation.whatsapp_message.phone}
-Pasajeros: {reservation.passengers or 1}
-Estado: Pendiente confirmación
+        # Build message - formal tone, no emojis
+        message = f"""Nueva solicitud de reserva
 
-Responde: 1=Confirmar, 2=Rechazar
+Tour: {experience.title if experience else reservation.tour_code}
+Codigo: {reservation.tour_code}
+Cliente: {reservation.whatsapp_message.phone}
+Pasajeros: {reservation.passengers or 1}
+Estado: Pendiente de confirmacion de disponibilidad
+
+Responda 1 para confirmar disponibilidad, 2 para rechazar.
 Token: {token}"""
         
         # Get operator phone number

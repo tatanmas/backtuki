@@ -310,6 +310,9 @@ class PlatformExportService:
         """
         Exporta metadatos de todos los archivos media que existen físicamente.
         
+        IMPORTANTE: Excluye archivos de exports anteriores y otros archivos del sistema
+        para evitar que el backup crezca innecesariamente.
+        
         Returns:
             dict: {file_path: metadata}
         """
@@ -320,8 +323,21 @@ class PlatformExportService:
         
         self.log('info', f"Encontrados {len(file_fields)} campos de archivo")
         
+        # Patrones de archivos a EXCLUIR del backup
+        # (exports anteriores, checkpoints, backups del sistema de migración)
+        EXCLUDE_PATTERNS = [
+            'exports/',           # Exports anteriores en GCS
+            'checkpoints/',       # Checkpoints del sistema
+            'backups/',           # Backups del sistema
+            'tuki-export-',       # Archivos de export por nombre
+            '.tar.gz',            # Archivos comprimidos de export
+            '.json.gz',           # JSONs comprimidos de export
+            'migration_',         # Archivos temporales de migración
+        ]
+        
         total_found = 0
         total_skipped = 0
+        total_excluded = 0
         
         for model, field_name in file_fields:
             queryset = model.objects.exclude(**{f"{field_name}": ''}).exclude(**{f"{field_name}__isnull": True})
@@ -331,11 +347,19 @@ class PlatformExportService:
                     file_field = getattr(obj, field_name)
                     if file_field and hasattr(file_field, 'name') and file_field.name:
                         total_found += 1
+                        file_name = file_field.name
+                        
+                        # Excluir archivos del sistema de migración
+                        should_exclude = any(pattern in file_name for pattern in EXCLUDE_PATTERNS)
+                        if should_exclude:
+                            total_excluded += 1
+                            logger.debug(f"Excluyendo archivo de sistema: {file_name}")
+                            continue
                         
                         # Verificar que el archivo existe físicamente ANTES de procesarlo
-                        if not default_storage.exists(file_field.name):
+                        if not default_storage.exists(file_name):
                             total_skipped += 1
-                            logger.debug(f"Archivo no existe físicamente, omitiendo: {file_field.name}")
+                            logger.debug(f"Archivo no existe físicamente, omitiendo: {file_name}")
                             continue
                         
                         # Obtener URL (funciona tanto para GCS como filesystem local)
@@ -347,7 +371,7 @@ class PlatformExportService:
                         # Calcular checksum (ya maneja archivos faltantes)
                         checksum = calculate_file_checksum(file_field)
                         
-                        media_files[file_field.name] = {
+                        media_files[file_name] = {
                             'size': file_field.size if hasattr(file_field, 'size') else 0,
                             'checksum': f"md5:{checksum}" if checksum else None,
                             'url': file_url,
@@ -359,6 +383,8 @@ class PlatformExportService:
                     logger.warning(f"Error procesando archivo de {model._meta.label}.{field_name}: {e}")
                     continue
         
+        if total_excluded > 0:
+            self.log('info', f"Excluidos {total_excluded} archivos del sistema de migración")
         if total_skipped > 0:
             self.log('warning', f"Se omitieron {total_skipped} archivos de {total_found} que no existen físicamente")
         

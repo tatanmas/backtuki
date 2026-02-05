@@ -207,7 +207,52 @@ python manage.py sync_whatsapp_messages <chat_id>
 
 # Migrar operadores a organizadores
 python manage.py migrate_operators_to_organizers
+
+# Crear código de reserva para testing (formato RES-TEST-YYYYMMDD-XXXXXXXX)
+python manage.py create_reservation_code
+python manage.py create_reservation_code --experience "Test Tour"
 ```
+
+## Testing del Flujo de Reservas
+
+1. **Crear código de prueba:**
+   ```bash
+   python manage.py create_reservation_code
+   ```
+   Siempre usar formato RES- para que el parser lo detecte.
+
+2. **Enviar mensaje** desde tu WhatsApp al número de Tuki:
+   ```
+   Hola! Quiero reservar RES-TEST-20260202-XXXXXXXX
+   ```
+
+3. **Flujo esperado:**
+   - Cliente recibe: "Gracias, estamos confirmando disponibilidad..."
+   - Grupo testeo recibe: notificación para el operador
+   - Operador responde "1" en el grupo para confirmar
+   - Cliente recibe: confirmación final
+
+## Cambios Recientes (Feb 2026)
+
+### Flujo disponibilidad vs confirmacion
+- Nuevo estado `availability_confirmed`: operador confirma con "1"
+- Gratuito: cliente responde "SI" para confirmar
+- Con pago: se envia link de pago tras confirmacion de disponibilidad
+
+### Mensajes formales
+- Plantillas sin emojis, tono formal
+- `customer_availability_confirmed`, `customer_confirm_free`
+
+### Comprobante visual
+- `TicketImageService`: genera PNG con Pillow
+- Se envia imagen de comprobante tras confirmacion final
+- Endpoint `/api/send-media` en Node para enviar imagenes
+
+### Captura mensajes celular
+- Listener `message_create` ademas de `message` para mensajes enviados desde telefono vinculado
+
+### Endpoints Node
+- `POST /api/send-media`: envia imagen/documento (mediaBase64, mimetype, filename, caption)
 
 ## Próximas Mejoras
 

@@ -45,71 +45,110 @@ function formatPhoneNumber(number) {
 
 /**
  * Extract phone number from chat ID
- * @param {string} chatId - Chat ID (e.g., "56947884342@c.us" or "120363404401101559@g.us")
+ * @param {string} chatId - Chat ID (e.g., "56947884342@c.us", "222462226747521@lid", "120363404401101559@g.us")
  * @returns {string|null} Phone number or null if not a valid individual chat ID
  */
 function extractPhoneFromId(chatId) {
     if (!chatId || typeof chatId !== 'string') {
         return null;
     }
-    
-    // Only extract from individual chats (@c.us)
-    if (!chatId.endsWith('@c.us')) {
-        return null;
+    // Individual chats: @c.us (standard) or @lid (linked device)
+    if (chatId.endsWith('@c.us')) {
+        const phone = chatId.replace('@c.us', '');
+        return /^\d+$/.test(phone) ? phone : null;
     }
-    
-    // Extract number part
-    const phone = chatId.replace('@c.us', '');
-    
-    // Validate it's a number
-    if (/^\d+$/.test(phone)) {
-        return phone;
+    if (chatId.endsWith('@lid')) {
+        const part = chatId.replace('@lid', '');
+        return /^\d+$/.test(part) ? part : null;
     }
-    
     return null;
 }
 
 /**
- * Get contact information from contact ID
+ * Check if contactId uses @lid format (linked device - not supported by getContactById)
+ * @param {string} contactId - Contact ID
+ * @returns {boolean}
+ */
+function isLidContact(contactId) {
+    return contactId && typeof contactId === 'string' && contactId.endsWith('@lid');
+}
+
+/**
+ * Return basic contact info from ID without calling getContactById (for @lid or fallback)
+ * @param {string} contactId - Contact ID
+ * @returns {object} Basic contact info
+ */
+function getBasicContactInfoFromId(contactId) {
+    const safe = contactId != null ? String(contactId) : '';
+    const number = extractPhoneFromId(safe);
+    return {
+        id: safe,
+        number: number,
+        formattedNumber: number ? formatPhoneNumber(number) : null,
+        name: null,
+        pushname: null,
+        profilePictureUrl: null
+    };
+}
+
+/** Timeout for getContactById (ms) - prevents ProtocolError hang */
+const GET_CONTACT_TIMEOUT_MS = 8000;
+
+/**
+ * Normalize contact ID from string or object (handles { user, server }, { _serialized }, etc.)
+ * @param {string|object} contactId
+ * @returns {string}
+ */
+function normalizeContactId(contactId) {
+    if (!contactId) return '';
+    if (typeof contactId === 'string') return contactId;
+    const serialized = contactId?._serialized ?? contactId?.id?._serialized;
+    if (serialized && typeof serialized === 'string') return serialized;
+    const user = contactId?.id?.user ?? contactId?.user;
+    const server = contactId?.id?.server ?? contactId?.server ?? 'c.us';
+    if (user) return `${user}@${server}`;
+    return '';
+}
+
+/**
+ * Get contact information from contact ID (enterprise: timeout, ProtocolError fallback)
  * @param {object} client - WhatsApp client instance
- * @param {string} contactId - Contact ID (e.g., "56947884342@c.us")
+ * @param {string|object} contactId - Contact ID (e.g., "56947884342@c.us" or { user, server })
  * @returns {Promise<object>} Contact info with name, number, pushname, profilePictureUrl
  */
 async function getContactInfo(client, contactId) {
+    const idStr = normalizeContactId(contactId);
+    // NUNCA llamar getContactById para @lid - la librería lanza _serialized undefined
+    if (!idStr || idStr.includes('@lid') || idStr.includes('[object Object]')) {
+        return getBasicContactInfoFromId(idStr || '');
+    }
     try {
-        const contact = await client.getContactById(contactId);
-        
-        const number = contact.number || extractPhoneFromId(contactId) || null;
+        const contactPromise = client.getContactById(idStr);
+        const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('getContactById timeout')), GET_CONTACT_TIMEOUT_MS)
+        );
+        const contact = await Promise.race([contactPromise, timeoutPromise]);
+        if (!contact || !contact.id) {
+            return getBasicContactInfoFromId(idStr);
+        }
+        const number = contact.number || extractPhoneFromId(idStr) || null;
         const formattedNumber = number ? formatPhoneNumber(number) : null;
-        
         let profilePictureUrl = null;
         try {
             profilePictureUrl = await contact.getProfilePicUrl() || null;
-        } catch (e) {
-            // Profile picture not available or permission denied
+        } catch (_) {
             profilePictureUrl = null;
         }
-        
         return {
-            id: contact.id._serialized,
+            id: contact.id?._serialized || idStr,
             number: number,
             formattedNumber: formattedNumber,
             name: contact.name || null,
             pushname: contact.pushname || null,
             profilePictureUrl: profilePictureUrl
         };
-    } catch (error) {
-        console.error(`Error getting contact info for ${contactId}:`, error);
-        // Return basic info from ID
-        const number = extractPhoneFromId(contactId);
-        return {
-            id: contactId,
-            number: number,
-            formattedNumber: number ? formatPhoneNumber(number) : null,
-            name: null,
-            pushname: null,
-            profilePictureUrl: null
-        };
+    } catch (_error) {
+        return getBasicContactInfoFromId(idStr);
     }
 }
 
@@ -171,6 +210,9 @@ module.exports = {
     extractPhoneFromId,
     getContactInfo,
     getContactNumber,
-    getContactDisplayName
+    getContactDisplayName,
+    isLidContact,
+    getBasicContactInfoFromId,
+    normalizeContactId
 };
 

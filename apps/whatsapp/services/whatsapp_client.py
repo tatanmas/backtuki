@@ -28,14 +28,32 @@ class WhatsAppWebService:
                 self.base_url = 'http://localhost:3001'
         self.timeout = 10
     
-    def send_message(self, phone_number: str, message: str, group_id: str = None) -> dict:
+    @staticmethod
+    def clean_phone_number(phone: str) -> str:
+        """
+        Clean phone number for WhatsApp API.
+        Removes spaces, dashes, plus signs, and other non-numeric characters.
+        
+        Args:
+            phone: Raw phone number
+            
+        Returns:
+            Cleaned phone number (digits only)
+        """
+        import re
+        # Remove all non-numeric characters
+        cleaned = re.sub(r'\D', '', phone)
+        return cleaned
+    
+    def send_message(self, phone_number: str, message: str, group_id: str = None, chat_id: str = None) -> dict:
         """
         Send message via WhatsApp service.
         
         Args:
-            phone_number: Phone number (e.g., '56912345678')
+            phone_number: Phone number (e.g., '56912345678' or '+56 9 1234 5678')
             message: Message text
             group_id: Optional group ID for group messages (e.g., '120363123456789012@g.us')
+            chat_id: Optional chat ID - required for @lid contacts (e.g., '37881745801364@lid')
             
         Returns:
             dict with success status and message_id
@@ -48,9 +66,12 @@ class WhatsAppWebService:
             
             if group_id:
                 payload['groupId'] = group_id
-                # Para grupos, no necesitamos phone_number
+            elif chat_id and '@lid' in str(chat_id):
+                payload['chatId'] = chat_id
             else:
-                payload['phone'] = phone_number
+                clean_phone = self.clean_phone_number(phone_number)
+                payload['phone'] = clean_phone
+                logger.debug(f"Sending to phone: {phone_number} -> {clean_phone}")
             
             response = requests.post(url, json=payload, timeout=self.timeout)
             response.raise_for_status()
@@ -58,7 +79,54 @@ class WhatsAppWebService:
         except requests.exceptions.RequestException as e:
             logger.error(f"Error sending WhatsApp message: {e}")
             raise
-    
+
+    def send_media(
+        self,
+        phone_number: str,
+        media_base64: str,
+        mimetype: str = 'image/png',
+        filename: str = 'ticket.png',
+        caption: str = '',
+        group_id: str = None,
+        chat_id: str = None
+    ) -> dict:
+        """
+        Send media (image/document) via WhatsApp service.
+
+        Args:
+            phone_number: Phone number or chat ID
+            media_base64: Base64-encoded media data
+            mimetype: MIME type (default: image/png)
+            filename: Filename for document
+            caption: Optional caption
+            group_id: Optional group ID for group messages
+            chat_id: Optional chat ID for @lid contacts
+
+        Returns:
+            dict with success status
+        """
+        try:
+            url = f"{self.base_url}/api/send-media"
+            payload = {
+                'mediaBase64': media_base64,
+                'mimetype': mimetype,
+                'filename': filename,
+                'caption': caption,
+            }
+            if group_id:
+                payload['groupId'] = group_id
+            elif chat_id and '@lid' in str(chat_id):
+                payload['chatId'] = chat_id
+            else:
+                payload['phone'] = self.clean_phone_number(phone_number)
+
+            response = requests.post(url, json=payload, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error sending WhatsApp media: {e}")
+            raise
+
     def get_status(self) -> dict:
         """Get WhatsApp service status."""
         try:
@@ -105,14 +173,14 @@ class WhatsAppWebService:
             return {'groups': []}
     
     def get_chats(self) -> dict:
-        """Get all WhatsApp chats (individual and groups)."""
+        """Get all WhatsApp chats (individual and groups). Returns empty on 503/unavailable."""
         try:
             url = f"{self.base_url}/api/chats"
             response = requests.get(url, timeout=30)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error getting chats: {e}")
+            logger.warning(f"get_chats failed (503/unavailable is normal): {e}")
             return {'chats': []}
     
     def get_group_info(self, group_id: str) -> dict:
@@ -126,12 +194,20 @@ class WhatsAppWebService:
             logger.error(f"Error getting group info: {e}")
             raise
     
+    def _get_raw(self, url: str):
+        """GET raw response (for binary like profile pictures). Returns Response or None."""
+        try:
+            return requests.get(url, timeout=self.timeout, stream=False)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"GET raw failed {url}: {e}")
+            return None
+
     def get_chat_messages(self, chat_id: str, limit: int = 1000) -> dict:
         """Get message history for a specific chat."""
         try:
             url = f"{self.base_url}/api/chats/{chat_id}/messages"
             params = {'limit': limit}
-            response = requests.get(url, params=params, timeout=60)  # Timeout más largo para muchos mensajes
+            response = requests.get(url, params=params, timeout=120)  # Timeout largo: sync con muchos mensajes + grupos
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:

@@ -1,6 +1,7 @@
 // Ready handler
 const config = require('../config');
 const { createLogger } = require('../utils/logger');
+const syncOutbound = require('../services/syncOutboundService');
 
 const logger = createLogger('ReadyHandler');
 
@@ -14,6 +15,9 @@ async function handleReady(client) {
     logger.info('WhatsApp connected successfully', { phoneNumber, name });
     config.setIsReady(true);
     config.setCurrentQR(null); // Clear QR once connected
+
+    // Enterprise: sync periódico para capturar mensajes enviados desde teléfono/otros dispositivos
+    syncOutbound.startSyncOutbound();
     
     // Notify Django about connection
     try {

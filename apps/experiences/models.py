@@ -263,6 +263,24 @@ class Experience(BaseModel):
         help_text=_("If true, users reserve via WhatsApp to Tuki (+56947884342) instead of paying in platform")
     )
     
+    # TUKI Creators: platform fee and creator commission (SuperAdmin can override per experience)
+    platform_service_fee_rate = models.DecimalField(
+        _("platform service fee rate"),
+        max_digits=5,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text=_("Platform fee rate (e.g., 0.15 = 15%). If null, uses organizer or platform default.")
+    )
+    creator_commission_rate = models.DecimalField(
+        _("creator commission rate"),
+        max_digits=5,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text=_("Creator share of platform fee (e.g., 0.5 = 50%). If null, uses platform default.")
+    )
+    
     # 🚀 ENTERPRISE: Soft delete and activation control
     is_active = models.BooleanField(
         _("is active"),
@@ -781,6 +799,36 @@ class ExperienceReservation(BaseModel):
         null=True,
         blank=True,
         help_text=_("Platform flow tracking this reservation (for traceability)")
+    )
+    
+    # TUKI Creators: attribution and commission snapshot at book time
+    creator = models.ForeignKey(
+        'creators.CreatorProfile',
+        on_delete=models.SET_NULL,
+        related_name='experience_reservations',
+        verbose_name=_("creator"),
+        null=True,
+        blank=True,
+        help_text=_("Creator who referred this booking (for commission)")
+    )
+    creator_commission_amount = models.DecimalField(
+        _("creator commission amount"),
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text=_("Amount to pay creator (snapshot at book time)")
+    )
+    creator_commission_status = models.CharField(
+        _("creator commission status"),
+        max_length=20,
+        choices=(
+            ('pending', _('Pending')),
+            ('earned', _('Earned')),
+            ('paid', _('Paid')),
+            ('reversed', _('Reversed')),
+        ),
+        null=True,
+        blank=True,
     )
     
     # Pricing snapshot (at time of reservation)

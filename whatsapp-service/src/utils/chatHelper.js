@@ -80,42 +80,25 @@ async function getGroupParticipants(client, groupChat) {
             return [];
         }
         
-        // Map participants to get complete info
-        const participantsData = await Promise.all(
-            participants.map(async (p) => {
-                try {
-                    // Get contact info for each participant
-                    const contactInfo = await contactHelper.getContactInfo(client, p.id._serialized);
-                    
-                    return {
-                        id: p.id._serialized,
-                        phone: contactInfo.number || p.id.user || null,
-                        formattedPhone: contactInfo.formattedNumber,
-                        name: contactInfo.name || p.name || null,
-                        pushname: contactInfo.pushname || p.pushname || null,
-                        displayName: contactInfo.pushname || contactInfo.name || contactInfo.formattedNumber || 'Unknown',
-                        isAdmin: p.isAdmin || false,
-                        profilePictureUrl: contactInfo.profilePictureUrl
-                    };
-                } catch (error) {
-                    console.error(`Error getting participant info for ${p.id._serialized}:`, error);
-                    // Return basic info if we can't get full contact info
-                    const number = p.id.user || contactHelper.extractPhoneFromId(p.id._serialized);
-                    return {
-                        id: p.id._serialized,
-                        phone: number,
-                        formattedPhone: number ? contactHelper.formatPhoneNumber(number) : null,
-                        name: p.name || null,
-                        pushname: p.pushname || null,
-                        displayName: p.pushname || p.name || (number ? contactHelper.formatPhoneNumber(number) : 'Unknown'),
-                        isAdmin: p.isAdmin || false,
-                        profilePictureUrl: null
-                    };
-                }
-            })
-        );
-        
-        return participantsData;
+        // Enterprise: NUNCA getContactById (falla con @lid). Usar solo datos de p.
+        const participantsData = participants.map((p) => {
+            const participantId = p?.id?._serialized || (typeof p?.id === 'string' ? p.id : null) || (p?.id?.user && p?.id?.server ? `${p.id.user}@${p.id.server}` : null);
+            if (!participantId) return null;
+            const number = p?.id?.user || contactHelper.extractPhoneFromId(participantId);
+            const formatted = number ? contactHelper.formatPhoneNumber(number) : null;
+            const displayName = p?.pushname || p?.name || formatted || 'Unknown';
+            return {
+                id: participantId,
+                phone: number || contactHelper.extractPhoneFromId(participantId),
+                formattedPhone: formatted,
+                name: p?.name || null,
+                pushname: p?.pushname || null,
+                displayName,
+                isAdmin: p?.isAdmin || false,
+                profilePictureUrl: null
+            };
+        });
+        return participantsData.filter(Boolean);
     } catch (error) {
         console.error(`Error getting group participants:`, error);
         return [];

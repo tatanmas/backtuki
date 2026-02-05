@@ -32,9 +32,10 @@ router.get('/api/groups', async (req, res) => {
                 // Obtener información básica
                 let unreadCount = 0;
                 try {
-                    unreadCount = await chat.getUnreadCount();
+                    if (typeof chat.getUnreadCount === 'function') {
+                        unreadCount = await chat.getUnreadCount();
+                    }
                 } catch (e) {
-                    // getUnreadCount puede fallar, usar 0
                     console.warn(`Could not get unread count for group ${chat.id._serialized}:`, e.message);
                 }
                 
@@ -127,9 +128,11 @@ router.get('/api/group-info/:groupId', async (req, res) => {
         
         let unreadCount = 0;
         try {
-            unreadCount = await chat.getUnreadCount();
-        } catch (e) {
-            // getUnreadCount puede fallar
+            if (typeof chat.getUnreadCount === 'function') {
+                unreadCount = await chat.getUnreadCount();
+            }
+        } catch (_e) {
+            /* ignore */
         }
         
         let messages = [];

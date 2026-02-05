@@ -64,8 +64,8 @@ class WhatsAppSyncService:
             
             chat_type = chat_data.get('type', 'individual')
             chat_name = chat_data.get('name', 'Unknown')
-            whatsapp_name = chat_data.get('whatsapp_name', '')
-            profile_picture_url = chat_data.get('profile_picture_url', '') or ''
+            whatsapp_name = chat_data.get('whatsapp_name') or ''  # NOT NULL: @lid devuelve null
+            profile_picture_url = chat_data.get('profile_picture_url') or ''
             
             # Parse last message timestamp
             last_message_at = None
@@ -85,6 +85,11 @@ class WhatsAppSyncService:
                 except (ValueError, TypeError, OSError) as e:
                     logger.warning(f"Could not parse timestamp for chat {chat_id}: {e}")
             
+            last_message_preview = ''
+            if last_message:
+                raw = last_message.get('text') or last_message.get('body') or ''
+                last_message_preview = (str(raw)[:255] if raw else '')
+            
             # For groups, get additional info
             defaults = {
                 'name': chat_name,
@@ -93,7 +98,8 @@ class WhatsAppSyncService:
                 'whatsapp_name': whatsapp_name,
                 'profile_picture_url': profile_picture_url,
                 'unread_count': chat_data.get('unread_count', 0) or 0,
-                'last_message_at': last_message_at
+                'last_message_at': last_message_at,
+                'last_message_preview': last_message_preview
             }
             
             if chat_type == 'group':
@@ -150,6 +156,10 @@ class WhatsAppSyncService:
                 ):
                     chat.last_message_at = last_message_at
                     update_fields.append('last_message_at')
+                # Enterprise: update preview when sync has it (Node's latest message)
+                if last_message_preview and last_message_preview != getattr(chat, 'last_message_preview', ''):
+                    chat.last_message_preview = last_message_preview
+                    update_fields.append('last_message_preview')
                 
                 # For groups, update description and participants
                 if chat_type == 'group':
@@ -262,12 +272,20 @@ class WhatsAppSyncService:
             
             logger.info(f"Syncing {len(messages_data)} messages for chat {chat_id}...")
             
-            # Get or create chat
+            # Get or create chat (robustez: crear si no existe para evitar fallo silencioso)
             try:
                 chat = WhatsAppChat.objects.get(chat_id=chat_id)
             except WhatsAppChat.DoesNotExist:
-                logger.warning(f"Chat {chat_id} not found in database, skipping message sync")
-                return {'created': 0, 'updated': 0, 'total': 0}
+                chat_type = 'group' if '@g.us' in chat_id else 'individual'
+                chat = WhatsAppChat.objects.create(
+                    chat_id=chat_id,
+                    name=chat_id,
+                    type=chat_type,
+                    is_active=True,
+                    whatsapp_name='',
+                    last_message_preview=''
+                )
+                logger.info(f"Created chat {chat_id} for message sync")
             
             created_count = 0
             updated_count = 0
@@ -312,7 +330,7 @@ class WhatsAppSyncService:
                         message_metadata['sender_phone'] = msg_data.get('sender_phone')
                     
                     # Create message
-                    WhatsAppMessage.objects.create(
+                    create_kwargs = dict(
                         whatsapp_id=whatsapp_id,
                         phone=msg_data.get('phone', ''),
                         type=msg_data.get('type', 'in'),
@@ -322,7 +340,21 @@ class WhatsAppSyncService:
                         is_automated=False,
                         metadata=message_metadata if message_metadata else {}
                     )
+                    if msg_data.get('media_type'):
+                        create_kwargs['media_type'] = msg_data.get('media_type')
+                    if msg_data.get('reply_to_whatsapp_id'):
+                        create_kwargs['reply_to_whatsapp_id'] = msg_data.get('reply_to_whatsapp_id')
+                    WhatsAppMessage.objects.create(**create_kwargs)
                     created_count += 1
+            
+            # Enterprise: update chat last_message_preview from most recent message
+            if messages_data:
+                latest = max(messages_data, key=lambda m: m.get('timestamp') or 0)  # by timestamp desc
+                preview_raw = latest.get('content') or latest.get('text') or latest.get('body') or ''
+                preview = (str(preview_raw)[:255] if preview_raw else '')
+                if preview and (not chat.last_message_preview or preview != chat.last_message_preview):
+                    chat.last_message_preview = preview
+                    chat.save(update_fields=['last_message_preview'])
             
             logger.info(f"Message sync completed for {chat_id}: {created_count} created")
             

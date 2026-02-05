@@ -6,12 +6,14 @@ const { initClient } = require('./services/whatsappClient');
 const { handleQR } = require('./handlers/qrHandler');
 const { handleReady } = require('./handlers/readyHandler');
 const { handleMessage } = require('./handlers/messageHandler');
+const syncOutbound = require('./services/syncOutboundService');
 
 // Import routes
 const messagesRoutes = require('./routes/messages');
 const statusRoutes = require('./routes/status');
 const chatsRoutes = require('./routes/chats');
 const groupsRoutes = require('./routes/groups');
+const profilePictureRoutes = require('./routes/profilePicture');
 
 const logger = createLogger('Server');
 
@@ -39,6 +41,8 @@ const client = initClient();
 client.on('qr', handleQR);
 client.on('ready', () => handleReady(client));
 client.on('message', (message) => handleMessage(message, client));
+// message_create: captures messages sent from linked phone (sync), bulk sync, etc.
+client.on('message_create', (message) => handleMessage(message, client));
 
 // Handle WhatsApp client errors
 client.on('auth_failure', (msg) => {
@@ -49,6 +53,7 @@ client.on('disconnected', (reason) => {
     logger.warn('WhatsApp disconnected', { reason });
     config.setIsReady(false);
     config.setCurrentQR(null);
+    syncOutbound.stopSyncOutbound();
 });
 
 // Register routes
@@ -56,6 +61,7 @@ app.use('/', messagesRoutes);
 app.use('/', statusRoutes);
 app.use('/', chatsRoutes);
 app.use('/', groupsRoutes);
+app.use('/', profilePictureRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -70,6 +76,7 @@ app.use((err, req, res, next) => {
 // Graceful shutdown
 process.on('SIGTERM', async () => {
     logger.info('SIGTERM received, shutting down gracefully...');
+    syncOutbound.stopSyncOutbound();
     if (config.client) {
         try {
             await config.client.destroy();
@@ -83,6 +90,7 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
     logger.info('SIGINT received, shutting down gracefully...');
+    syncOutbound.stopSyncOutbound();
     if (config.client) {
         try {
             await config.client.destroy();

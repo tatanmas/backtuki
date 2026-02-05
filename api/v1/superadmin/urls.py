@@ -28,10 +28,15 @@ from .views import (
     migrate_revenue_data,
     # 🚀 ENTERPRISE: JSON Experience Creation
     create_experience_from_json,
+    update_experience_commission,
+    creators_landing_slots_list,
+    creators_landing_slots_assign,
 )
 from .whatsapp_views import (
     whatsapp_status,
+    whatsapp_disconnect,
     whatsapp_qr,
+    whatsapp_profile_picture,
     whatsapp_reservations,
     whatsapp_operators,
     whatsapp_bind_experience_operator,
@@ -87,6 +92,7 @@ urlpatterns = [
     
     # 🚀 ENTERPRISE: WhatsApp Integration Endpoints
     path('whatsapp/status/', whatsapp_status, name='whatsapp-status'),
+    path('whatsapp/disconnect/', whatsapp_disconnect, name='whatsapp-disconnect'),
     path('whatsapp/qr/', whatsapp_qr, name='whatsapp-qr'),
     path('whatsapp/reservations/', whatsapp_reservations, name='whatsapp-reservations'),
     path('whatsapp/operators/', whatsapp_operators, name='whatsapp-operators'),
@@ -94,6 +100,7 @@ urlpatterns = [
     path('whatsapp/messages/', whatsapp_messages, name='whatsapp-messages'),
     path('whatsapp/messages/<str:message_id>/mark-reservation/', whatsapp_mark_message_reservation, name='whatsapp-mark-message-reservation'),
     path('whatsapp/chats/', whatsapp_chats, name='whatsapp-chats'),
+    path('whatsapp/profile-picture/<str:chat_id>/', whatsapp_profile_picture, name='whatsapp-profile-picture'),
     path('whatsapp/chats/sync/', whatsapp_sync_chats, name='whatsapp-sync-chats'),
     path('whatsapp/chats/<str:chat_id>/', whatsapp_chat_info, name='whatsapp-chat-info'),
     path('whatsapp/chats/<str:chat_id>/update/', whatsapp_update_chat, name='whatsapp-update-chat'),
@@ -110,5 +117,8 @@ urlpatterns = [
     
     # 🚀 ENTERPRISE: JSON Experience Creation
     path('experiences/create-from-json/', create_experience_from_json, name='create-experience-from-json'),
+    path('experiences/<uuid:experience_id>/commission/', update_experience_commission, name='update-experience-commission'),
+    path('creators-landing-slots/', creators_landing_slots_list, name='creators-landing-slots-list'),
+    path('creators-landing-slots/assign/', creators_landing_slots_assign, name='creators-landing-slots-assign'),
 ]
 

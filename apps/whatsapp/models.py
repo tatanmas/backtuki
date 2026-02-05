@@ -66,9 +66,10 @@ class WhatsAppMessage(TimeStampedModel, UUIDModel):
         verbose_name=_('WhatsApp ID')
     )
     phone = models.CharField(
-        max_length=20,
+        max_length=50,
         db_index=True,
-        verbose_name=_('Phone')
+        verbose_name=_('Phone'),
+        help_text=_('Phone number or group ID (format: XXXXXXXXXXX-XXXXXXXXXX for groups)')
     )
     type = models.CharField(
         max_length=3, 
@@ -127,6 +128,30 @@ class WhatsAppMessage(TimeStampedModel, UUIDModel):
         verbose_name=_('Metadata'),
         help_text=_('Additional metadata for the message (e.g., sender_name, sender_phone for group messages)')
     )
+    # Media and reply support (enterprise)
+    media_type = models.CharField(
+        max_length=30,
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_('Media Type'),
+        help_text=_('WhatsApp message type: chat, ptt, audio, image, video, document, sticker, etc.')
+    )
+    reply_to_whatsapp_id = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_('Reply To WhatsApp ID'),
+        help_text=_('WhatsApp ID of the message this is a reply to')
+    )
+    media_url = models.URLField(
+        max_length=2048,
+        null=True,
+        blank=True,
+        verbose_name=_('Media URL'),
+        help_text=_('URL to media file if uploaded to storage')
+    )
     
     class Meta:
         app_label = 'whatsapp'
@@ -138,6 +163,7 @@ class WhatsAppMessage(TimeStampedModel, UUIDModel):
             models.Index(fields=['whatsapp_id']),
             models.Index(fields=['reservation_code']),
             models.Index(fields=['is_reservation_related']),
+            models.Index(fields=['reply_to_whatsapp_id']),
         ]
     
     def __str__(self):
@@ -226,6 +252,7 @@ class WhatsAppReservationRequest(TimeStampedModel, UUIDModel):
         ('received', _('Recibido')),
         ('processing', _('Procesando')),
         ('operator_notified', _('Operador notificado')),
+        ('availability_confirmed', _('Disponibilidad confirmada')),
         ('confirmed', _('Confirmada')),
         ('rejected', _('Rechazada')),
         ('timeout', _('Timeout')),
@@ -250,8 +277,11 @@ class WhatsAppReservationRequest(TimeStampedModel, UUIDModel):
     operator = models.ForeignKey(
         TourOperator,
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
         related_name='reservation_requests',
-        verbose_name=_('Operator')
+        verbose_name=_('Operator'),
+        help_text=_('Nullable when experience has no operator; assign manually later')
     )
     experience = models.ForeignKey(
         'experiences.Experience',
@@ -262,7 +292,7 @@ class WhatsAppReservationRequest(TimeStampedModel, UUIDModel):
         verbose_name=_('Experience')
     )
     status = models.CharField(
-        max_length=20,
+        max_length=30,
         choices=STATUS_CHOICES,
         default='received',
         db_index=True,
@@ -289,6 +319,57 @@ class WhatsAppReservationRequest(TimeStampedModel, UUIDModel):
         verbose_name=_('Linked Experience Reservation')
     )
     
+    # Campos para tracking del flujo de pago
+    payment_link = models.URLField(
+        blank=True,
+        verbose_name=_('Payment Link'),
+        help_text=_('Generated payment link sent to customer')
+    )
+    payment_link_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Payment Link Sent At')
+    )
+    payment_received_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Payment Received At')
+    )
+    ticket_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Ticket Sent At')
+    )
+    
+    # Datos del cliente recolectados
+    customer_data = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name=_('Customer Data'),
+        help_text=_('Additional customer data collected during conversation')
+    )
+    
+    # Respuestas del operador
+    operator_response = models.CharField(
+        max_length=255,
+        blank=True,
+        verbose_name=_('Operator Response'),
+        help_text=_('Last response from operator')
+    )
+    operator_responded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Operator Responded At')
+    )
+    
+    # Métricas de tiempo
+    customer_notified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Customer Notified At'),
+        help_text=_('When customer was notified of result')
+    )
+    
     class Meta:
         app_label = 'whatsapp'
         verbose_name = _('WhatsApp Reservation Request')
@@ -301,6 +382,13 @@ class WhatsAppReservationRequest(TimeStampedModel, UUIDModel):
     
     def __str__(self):
         return f"{self.tour_code} - {self.status}"
+    
+    def get_response_time_seconds(self):
+        """Calcular tiempo de respuesta del operador."""
+        if self.operator_responded_at and self.created_at:
+            delta = self.operator_responded_at - self.created_at
+            return delta.total_seconds()
+        return None
 
 
 class ExperienceOperatorBinding(TimeStampedModel, UUIDModel):
@@ -536,6 +624,12 @@ class WhatsAppChat(TimeStampedModel, UUIDModel):
         help_text=_('Número de mensajes sin leer'),
         verbose_name=_('Unread Count')
     )
+    last_message_preview = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text=_('Preview of last message for chat list (without opening)'),
+        verbose_name=_('Last Message Preview')
+    )
     tags = models.JSONField(
         default=list,
         blank=True,
@@ -567,4 +661,221 @@ class WhatsAppChat(TimeStampedModel, UUIDModel):
     
     def __str__(self):
         return f"{self.name} ({self.type})"
+
+
+class OperatorMessageTemplate(TimeStampedModel, UUIDModel):
+    """
+    Customizable message templates for each operator.
+    
+    Variables disponibles:
+    - {{contacto}} - Nombre del contacto del operador
+    - {{experiencia}} - Nombre de la experiencia/tour
+    - {{fecha}} - Fecha de la reserva (ej: "15 de marzo de 2026")
+    - {{hora}} - Hora de la reserva (ej: "10:00")
+    - {{pasajeros}} - Número total de pasajeros
+    - {{adultos}} - Número de adultos
+    - {{ninos}} - Número de niños
+    - {{infantes}} - Número de infantes
+    - {{precio}} - Precio total formateado (ej: "$45.000")
+    - {{nombre_cliente}} - Nombre del cliente
+    - {{telefono_cliente}} - Teléfono del cliente
+    - {{codigo}} - Código de reserva
+    - {{link_pago}} - Link de pago (si aplica)
+    """
+    
+    MESSAGE_TYPE_CHOICES = [
+        ('reservation_request', _('Solicitud de reserva al operador')),
+        ('customer_confirmation', _('Confirmación al cliente')),
+        ('customer_rejection', _('Rechazo al cliente')),
+        ('customer_waiting', _('Esperando confirmación del operador')),
+        ('payment_link', _('Link de pago al cliente')),
+        ('payment_confirmed', _('Pago confirmado al cliente')),
+        ('ticket_info', _('Información del ticket')),
+        ('reminder', _('Recordatorio al operador')),
+    ]
+    
+    operator = models.ForeignKey(
+        TourOperator,
+        on_delete=models.CASCADE,
+        related_name='message_templates',
+        verbose_name=_('Operator')
+    )
+    message_type = models.CharField(
+        max_length=30,
+        choices=MESSAGE_TYPE_CHOICES,
+        db_index=True,
+        verbose_name=_('Message Type')
+    )
+    template = models.TextField(
+        verbose_name=_('Template'),
+        help_text=_('Use {{variable}} for dynamic content')
+    )
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name=_('Active')
+    )
+    
+    class Meta:
+        app_label = 'whatsapp'
+        verbose_name = _('Operator Message Template')
+        verbose_name_plural = _('Operator Message Templates')
+        unique_together = [('operator', 'message_type')]
+        ordering = ['operator', 'message_type']
+    
+    def __str__(self):
+        return f"{self.operator.name} - {self.get_message_type_display()}"
+    
+    def render(self, context: dict) -> str:
+        """Render template with given context variables."""
+        result = self.template
+        for key, value in context.items():
+            result = result.replace(f"{{{{{key}}}}}", str(value) if value else '')
+        return result
+
+
+class OperatorRequiredFields(TimeStampedModel, UUIDModel):
+    """
+    Campos requeridos por cada operador para completar una reserva.
+    Ej: nombre completo, RUT, email, etc.
+    """
+    
+    FIELD_TYPE_CHOICES = [
+        ('text', _('Texto')),
+        ('number', _('Número')),
+        ('email', _('Email')),
+        ('phone', _('Teléfono')),
+        ('rut', _('RUT/Identificación')),
+        ('date', _('Fecha')),
+        ('select', _('Selección')),
+    ]
+    
+    operator = models.ForeignKey(
+        TourOperator,
+        on_delete=models.CASCADE,
+        related_name='required_fields',
+        verbose_name=_('Operator')
+    )
+    field_name = models.CharField(
+        max_length=50,
+        verbose_name=_('Field Name'),
+        help_text=_('Internal field identifier (e.g., "rut", "full_name")')
+    )
+    display_name = models.CharField(
+        max_length=100,
+        verbose_name=_('Display Name'),
+        help_text=_('Name shown to customer (e.g., "RUT", "Nombre completo")')
+    )
+    field_type = models.CharField(
+        max_length=20,
+        choices=FIELD_TYPE_CHOICES,
+        default='text',
+        verbose_name=_('Field Type')
+    )
+    is_required = models.BooleanField(
+        default=True,
+        verbose_name=_('Required')
+    )
+    options = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_('Options'),
+        help_text=_('Options for select fields')
+    )
+    order = models.IntegerField(
+        default=0,
+        verbose_name=_('Order')
+    )
+    
+    class Meta:
+        app_label = 'whatsapp'
+        verbose_name = _('Operator Required Field')
+        verbose_name_plural = _('Operator Required Fields')
+        unique_together = [('operator', 'field_name')]
+        ordering = ['operator', 'order']
+    
+    def __str__(self):
+        return f"{self.operator.name} - {self.display_name}"
+
+
+class ConversationState(TimeStampedModel, UUIDModel):
+    """
+    Estado de conversación para flujos multi-turno.
+    Mantiene el contexto de la conversación con un cliente.
+    """
+    
+    STATE_CHOICES = [
+        ('idle', _('Inactivo')),
+        ('awaiting_reservation_code', _('Esperando código de reserva')),
+        ('awaiting_customer_info', _('Esperando información del cliente')),
+        ('awaiting_operator_response', _('Esperando respuesta del operador')),
+        ('awaiting_payment', _('Esperando pago')),
+        ('completed', _('Completado')),
+        ('cancelled', _('Cancelado')),
+    ]
+    
+    chat = models.OneToOneField(
+        WhatsAppChat,
+        on_delete=models.CASCADE,
+        related_name='conversation_state',
+        verbose_name=_('Chat')
+    )
+    state = models.CharField(
+        max_length=30,
+        choices=STATE_CHOICES,
+        default='idle',
+        db_index=True,
+        verbose_name=_('State')
+    )
+    current_reservation = models.ForeignKey(
+        WhatsAppReservationRequest,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='conversation_states',
+        verbose_name=_('Current Reservation')
+    )
+    context = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name=_('Context'),
+        help_text=_('Additional context data for the conversation')
+    )
+    pending_fields = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_('Pending Fields'),
+        help_text=_('List of required fields still pending')
+    )
+    collected_data = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name=_('Collected Data'),
+        help_text=_('Data collected from customer during conversation')
+    )
+    last_activity = models.DateTimeField(
+        auto_now=True,
+        verbose_name=_('Last Activity')
+    )
+    expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_('Expires At')
+    )
+    
+    class Meta:
+        app_label = 'whatsapp'
+        verbose_name = _('Conversation State')
+        verbose_name_plural = _('Conversation States')
+        indexes = [
+            models.Index(fields=['state', 'expires_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.chat.name} - {self.get_state_display()}"
+    
+    def is_expired(self):
+        if self.expires_at:
+            return timezone.now() > self.expires_at
+        return False
 

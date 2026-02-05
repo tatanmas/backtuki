@@ -22,6 +22,7 @@ from apps.experiences.models import (
     ExperienceDatePriceOverride
 )
 from apps.events.models import Order
+from apps.creators.models import CreatorProfile
 from core.flow_logger import FlowLogger
 
 User = get_user_model()
@@ -29,6 +30,27 @@ logger = logging.getLogger(__name__)
 
 # Constants
 RESERVATION_EXPIRY_MINUTES = 15
+
+# TUKI Creators: default platform fee and creator commission when not set per experience/organizer
+DEFAULT_PLATFORM_FEE_RATE = Decimal('0.15')  # 15%
+DEFAULT_CREATOR_COMMISSION_RATE = Decimal('0.5')  # 50% of platform fee
+
+
+def get_effective_platform_fee_rate(experience):
+    """Platform fee rate for experiences: experience → organizer → default."""
+    if experience.platform_service_fee_rate is not None:
+        return experience.platform_service_fee_rate
+    organizer = getattr(experience, 'organizer', None)
+    if organizer and getattr(organizer, 'experience_service_fee_rate', None) is not None:
+        return organizer.experience_service_fee_rate
+    return DEFAULT_PLATFORM_FEE_RATE
+
+
+def get_effective_creator_commission_rate(experience):
+    """Creator share of platform fee: experience override or default 50%."""
+    if experience.creator_commission_rate is not None:
+        return experience.creator_commission_rate
+    return DEFAULT_CREATOR_COMMISSION_RATE
 
 
 def calculate_pricing(experience, instance, adult_count, child_count, infant_count, selected_resources):
@@ -120,8 +142,9 @@ def calculate_pricing(experience, instance, adult_count, child_count, infant_cou
     
     subtotal = participants_subtotal + resources_subtotal
     
-    # Service fee (could be configurable)
-    service_fee = Decimal('0')  # TODO: implement service fee logic
+    # Platform service fee (TUKI Creators: configurable per experience / organizer)
+    rate = get_effective_platform_fee_rate(experience)
+    service_fee = (subtotal * rate).quantize(Decimal('1'))
     
     # Discount (from coupons, etc.)
     discount = Decimal('0')  # TODO: implement discount logic
@@ -277,6 +300,7 @@ class PublicExperienceReserveView(APIView):
         infant_count = request.data.get('infant_count', 0)
         selected_resources = request.data.get('selected_resources', [])  # [{resource_id, quantity}]
         reservation_id = request.data.get('reservation_id')  # For updating existing reservation
+        creator_slug = request.data.get('creator_slug') or request.data.get('ref')  # TUKI Creators attribution
         
         # Contact info (optional at reserve stage, required at book)
         first_name = request.data.get('first_name', '')
@@ -386,10 +410,25 @@ class PublicExperienceReserveView(APIView):
             except ExperienceReservation.DoesNotExist:
                 return Response({'error': 'Reservation not found or already processed'}, status=status.HTTP_404_NOT_FOUND)
         else:
+            # Resolve creator for attribution (TUKI Creators)
+            creator = None
+            if creator_slug:
+                try:
+                    creator = CreatorProfile.objects.get(slug=creator_slug, is_approved=True)
+                except CreatorProfile.DoesNotExist:
+                    pass
+            
             # Create new reservation
-            reservation_id = f"EXP-{uuid.uuid4().hex[:12].upper()}"
+            reservation_id_str = f"EXP-{uuid.uuid4().hex[:12].upper()}"
+            creator_commission_amount = Decimal('0')
+            creator_commission_status = None
+            if creator:
+                creator_rate = get_effective_creator_commission_rate(experience)
+                creator_commission_amount = (pricing['service_fee'] * creator_rate).quantize(Decimal('1'))
+                creator_commission_status = 'pending'
+            
             reservation = ExperienceReservation.objects.create(
-                reservation_id=reservation_id,
+                reservation_id=reservation_id_str,
                 experience=experience,
                 instance=instance,
                 status='pending',
@@ -408,7 +447,10 @@ class PublicExperienceReserveView(APIView):
                 pricing_details=pricing['breakdown'],
                 selected_resources=selected_resources,
                 capacity_count_rule=experience.capacity_count_rule,
-                expires_at=expires_at
+                expires_at=expires_at,
+                creator=creator,
+                creator_commission_amount=creator_commission_amount,
+                creator_commission_status=creator_commission_status,
             )
             
             # 🚀 ENTERPRISE: Start flow tracking for new reservations
@@ -425,9 +467,15 @@ class PublicExperienceReserveView(APIView):
                         'adults': adult_count,
                         'children': child_count,
                         'infants': infant_count,
-                    }
+                    },
+                    'creator_slug': creator_slug or '',
                 }
             )
+            
+            # TUKI Creators: attach creator to flow for attribution
+            if flow and flow.flow and creator:
+                flow.flow.creator = creator
+                flow.flow.save(update_fields=['creator'])
             
             flow.log_event(
                 'RESERVATION_CREATED',
@@ -511,6 +559,26 @@ class PublicExperienceBookView(APIView):
                 {'error': 'Reservation not found or already processed'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+        # Allow frontend to send contact info (e.g. from BuyerInfo form in codigo flow)
+        contact_info = request.data.get('contact_info') or {}
+        if contact_info:
+            if contact_info.get('first_name'):
+                reservation.first_name = contact_info['first_name'].strip()
+            if contact_info.get('last_name') is not None:
+                reservation.last_name = (contact_info['last_name'] or '-').strip()
+            elif not reservation.last_name:
+                reservation.last_name = reservation.first_name or '-'
+            if contact_info.get('email'):
+                reservation.email = contact_info['email'].strip()
+            if contact_info.get('phone') is not None:
+                reservation.phone = (contact_info['phone'] or '').strip()
+            reservation.save(update_fields=['first_name', 'last_name', 'email', 'phone'])
+        
+        # Normalize: last_name empty -> use "-" for validation
+        if not (reservation.last_name or '').strip():
+            reservation.last_name = reservation.first_name or '-'
+            reservation.save(update_fields=['last_name'])
         
         # Check expiry
         if reservation.expires_at and timezone.now() > reservation.expires_at:
@@ -521,10 +589,15 @@ class PublicExperienceBookView(APIView):
             reservation.resource_holds.filter(released=False).update(released=True, released_at=timezone.now())
             return Response({'error': 'Reservation expired'}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Validate contact info
-        if not reservation.email or not reservation.first_name or not reservation.last_name:
+        # Validate contact info (first_name and email required; last_name defaults to "-")
+        if not (reservation.first_name or '').strip():
             return Response(
-                {'error': 'Contact information incomplete. Please provide first_name, last_name, and email.'},
+                {'error': 'Nombre requerido. Completa el formulario de contacto.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not (reservation.email or '').strip():
+            return Response(
+                {'error': 'Email requerido. Completa el formulario de contacto.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         

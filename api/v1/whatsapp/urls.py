@@ -11,4 +11,5 @@ urlpatterns = [
     path('webhook/status/', views.webhook_status, name='webhook-status'),
     path('webhook/qr/', views.webhook_qr, name='webhook-qr'),
     path('generate-reservation-code/', views.generate_reservation_code, name='generate-reservation-code'),
+    path('reservation-by-code/', views.reservation_by_code, name='reservation-by-code'),
 ]

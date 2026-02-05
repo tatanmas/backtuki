@@ -165,3 +165,73 @@ def create_experience_from_json(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+
+@api_view(['PATCH'])
+@permission_classes([IsSuperUser])
+def update_experience_commission(request, experience_id):
+    """
+    TUKI Creators: Update platform fee rate and creator commission rate for an experience.
+    
+    PATCH /api/v1/superadmin/experiences/<experience_id>/commission/
+    
+    Body:
+        {
+            "platform_service_fee_rate": 0.15 | null,  // 0.15 = 15%
+            "creator_commission_rate": 0.5 | null     // 0.5 = 50% of platform fee
+        }
+    """
+    try:
+        experience = Experience.objects.get(id=experience_id)
+    except Experience.DoesNotExist:
+        return Response(
+            {"detail": "Experiencia no encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    
+    platform_rate = request.data.get('platform_service_fee_rate')
+    creator_rate = request.data.get('creator_commission_rate')
+    
+    if platform_rate is not None:
+        try:
+            from decimal import Decimal
+            r = Decimal(str(platform_rate))
+            if r < 0 or r > 1:
+                return Response(
+                    {"detail": "platform_service_fee_rate debe estar entre 0 y 1."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            experience.platform_service_fee_rate = r
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "platform_service_fee_rate debe ser un número."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    elif 'platform_service_fee_rate' in request.data:
+        experience.platform_service_fee_rate = None
+    
+    if creator_rate is not None:
+        try:
+            from decimal import Decimal
+            r = Decimal(str(creator_rate))
+            if r < 0 or r > 1:
+                return Response(
+                    {"detail": "creator_commission_rate debe estar entre 0 y 1."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            experience.creator_commission_rate = r
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "creator_commission_rate debe ser un número."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    elif 'creator_commission_rate' in request.data:
+        experience.creator_commission_rate = None
+    
+    experience.save(update_fields=['platform_service_fee_rate', 'creator_commission_rate', 'updated_at'])
+    
+    return Response({
+        "id": str(experience.id),
+        "title": experience.title,
+        "platform_service_fee_rate": float(experience.platform_service_fee_rate) if experience.platform_service_fee_rate is not None else None,
+        "creator_commission_rate": float(experience.creator_commission_rate) if experience.creator_commission_rate is not None else None,
+    }, status=status.HTTP_200_OK)

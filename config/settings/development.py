@@ -159,4 +159,7 @@ CSRF_COOKIE_SAMESITE = None  # Needed for cross-origin requests
 FRONTEND_URL = 'http://localhost:8080'
 
 # 🚨 CRÍTICO: Deshabilitar emails durante migraciones de WooCommerce
-MIGRATION_MODE = True 
+MIGRATION_MODE = True
+
+# 🚀 WhatsApp Service URL
+WHATSAPP_SERVICE_URL = config('WHATSAPP_SERVICE_URL', default='http://whatsapp-service:3001')

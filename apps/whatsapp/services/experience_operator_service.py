@@ -138,12 +138,16 @@ class ExperienceOperatorService:
         ).first()
         
         if active_binding and active_binding.whatsapp_group:
+            group = active_binding.whatsapp_group
+            # Operator: binding > group.assigned_operator
+            op = active_binding.tour_operator or getattr(group, 'assigned_operator', None)
             return {
-                'id': str(active_binding.whatsapp_group.id),
-                'chat_id': active_binding.whatsapp_group.chat_id,
-                'name': active_binding.whatsapp_group.name,
+                'id': str(group.id),
+                'chat_id': group.chat_id,
+                'name': group.name,
                 'is_override': True,
-                'source': 'custom_binding'
+                'source': 'custom_binding',
+                'operator': op
             }
         
         # Check for operator default group
@@ -156,7 +160,8 @@ class ExperienceOperatorService:
                     'chat_id': operator.default_whatsapp_group.chat_id,
                     'name': operator.default_whatsapp_group.name,
                     'is_override': False,
-                    'source': 'operator_default'
+                    'source': 'operator_default',
+                    'operator': operator
                 }
         
         # Check for non-override binding (legacy)
@@ -166,12 +171,32 @@ class ExperienceOperatorService:
         ).first()
         
         if default_binding and default_binding.whatsapp_group:
+            group = default_binding.whatsapp_group
+            op = default_binding.tour_operator or getattr(group, 'assigned_operator', None)
             return {
-                'id': str(default_binding.whatsapp_group.id),
-                'chat_id': default_binding.whatsapp_group.chat_id,
-                'name': default_binding.whatsapp_group.name,
+                'id': str(group.id),
+                'chat_id': group.chat_id,
+                'name': group.name,
                 'is_override': False,
-                'source': 'default_binding'
+                'source': 'default_binding',
+                'operator': op
+            }
+        
+        # Fallback: any active binding with group (edge case: binding exists but flags don't match)
+        any_binding = experience.whatsapp_group_bindings.filter(
+            is_active=True,
+            whatsapp_group__isnull=False
+        ).select_related('whatsapp_group', 'tour_operator').first()
+        if any_binding and any_binding.whatsapp_group:
+            group = any_binding.whatsapp_group
+            op = any_binding.tour_operator or getattr(group, 'assigned_operator', None)
+            return {
+                'id': str(group.id),
+                'chat_id': group.chat_id,
+                'name': group.name,
+                'is_override': any_binding.is_override,
+                'source': 'fallback_binding',
+                'operator': op
             }
         
         return None

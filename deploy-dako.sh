@@ -5,9 +5,17 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # Este script prepara y levanta TODO Tuki en el servidor Dako
 # Ejecutar desde: ~/Desktop/tuki/
+#
+# Opciones:
+#   --skip-git-pull   Omitir git pull (útil cuando el código llegó por rsync)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set -e
+
+SKIP_GIT_PULL=false
+for arg in "$@"; do
+    [ "$arg" = "--skip-git-pull" ] && SKIP_GIT_PULL=true
+done
 
 echo "═══════════════════════════════════════════════════════════════════════════════"
 echo "🚀 TUKI PLATFORM - DEPLOY COMPLETO A PRODUCCIÓN"
@@ -26,8 +34,11 @@ echo "📁 Directorio: $TUKI_DIR"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 1: Actualizar repositorios
+# PASO 1: Actualizar repositorios (omitir si --skip-git-pull)
 # ═══════════════════════════════════════════════════════════════════════════════
+if [ "$SKIP_GIT_PULL" = true ]; then
+    echo "📥 Paso 1: Omitiendo git pull (código ya sincronizado por rsync)"
+else
 echo "📥 Paso 1: Actualizando repositorios..."
 
 # Backend
@@ -89,6 +100,7 @@ else
 fi
 
 cd "$TUKI_DIR"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PASO 2: Copiar archivos de configuración
@@ -194,6 +206,11 @@ echo "🗄️ Paso 7: Ejecutando migraciones..."
 
 docker-compose exec -T tuki-backend python manage.py migrate --noinput
 echo "   ✅ Migraciones completadas"
+
+echo ""
+echo "💳 Paso 7b: Activando medios de pago (Transbank WebPay Plus)..."
+docker-compose exec -T tuki-backend python manage.py setup_payment_providers 2>/dev/null || echo "   ⚠️ setup_payment_providers falló (puede estar ya configurado)"
+echo "   ✅ Medios de pago configurados"
 
 echo ""
 echo "📁 Paso 8: Collectstatic..."

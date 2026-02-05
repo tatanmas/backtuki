@@ -76,9 +76,20 @@ router.get('/api/chats', async (req, res) => {
                     }
                 } else {
                     // Para chats individuales, obtener información del contacto
-                    // Primero intentar extraer número del chat_id (más confiable)
                     const phoneFromId = contactHelper.extractPhoneFromId(chat.id._serialized);
-                    
+                    const isLid = contactHelper.isLidContact(chat.id._serialized);
+                    // @lid: getContact()/getContactById fallan - usar solo datos del ID
+                    if (isLid) {
+                        if (phoneFromId) {
+                            chatInfo.name = contactHelper.formatPhoneNumber(phoneFromId);
+                            chatInfo.phone = chatInfo.name;
+                        } else {
+                            chatInfo.name = chat.name || 'Unknown';
+                            chatInfo.phone = null;
+                        }
+                        chatInfo.whatsapp_name = null;
+                        chatInfo.profile_picture_url = null;
+                    } else {
                     try {
                         const contact = await chat.getContact();
                         
@@ -113,8 +124,6 @@ router.get('/api/chats', async (req, res) => {
                         // Intentar obtener foto de perfil
                         chatInfo.profile_picture_url = await chatHelper.getProfilePicture(contact);
                     } catch (e) {
-                        console.error(`Error getting contact info for chat ${chat.id._serialized}:`, e);
-                        // Fallback: usar chat ID para extraer número
                         if (phoneFromId) {
                             chatInfo.name = contactHelper.formatPhoneNumber(phoneFromId);
                             chatInfo.phone = chatInfo.name;
@@ -124,6 +133,7 @@ router.get('/api/chats', async (req, res) => {
                         }
                         chatInfo.whatsapp_name = null;
                         chatInfo.profile_picture_url = null;
+                    }
                     }
                 }
                 
@@ -185,18 +195,38 @@ router.get('/api/chats/:chatId/messages', async (req, res) => {
                 let senderName = null;
                 let senderPhone = null;
                 
-                // Para grupos, obtener información del remitente
+                // Para grupos, obtener información del remitente (evitar getContactInfo para @lid)
                 if (isGroup && !isFromMe && message.author) {
-                    try {
-                        const senderContactInfo = await contactHelper.getContactInfo(config.client, message.author);
-                        senderName = senderContactInfo.pushname || senderContactInfo.name || null;
-                        senderPhone = senderContactInfo.number || null;
-                    } catch (e) {
-                        console.error(`Error getting sender info for message ${message.id._serialized}:`, e);
-                        senderPhone = message.author.replace('@c.us', '').replace('@g.us', '');
+                    const authorStr = contactHelper.normalizeContactId ? contactHelper.normalizeContactId(message.author) : (typeof message.author === 'string' ? message.author : (message.author?._serialized || ''));
+                    if (contactHelper.isLidContact(authorStr) || (authorStr && authorStr.includes('@lid'))) {
+                        const basic = contactHelper.getBasicContactInfoFromId(authorStr);
+                        senderName = basic.formattedNumber || null;
+                        senderPhone = basic.number || (authorStr ? authorStr.replace(/@\w+\.?\w*/g, '') : null);
+                    } else {
+                        try {
+                            const senderContactInfo = await contactHelper.getContactInfo(config.client, authorStr);
+                            senderName = senderContactInfo.pushname || senderContactInfo.name || null;
+                            senderPhone = senderContactInfo.number || null;
+                        } catch (e) {
+                            senderPhone = authorStr.replace('@c.us', '').replace('@g.us', '').replace('@lid', '');
+                        }
                     }
                 }
-                
+
+                const mediaType = message.type || 'chat';
+                const MEDIA_PLACEHOLDERS = { ptt: '[Audio de voz]', audio: '[Audio]', image: '[Imagen]', video: '[Video]', document: '[Documento]', sticker: '[Sticker]' };
+                let content = message.body || '';
+                if (!content && MEDIA_PLACEHOLDERS[mediaType]) content = MEDIA_PLACEHOLDERS[mediaType];
+                else if (!content && mediaType !== 'chat') content = `[${mediaType}]`;
+
+                let replyToWhatsappId = null;
+                try {
+                    if (message.hasQuotedMsg && typeof message.getQuotedMessage === 'function') {
+                        const quoted = await message.getQuotedMessage();
+                        if (quoted && quoted.id) replyToWhatsappId = quoted.id._serialized || quoted.id.id || null;
+                    }
+                } catch (_) {}
+
                 return {
                     id: message.id._serialized,
                     whatsapp_id: message.id._serialized,
@@ -204,11 +234,13 @@ router.get('/api/chats/:chatId/messages', async (req, res) => {
                     chat_id: chatId,
                     chat_type: isGroup ? 'group' : 'individual',
                     type: isFromMe ? 'out' : 'in',
-                    content: message.body || '',
+                    content,
                     timestamp: message.timestamp,
                     from_me: isFromMe,
                     sender_name: senderName,
-                    sender_phone: senderPhone
+                    sender_phone: senderPhone,
+                    media_type: mediaType,
+                    reply_to_whatsapp_id: replyToWhatsappId,
                 };
             } catch (e) {
                 console.error(`Error processing message ${message.id._serialized}:`, e);

@@ -32,7 +32,8 @@ from .revenue import (
 )
 from .system import celery_tasks_list
 from .countries import CountryViewSet
-from .experiences import create_experience_from_json
+from .experiences import create_experience_from_json, update_experience_commission
+from .creators_landing_slots import creators_landing_slots_list, creators_landing_slots_assign
 
 __all__ = [
     # Users
@@ -66,4 +67,7 @@ __all__ = [
     'CountryViewSet',
     # Experiences
     'create_experience_from_json',
+    'update_experience_commission',
+    'creators_landing_slots_list',
+    'creators_landing_slots_assign',
 ]

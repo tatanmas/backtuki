@@ -133,6 +133,7 @@ class MessageParser:
     def extract_reservation_code(cls, message: str) -> Optional[str]:
         """
         Extract reservation code (RES-XXX format) from message.
+        Falls back to DB lookup if message contains a code-like substring.
         
         Args:
             message: Message text
@@ -140,13 +141,51 @@ class MessageParser:
         Returns:
             Reservation code if found, None otherwise
         """
-        # Pattern for RES-XXX-YYYYMMDD-XXXXXXXX format
+        # 1. Primary: Pattern for RES-XXX-YYYYMMDD-XXXXXXXX format
         pattern = r'RES-([A-Z0-9-]+)'
         match = re.search(pattern, message, re.IGNORECASE)
         if match:
-            code = match.group(0).upper()  # Get full match including RES- prefix
+            code = match.group(0).upper()
             logger.info(f"Extracted reservation code: {code}")
             return code
+
+        # 2. Fallback: Pattern for alternate formats (TEST-, LIVE-, TOUR-, EXP-)
+        alt_pattern = r'(?:TEST|LIVE|FINAL|TOUR|EXP)-[A-Z0-9]{8}-[A-Z0-9]{8}'
+        match = re.search(alt_pattern, message, re.IGNORECASE)
+        if match:
+            code = match.group(0).upper()
+            if cls._code_exists_in_db(code):
+                logger.info(f"Extracted reservation code (alt format): {code}")
+                return code
+
+        # 3. Fallback: Search message for any existing code in DB
+        return cls._find_code_in_message(message)
+    
+    @classmethod
+    def _code_exists_in_db(cls, code: str) -> bool:
+        """Check if code exists in WhatsAppReservationCode."""
+        try:
+            from apps.whatsapp.models import WhatsAppReservationCode
+            return WhatsAppReservationCode.objects.filter(code=code).exists()
+        except Exception:
+            return False
+    
+    @classmethod
+    def _find_code_in_message(cls, message: str) -> Optional[str]:
+        """
+        Search message for substring matching any active reservation code in DB.
+        """
+        try:
+            from apps.whatsapp.models import WhatsAppReservationCode
+            message_upper = message.upper()
+            for code_str in WhatsAppReservationCode.objects.filter(
+                status='pending', linked_reservation__isnull=True
+            ).values_list('code', flat=True):
+                if code_str and code_str.upper() in message_upper:
+                    logger.info(f"Extracted reservation code (DB match): {code_str}")
+                    return code_str.upper()
+        except Exception as e:
+            logger.debug(f"DB lookup for reservation code failed: {e}")
         return None
     
     @classmethod

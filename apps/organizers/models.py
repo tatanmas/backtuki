@@ -109,6 +109,15 @@ class Organizer(TimeStampedModel):
         blank=True,
         help_text=_("Default service fee rate for this organizer (e.g., 0.15 for 15%). If null, uses platform default.")
     )
+    # Platform fee for experiences (when not set per experience)
+    experience_service_fee_rate = models.DecimalField(
+        _("experience service fee rate"),
+        max_digits=5,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text=_("Platform fee rate for experiences (e.g., 0.15 for 15%). If null, uses platform default.")
+    )
     
     # Student Center flag
     is_student_center = models.BooleanField(

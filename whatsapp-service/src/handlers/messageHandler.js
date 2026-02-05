@@ -10,6 +10,10 @@ const logger = createLogger('MessageHandler');
  * Handle incoming WhatsApp messages
  */
 async function handleMessage(message, client) {
+    const msgId = message.id?._serialized || message.id?.id || String(message.id);
+    logger.info(`[handleMessage] INVOKED msgId=${msgId} fromMe=${message.fromMe} type=${message.type}`);
+
+    try {
     // IMPORTANTE: Capturar TODOS los mensajes, incluyendo los propios (fromMe)
     // Esto permite tener el flujo completo del chat
     
@@ -38,14 +42,21 @@ async function handleMessage(message, client) {
             // Para mensajes de grupo, obtener información del remitente (si no es propio)
             if (isGroup && !isFromMe && message.author) {
                 logger.debug('Group message received, extracting sender info', { author: message.author });
-                try {
-                    const senderContactInfo = await contactHelper.getContactInfo(client, message.author);
-                    senderName = senderContactInfo.pushname || senderContactInfo.name || null;
-                    senderPhone = senderContactInfo.number || null;
-                    logger.debug('Sender info extracted', { senderName, senderPhone });
-                } catch (e) {
-                    logger.warn('Failed to get sender info, using fallback', { author: message.author, error: e.message });
-                    senderPhone = message.author.replace('@c.us', '').replace('@g.us', '');
+                const authorStr = contactHelper.normalizeContactId ? contactHelper.normalizeContactId(message.author) : (typeof message.author === 'string' ? message.author : (message.author?._serialized || ''));
+                if (contactHelper.isLidContact(authorStr) || (authorStr && authorStr.includes('@lid'))) {
+                    const basic = contactHelper.getBasicContactInfoFromId(authorStr);
+                    senderName = basic.formattedNumber || null;
+                    senderPhone = basic.number || null;
+                } else {
+                    try {
+                        const senderContactInfo = await contactHelper.getContactInfo(client, message.author);
+                        senderName = senderContactInfo.pushname || senderContactInfo.name || null;
+                        senderPhone = senderContactInfo.number || null;
+                        logger.debug('Sender info extracted', { senderName, senderPhone });
+                    } catch (e) {
+                        logger.warn('Failed to get sender info, using fallback', { author: message.author, error: e.message });
+                        senderPhone = authorStr ? authorStr.replace(/@\w+\.?\w*/g, '') : '';
+                    }
                 }
             } else if (isGroup && isFromMe) {
                 logger.debug('Own message in group, skipping sender extraction');
@@ -114,46 +125,101 @@ async function handleMessage(message, client) {
         }
     }
     
+    // Obtener texto: message.body puede venir vacío (bug conocido, media usa caption)
+    let text = message.body || '';
+    if (!text && message.type === 'chat') {
+        const raw = message.rawData || message._data || {};
+        text = raw.body || raw.conversation
+            || (raw.extendedTextMessage && raw.extendedTextMessage.text)
+            || (Array.isArray(raw) ? raw[0] : '') || '';
+    }
+    if (!text && typeof message.reload === 'function') {
+        try {
+            const reloaded = await message.reload();
+            if (reloaded && reloaded.body) text = reloaded.body;
+        } catch (e) {
+            logger.debug('Message reload failed', { error: e.message });
+        }
+    }
+
+    // Enterprise: media_type, reply_to, placeholder para audios/archivos
+    const mediaType = message.type || 'chat';
+    const MEDIA_PLACEHOLDERS = {
+        ptt: '[Audio de voz]',
+        audio: '[Audio]',
+        image: '[Imagen]',
+        video: '[Video]',
+        document: '[Documento]',
+        sticker: '[Sticker]',
+        location: '[Ubicación]'
+    };
+    if (!text && MEDIA_PLACEHOLDERS[mediaType]) {
+        text = MEDIA_PLACEHOLDERS[mediaType];
+    } else if (!text && mediaType !== 'chat') {
+        text = `[${mediaType}]`;
+    }
+
+    let replyToWhatsappId = null;
+    try {
+        if (message.hasQuotedMsg && typeof message.getQuotedMessage === 'function') {
+            const quoted = await message.getQuotedMessage();
+            if (quoted && quoted.id) {
+                replyToWhatsappId = quoted.id._serialized || quoted.id.id || null;
+            }
+        }
+    } catch (e) {
+        logger.debug('getQuotedMessage failed', { error: e.message });
+    }
+
     // Enviar a Django webhook
     try {
         const timestamp = message.timestamp;
         
         const payload = {
-            id: message.id.id,
+            id: message.id._serialized || message.id.id || String(message.id),
             phone: phoneNumber || chatId.replace('@c.us', '').replace('@g.us', ''),
             chat_id: chatId,
             chat_type: chatType,
             chat_name: chatName,
             whatsapp_name: whatsappName,
             profile_picture_url: profilePictureUrl,
-            text: message.body,
+            text: text || '',
             timestamp: timestamp,
             from_me: isFromMe,
             sender_name: senderName || null,
-            sender_phone: senderPhone || null
+            sender_phone: senderPhone || null,
+            media_type: mediaType,
+            reply_to_whatsapp_id: replyToWhatsappId
         };
         
-        // Log message reception
         logger.info('Message received', {
             type: isFromMe ? 'outgoing' : 'incoming',
             chatType: chatType,
             chatName: chatName,
-            textPreview: message.body ? message.body.substring(0, 50) : null
+            mediaType: mediaType,
+            textPreview: text ? text.substring(0, 80) : '(empty)'
         });
         
-        const response = await fetch(`${config.DJANGO_API_URL}/api/v1/whatsapp/webhook/process-message/`, {
+        const djangoUrl = `${config.DJANGO_API_URL}/api/v1/whatsapp/webhook/process-message/`;
+        logger.info(`[handleMessage] POSTing to Django: ${djangoUrl} text_len=${(text || '').length}`);
+        const response = await fetch(djangoUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
         
         if (response.ok) {
-            logger.debug('Message sent to Django successfully');
+            const result = await response.json().catch(() => ({}));
+            logger.info(`[handleMessage] Django OK status=${result.status || 'unknown'}`);
         } else {
-            logger.warn('Django webhook returned non-OK status', { status: response.status });
+            const errBody = await response.text();
+            logger.warn(`[handleMessage] Django FAILED status=${response.status} body=${errBody?.substring(0, 200)}`);
         }
     } catch (error) {
-        logger.error('Failed to send message to Django', { error: error.message });
+        logger.error(`[handleMessage] FAILED to send to Django: ${error.message}`, { error: error.stack });
+    }
+    } catch (outerError) {
+        logger.error(`[handleMessage] UNHANDLED ERROR: ${outerError.message}`, { error: outerError.stack });
     }
 }
 

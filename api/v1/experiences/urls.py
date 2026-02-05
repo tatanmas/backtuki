@@ -13,6 +13,7 @@ from .views import (
     ExperienceReservationViewSet,
     PublicExperienceListView,
     PublicExperienceDetailView,
+    PublicExperienceResourcesView,
     PublicExperienceInstancesView,
     send_experience_email_sync,
 )
@@ -37,6 +38,7 @@ urlpatterns = [
     # Public endpoints
     path('public/', PublicExperienceListView.as_view(), name='public-experience-list'),
     path('public/<str:slug_or_id>/', PublicExperienceDetailView.as_view(), name='public-experience-detail'),
+    path('public/<uuid:experience_id>/resources/', PublicExperienceResourcesView.as_view(), name='public-experience-resources'),
     path('public/<uuid:experience_id>/instances/', PublicExperienceInstancesView.as_view(), name='public-experience-instances'),
     path('public/<uuid:experience_id>/reserve/', PublicExperienceReserveView.as_view(), name='public-experience-reserve'),
     path('public/<uuid:experience_id>/book/', PublicExperienceBookView.as_view(), name='public-experience-book'),

@@ -62,15 +62,38 @@ services:
       - WOOCOMMERCE_SYNC_DEFAULT_SERVICE_FEE=${WOOCOMMERCE_SYNC_DEFAULT_SERVICE_FEE}
       - WOOCOMMERCE_SYNC_MAX_RETRIES=${WOOCOMMERCE_SYNC_MAX_RETRIES}
       - WOOCOMMERCE_SYNC_RETRY_DELAY=${WOOCOMMERCE_SYNC_RETRY_DELAY}
+      # WhatsApp Service
+      - WHATSAPP_SERVICE_URL=http://whatsapp-service:3001
+      # 🚀 ENTERPRISE: Transbank WebPay Plus
+      # Local: SANDBOX=true + credenciales integración (transbankdevelopers.cl)
+      # Producción (GCP/Dako): usar credenciales reales en cloud-run-env / docker-compose.dako
+      - TRANSBANK_WEBPAY_PLUS_COMMERCE_CODE=597055555532
+      - TRANSBANK_WEBPAY_PLUS_API_KEY=579B532A7440BB0C9079DED94D31EA1615BACEB56610332264630D42D0A36B1C
+      - TRANSBANK_WEBPAY_PLUS_SANDBOX=true
     depends_on:
       - db
       - redis
+      - whatsapp-service
     volumes:
       - .:/app
       - /app/staticfiles
       - /app/media
       # 🚀 ENTERPRISE: Mount Google Cloud credentials
       - ./gcp-credentials.json:/app/gcp-credentials.json:ro
+
+  whatsapp-service:
+    build:
+      context: ./whatsapp-service
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - DJANGO_API_URL=http://backend:8000
+      - NODE_ENV=development
+    volumes:
+      - whatsapp_sessions:/app/sessions
+    restart: unless-stopped
 
   celery-worker:
     build:
@@ -156,3 +179,4 @@ services:
 
 volumes:
   postgres_data:
+  whatsapp_sessions:
