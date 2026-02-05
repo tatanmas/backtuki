@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     'apps.media',  # 🚀 ENTERPRISE: Media Library System
     'apps.whatsapp',  # 🚀 ENTERPRISE: WhatsApp Integration
     'apps.terminal',  # 🚀 ENTERPRISE: Terminal bus schedule management
+    'apps.landing_destinations',  # 🚀 ENTERPRISE: Landing destinations (superadmin + public page)
     'apps.creators',  # 🚀 ENTERPRISE: TUKI Creators (influencers)
     'payment_processor',  # 🚀 ENTERPRISE Payment System
     'core',

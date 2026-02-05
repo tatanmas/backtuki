@@ -2,6 +2,7 @@
 
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
+from apps.landing_destinations.views import LandingDestinationViewSet
 from .views import (
     SuperAdminUserViewSet, 
     CountryViewSet,
@@ -62,6 +63,7 @@ from .whatsapp_views import (
 router = DefaultRouter()
 router.register(r'users', SuperAdminUserViewSet, basename='superadmin-users')
 router.register(r'countries', CountryViewSet, basename='country')
+router.register(r'destinations', LandingDestinationViewSet, basename='superadmin-destinations')
 
 urlpatterns = [
     path('', include(router.urls)),
