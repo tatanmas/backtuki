@@ -212,25 +212,25 @@ class MediaAsset(BaseModel):
         if 'PublicGoogleCloudStorage' in storage_class or 'GoogleCloudStorage' in storage_class:
             return self.file.url
         
-        # For local development with FileSystemStorage
-        # self.file.url returns a relative path like /media/path/to/file.jpg
-        # We need to construct an absolute URL
+        # For FileSystemStorage (local/homeserver): build absolute URL from BACKEND_URL
         relative_url = self.file.url
-        
-        # If it's already an absolute URL (starts with http:// or https://), return it
+
         if relative_url.startswith(('http://', 'https://')):
             return relative_url
-        
-        # If it's a relative URL, construct absolute URL for local development
-        # Remove leading slash if present to avoid double slashes
-        if relative_url.startswith('/'):
-            relative_url = relative_url[1:]
-        
-        # Build full URL
-        base_url = 'http://localhost:8000'  # Default for local dev
-        absolute_url = f"{base_url}/{relative_url}"
-        
-        return absolute_url
+
+        relative_url = relative_url.lstrip('/')
+        base_url = getattr(settings, 'BACKEND_URL', None)
+        if not base_url and getattr(settings, 'DEBUG', False):
+            base_url = 'http://localhost:8000'
+        if not base_url:
+            allowed = getattr(settings, 'ALLOWED_HOSTS', [])
+            for host in (allowed if isinstance(allowed, (list, tuple)) else [allowed]):
+                if host and host not in ('*', 'localhost', '127.0.0.1'):
+                    base_url = f"https://{host}"
+                    break
+        if not base_url:
+            base_url = 'http://localhost:8000'
+        return f"{base_url.rstrip('/')}/{relative_url}"
     
     @property
     def size_mb(self):

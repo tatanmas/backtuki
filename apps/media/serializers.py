@@ -51,7 +51,10 @@ class MediaAssetSerializer(serializers.ModelSerializer):
         ]
     
     def get_url(self, obj):
-        """Return public URL."""
+        """Return public URL; use request host when available for correct domain."""
+        request = self.context.get('request')
+        if request and obj.file:
+            return request.build_absolute_uri(obj.file.url)
         return obj.url
     
     def get_size_mb(self, obj):

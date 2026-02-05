@@ -8,13 +8,16 @@
 #
 # Opciones:
 #   --skip-git-pull   Omitir git pull (útil cuando el código llegó por rsync)
+#   --no-cache        Reconstruir backend sin caché Docker (recomendado con deploy vía rsync)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set -e
 
 SKIP_GIT_PULL=false
+BUILD_NO_CACHE=""
 for arg in "$@"; do
     [ "$arg" = "--skip-git-pull" ] && SKIP_GIT_PULL=true
+    [ "$arg" = "--no-cache" ] && BUILD_NO_CACHE="--no-cache"
 done
 
 echo "═══════════════════════════════════════════════════════════════════════════════"
@@ -150,19 +153,10 @@ echo "   ✅ Frontend compilado"
 cd "$TUKI_DIR"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 4: Detener servicios existentes (si hay)
+# PASO 4: Asegurar PostgreSQL y Redis (sin bajar la instancia; actualización en caliente)
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🛑 Paso 4: Deteniendo servicios existentes..."
-
-docker-compose down 2>/dev/null || true
-echo "   ✅ Servicios detenidos"
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PASO 5: Levantar PostgreSQL y Redis
-# ═══════════════════════════════════════════════════════════════════════════════
-echo ""
-echo "🗄️ Paso 5: Levantando PostgreSQL y Redis..."
+echo "🗄️ Paso 4: Asegurando PostgreSQL y Redis..."
 
 docker-compose up -d tuki-db tuki-redis
 
@@ -179,12 +173,12 @@ done
 echo "   ✅ Redis listo"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 6: Construir y levantar Backend
+# PASO 5: Construir y levantar Backend (recrea contenedor si ya corría)
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🐍 Paso 6: Construyendo Backend..."
+echo "🐍 Paso 5: Construyendo Backend..."
 
-docker-compose build tuki-backend
+docker-compose build $BUILD_NO_CACHE tuki-backend
 docker-compose up -d tuki-backend
 
 echo "   ⏳ Esperando Backend..."
@@ -199,26 +193,26 @@ fi
 echo "   ✅ Backend corriendo"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 7: Migraciones y setup
+# PASO 6: Migraciones y setup
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🗄️ Paso 7: Ejecutando migraciones..."
+echo "🗄️ Paso 6: Ejecutando migraciones..."
 
 docker-compose exec -T tuki-backend python manage.py migrate --noinput
 echo "   ✅ Migraciones completadas"
 
 echo ""
-echo "💳 Paso 7b: Activando medios de pago (Transbank WebPay Plus)..."
+echo "💳 Paso 6b: Activando medios de pago (Transbank WebPay Plus)..."
 docker-compose exec -T tuki-backend python manage.py setup_payment_providers 2>/dev/null || echo "   ⚠️ setup_payment_providers falló (puede estar ya configurado)"
 echo "   ✅ Medios de pago configurados"
 
 echo ""
-echo "📁 Paso 8: Collectstatic..."
+echo "📁 Paso 7: Collectstatic..."
 docker-compose exec -T tuki-backend python manage.py collectstatic --noinput
 echo "   ✅ Archivos estáticos recolectados"
 
 echo ""
-echo "👤 Paso 9: Verificando superusuario..."
+echo "👤 Paso 8: Verificando superusuario..."
 docker-compose exec -T tuki-backend python manage.py shell << 'PYEOF'
 from django.contrib.auth import get_user_model
 User = get_user_model()
@@ -236,20 +230,20 @@ else:
 PYEOF
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 10: Levantar Celery
+# PASO 9: Levantar Celery
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "⚙️ Paso 10: Levantando Celery workers..."
+echo "⚙️ Paso 9: Levantando Celery workers..."
 
 docker-compose up -d tuki-celery-worker tuki-celery-beat
 sleep 5
 echo "   ✅ Celery corriendo"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 11: Construir y levantar WhatsApp Service
+# PASO 10: Construir y levantar WhatsApp Service
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "📱 Paso 11: Construyendo y levantando WhatsApp Service..."
+echo "📱 Paso 10: Construyendo y levantando WhatsApp Service..."
 
 docker-compose build tuki-whatsapp-service
 docker-compose up -d tuki-whatsapp-service
@@ -266,10 +260,10 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 12: Levantar Frontend
+# PASO 11: Levantar Frontend
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🌐 Paso 12: Levantando Frontend (Nginx)..."
+echo "🌐 Paso 11: Levantando Frontend (Nginx)..."
 
 docker-compose up -d tuki-frontend
 sleep 3
