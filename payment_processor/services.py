@@ -397,6 +397,20 @@ class TransbankWebPayPlusService(BasePaymentService):
                                 reservation.resource_holds.filter(released=False).update(expires_at=end_dt)
                             
                             logger.info(f"✅ [PAYMENT] Experience reservation {reservation.reservation_id} marked as paid")
+                            # Notify operator and customer via WhatsApp
+                            try:
+                                from apps.whatsapp.services.payment_success_notifier import (
+                                    notify_operator_payment_received,
+                                    notify_customer_payment_success,
+                                )
+                                from apps.experiences.receipt_generator import ExperienceReceiptGenerator
+                                notify_operator_payment_received(payment)
+                                receipt_b64 = ExperienceReceiptGenerator.generate_receipt_base64(
+                                    payment.order, reservation
+                                )
+                                notify_customer_payment_success(payment, receipt_base64=receipt_b64)
+                            except Exception:
+                                logger.exception("WhatsApp payment notifications failed")
                     except Exception:
                         logger.exception("Failed to finalize experience reservation after payment")
                 else:

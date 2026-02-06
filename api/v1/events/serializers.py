@@ -1526,9 +1526,17 @@ class BookingSerializer(serializers.Serializer):
         # 1. SIEMPRE buscar primero si existe un usuario con ese email
         try:
             from django.contrib.auth import get_user_model
+            from core.phone_utils import normalize_phone_e164
             User = get_user_model()
             existing_user = User.objects.get(email__iexact=customer_email)
             user = existing_user
+            # Update phone if provided and not set
+            phone_raw = customer_info.get('phone')
+            if phone_raw:
+                norm = normalize_phone_e164(phone_raw)
+                if norm and (not user.phone_number or normalize_phone_e164(user.phone_number) != norm):
+                    user.phone_number = norm
+                    user.save(update_fields=['phone_number'])
             print(f"🔍 [BookingSerializer] ✅ FOUND existing user for email {customer_email}: {user.id} (is_guest: {user.is_guest})")
         except User.DoesNotExist:
             # 2. Solo si NO existe usuario, crear uno como invitado
@@ -1536,7 +1544,8 @@ class BookingSerializer(serializers.Serializer):
             user = User.create_guest_user(
                 email=customer_email,
                 first_name=first_name,
-                last_name=last_name
+                last_name=last_name,
+                phone=customer_info.get('phone'),
             )
             print(f"✅ [BookingSerializer] Created NEW guest user: {user.id}")
         

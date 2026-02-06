@@ -168,8 +168,9 @@ class User(AbstractUser, TimeStampedModel):
             print(f"📝 [User.link_existing_orders] No unlinked orders found for {self.email}")
     
     @classmethod
-    def create_guest_user(cls, email, first_name=None, last_name=None):
+    def create_guest_user(cls, email, first_name=None, last_name=None, phone=None):
         """Create a guest user from purchase."""
+        from core.phone_utils import normalize_phone_e164
         # Generate a unique username from email
         username = email.split('@')[0]
         counter = 1
@@ -179,11 +180,14 @@ class User(AbstractUser, TimeStampedModel):
             username = f"{original_username}{counter}"
             counter += 1
         
+        normalized_phone = normalize_phone_e164(phone) if phone else None
+        
         user = cls.objects.create_user(
             username=username,
             email=email,
             first_name=first_name or '',
             last_name=last_name or '',
+            phone_number=normalized_phone or None,
             is_guest=True,
             password=None  # No password initially
         )

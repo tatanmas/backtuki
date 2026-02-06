@@ -177,8 +177,13 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
         if scope == 'organizer' and not organizer:
             organizer = self.get_organizer()
             if not organizer:
-                from rest_framework.exceptions import PermissionDenied
-                raise PermissionDenied("No organizer associated with user")
+                if is_superadmin:
+                    # Superadmin without organizer link: allow as global asset
+                    scope = 'global'
+                    serializer.validated_data['scope'] = 'global'
+                else:
+                    from rest_framework.exceptions import PermissionDenied
+                    raise PermissionDenied("No organizer associated with user")
         
         # Extract file metadata
         file_obj = serializer.validated_data['file']

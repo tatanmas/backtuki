@@ -11,6 +11,7 @@ from .views import (
     ExperienceResourceViewSet,
     ExperienceDatePriceOverrideViewSet,
     ExperienceReservationViewSet,
+    PublicOrganizerReservationDetailView,
     PublicExperienceListView,
     PublicExperienceDetailView,
     PublicExperienceResourcesView,
@@ -34,6 +35,9 @@ router.register(r'reservations', ExperienceReservationViewSet, basename='experie
 
 urlpatterns = [
     path('', include(router.urls)),
+    
+    # Organizer reservation public view (token-based, no auth)
+    path('reservations/public/<uuid:pk>/', PublicOrganizerReservationDetailView.as_view(), name='organizer-reservation-public'),
     
     # Public endpoints
     path('public/', PublicExperienceListView.as_view(), name='public-experience-list'),

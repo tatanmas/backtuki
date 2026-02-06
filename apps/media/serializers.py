@@ -2,6 +2,7 @@
 🚀 ENTERPRISE MEDIA LIBRARY SERIALIZERS
 """
 
+from django.conf import settings
 from rest_framework import serializers
 from apps.media.models import MediaAsset, MediaUsage
 from apps.organizers.models import Organizer
@@ -51,8 +52,10 @@ class MediaAssetSerializer(serializers.ModelSerializer):
         ]
     
     def get_url(self, obj):
-        """Return public URL; use request host when available for correct domain."""
-        request = self.context.get('request')
+        """Return public URL. Prefer BACKEND_URL when set (proxy may send wrong Host)."""
+        if getattr(settings, "BACKEND_URL", None):
+            return obj.url  # model uses BACKEND_URL
+        request = self.context.get("request")
         if request and obj.file:
             return request.build_absolute_uri(obj.file.url)
         return obj.url

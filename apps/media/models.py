@@ -224,6 +224,8 @@ class MediaAsset(BaseModel):
             base_url = 'http://localhost:8000'
         if not base_url:
             allowed = getattr(settings, 'ALLOWED_HOSTS', [])
+            if isinstance(allowed, str):
+                allowed = [h.strip() for h in allowed.split(',') if h.strip()]
             for host in (allowed if isinstance(allowed, (list, tuple)) else [allowed]):
                 if host and host not in ('*', 'localhost', '127.0.0.1'):
                     base_url = f"https://{host}"

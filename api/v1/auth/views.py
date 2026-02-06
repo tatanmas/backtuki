@@ -241,6 +241,77 @@ class OTPLoginView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
+class MagicLoginView(APIView):
+    """
+    Exchange order access token for JWT. Allows auto-login when user lands
+    on reservation page from payment success link (magic link flow).
+    """
+    permission_classes = [AllowAny]
+    renderer_classes = [JSONRenderer]
+
+    def post(self, request):
+        order_access_token = request.data.get('order_access_token') or request.data.get('access_token')
+        if not order_access_token or not isinstance(order_access_token, str):
+            return Response({
+                'success': False,
+                'message': 'order_access_token es requerido'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.events.models import Order
+        try:
+            order = Order.objects.select_related('user', 'experience_reservation').get(
+                access_token=order_access_token.strip()
+            )
+        except Order.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'Token de orden inválido o expirado'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
+        # Get or ensure user exists for this order
+        user = order.user
+        if not user:
+            # Create guest user from order data
+            email = order.email or f"order-{order.order_number}@tuki.placeholder"
+            first_name = order.first_name or ''
+            last_name = order.last_name or ''
+            phone = getattr(order, 'phone', None) or ''
+            if not email or '@' not in email:
+                return Response({
+                    'success': False,
+                    'message': 'Orden sin email válido'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            user = User.create_guest_user(
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                phone=phone
+            )
+            order.user = user
+            order.save(update_fields=['user'])
+
+        if not user.is_active:
+            return Response({
+                'success': False,
+                'message': 'Cuenta desactivada'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
+        user.last_login = timezone.now()
+        user.save(update_fields=['last_login'])
+
+        refresh = RefreshToken.for_user(user)
+        access_token = str(refresh.access_token)
+
+        return Response({
+            'success': True,
+            'access_token': access_token,
+            'refresh': str(refresh),
+            'user': UserProfileSerializer(user).data,
+            'requires_profile_completion': not user.is_profile_complete
+        }, status=status.HTTP_200_OK)
+
+
 class UserProfileView(APIView):
     """
     Vista para obtener y actualizar el perfil del usuario

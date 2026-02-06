@@ -3,6 +3,7 @@
 from django.urls import path, include
 from django.conf import settings
 from rest_framework.routers import DefaultRouter
+from core.views import VersionView
 
 # Import viewsets
 from api.v1.users.views import UserViewSet
@@ -49,6 +50,8 @@ router.register(r'form-responses', FormResponseViewSet, basename='form-response'
 
 # Wire up our API using automatic URL routing
 urlpatterns = [
+    # Version (public, for checking what is deployed)
+    path('version/', VersionView.as_view(), name='api-version'),
     # ⚠️ IMPORTANTE: Incluir organizers.urls ANTES del router para que tenga prioridad
     path('', include('api.v1.organizers.urls')),  # 🚀 Organizer profile management (incluyendo PATCH a /organizers/current/)
     

@@ -8,17 +8,21 @@
 #
 # Opciones:
 #   --skip-git-pull   Omitir git pull (útil cuando el código llegó por rsync)
-#   --no-cache        Reconstruir backend sin caché Docker (recomendado con deploy vía rsync)
+#
+# El build del backend siempre usa --no-cache para desplegar el código actual.
+# Los datos persistentes (DB, media, Redis) están en volúmenes y no se tocan.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set -e
 
 SKIP_GIT_PULL=false
-BUILD_NO_CACHE=""
 for arg in "$@"; do
     [ "$arg" = "--skip-git-pull" ] && SKIP_GIT_PULL=true
-    [ "$arg" = "--no-cache" ] && BUILD_NO_CACHE="--no-cache"
 done
+
+# Siempre build sin caché: así la imagen lleva el código que está en el servidor.
+# No borra volúmenes ni datos (solo reconstruye la imagen).
+BUILD_NO_CACHE="--no-cache"
 
 echo "═══════════════════════════════════════════════════════════════════════════════"
 echo "🚀 TUKI PLATFORM - DEPLOY COMPLETO A PRODUCCIÓN"
@@ -178,6 +182,12 @@ echo "   ✅ Redis listo"
 echo ""
 echo "🐍 Paso 5: Construyendo Backend..."
 
+# Version = git commit (para ver qué está en producción vía GET /api/v1/version/)
+export APP_VERSION=$(cd backtuki && git rev-parse --short HEAD 2>/dev/null || echo "norepo")
+# Última vez desplegado en hora Santiago (America/Santiago)
+export DEPLOYED_AT=$(TZ=America/Santiago date -Iseconds)
+echo "   📌 APP_VERSION=$APP_VERSION"
+echo "   📅 DEPLOYED_AT=$DEPLOYED_AT (America/Santiago)"
 docker-compose build $BUILD_NO_CACHE tuki-backend
 docker-compose up -d tuki-backend
 

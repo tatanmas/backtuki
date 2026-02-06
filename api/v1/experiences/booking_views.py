@@ -602,14 +602,22 @@ class PublicExperienceBookView(APIView):
             )
         
         # Get or create user
+        from core.phone_utils import normalize_phone_e164
         user = None
         try:
             user = User.objects.get(email__iexact=reservation.email)
+            # Update phone if provided and not set
+            if reservation.phone:
+                norm = normalize_phone_e164(reservation.phone)
+                if norm and (not user.phone_number or normalize_phone_e164(user.phone_number) != norm):
+                    user.phone_number = norm
+                    user.save(update_fields=['phone_number'])
         except User.DoesNotExist:
             user = User.create_guest_user(
                 email=reservation.email,
                 first_name=reservation.first_name,
-                last_name=reservation.last_name
+                last_name=reservation.last_name,
+                phone=reservation.phone,
             )
         
         reservation.user = user

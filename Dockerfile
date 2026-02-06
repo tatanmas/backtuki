@@ -2,6 +2,13 @@
 # Tuki Platform - Optimizado para Google Cloud Run
 FROM python:3.11-slim
 
+# Version at build time (set by deploy: --build-arg APP_VERSION=$(git rev-parse --short HEAD))
+ARG APP_VERSION=unknown
+ENV APP_VERSION=${APP_VERSION}
+# Last deploy timestamp (America/Santiago, set by deploy script)
+ARG DEPLOYED_AT=unknown
+ENV DEPLOYED_AT=${DEPLOYED_AT}
+
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

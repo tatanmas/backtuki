@@ -7,6 +7,7 @@ import re
 import requests
 from django.utils import timezone
 from django.db import transaction
+from django.db.models import Q
 import logging
 
 from apps.whatsapp.models import (
@@ -321,24 +322,38 @@ def reservation_by_code(request):
     experience_reservation_id = str(exp_res.reservation_id) if exp_res else None
 
     # Customer: merge checkout_data.customer with WhatsApp phone from sender
+    from core.phone_utils import normalize_phone_e164, format_phone_display
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+
     customer = dict(checkout_data.get('customer') or {})
-    if not customer.get('phone') and reservation.whatsapp_message:
+    raw_phone = customer.get('phone') or ''
+    if not raw_phone and reservation.whatsapp_message:
         msg = reservation.whatsapp_message
-        # Try message.phone (for individual chats it's the contact; for groups it's group id)
         raw = getattr(msg, 'phone', '') or ''
-        # Also try metadata (sender_phone/author_phone for group messages)
         meta = getattr(msg, 'metadata', None) or {}
         raw = raw or meta.get('sender_phone') or meta.get('author_phone') or meta.get('phone') or ''
-        raw = (raw or '').replace('@c.us', '').replace('@g.us', '').replace('@lid', '').replace(' ', '').strip()
-        if raw.isdigit():
-            # Chile: 11 digits 56XXXXXXXXX or 9 digits 9XXXXXXXX
-            if len(raw) == 9 and raw.startswith('9'):
-                raw = '56' + raw
-            if len(raw) >= 10:
-                if raw.startswith('56') and len(raw) == 11:
-                    customer['phone'] = f"+{raw[:2]} {raw[2:3]} {raw[3:7]} {raw[7:]}"
-                else:
-                    customer['phone'] = f"+{raw}"
+        raw_phone = (raw or '').replace('@c.us', '').replace('@g.us', '').replace('@lid', '').replace(' ', '').strip()
+
+    normalized_phone = normalize_phone_e164(raw_phone) if raw_phone else ''
+    if normalized_phone:
+        customer['phone'] = format_phone_display(normalized_phone)
+        # Lookup user by phone for returning customers - pre-fill email, name
+        try:
+            user_by_phone = User.objects.filter(
+                Q(phone_number=normalized_phone) | Q(phone_number=raw_phone)
+            ).first()
+            if user_by_phone:
+                if not customer.get('email'):
+                    customer['email'] = user_by_phone.email or ''
+                if not customer.get('name') and (user_by_phone.first_name or user_by_phone.last_name):
+                    customer['name'] = f"{user_by_phone.first_name or ''} {user_by_phone.last_name or ''}".strip()
+                if not customer.get('first_name') and user_by_phone.first_name:
+                    customer['first_name'] = user_by_phone.first_name
+                if not customer.get('last_name') and user_by_phone.last_name:
+                    customer['last_name'] = user_by_phone.last_name
+        except Exception:
+            pass
 
     response_data = {
         'code': code_obj.code,

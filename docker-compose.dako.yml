@@ -58,6 +58,9 @@ services:
     build:
       context: ./backtuki
       dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-unknown}
+        DEPLOYED_AT: ${DEPLOYED_AT:-unknown}
     container_name: tuki-backend
     ports:
       - "8000:8080"

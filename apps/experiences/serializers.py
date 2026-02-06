@@ -344,7 +344,8 @@ class TourBookingCreateSerializer(serializers.Serializer):
             user = User.create_guest_user(
                 email=email,
                 first_name=validated_data['first_name'],
-                last_name=validated_data['last_name']
+                last_name=validated_data['last_name'],
+                phone=validated_data.get('phone'),
             )
         
         # Create Order with amount=0 (for tracking)

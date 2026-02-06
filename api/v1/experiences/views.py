@@ -691,6 +691,45 @@ class ExperienceReservationViewSet(viewsets.ReadOnlyModelViewSet):
             return None
 
 
+class PublicOrganizerReservationDetailView(APIView):
+    """
+    Public view for a single reservation by organizer token (no auth required).
+    Used when operator clicks link from payment notification WhatsApp.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, pk):
+        token = request.query_params.get('token')
+        if not token:
+            return Response(
+                {'error': 'Token requerido'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        from apps.whatsapp.services.payment_success_notifier import validate_organizer_reservation_token
+        reservation_id = validate_organizer_reservation_token(token)
+        if not reservation_id:
+            return Response(
+                {'error': 'Token inválido o expirado'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        try:
+            reservation = ExperienceReservation.objects.select_related(
+                'experience', 'instance', 'instance__language', 'user'
+            ).get(pk=pk)
+        except ExperienceReservation.DoesNotExist:
+            return Response(
+                {'error': 'Reserva no encontrada'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        if str(reservation.id) != str(reservation_id):
+            return Response(
+                {'error': 'Token no corresponde a esta reserva'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        serializer = ExperienceReservationSerializer(reservation)
+        return Response(serializer.data)
+
+
 User = get_user_model()
 
 
