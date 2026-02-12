@@ -34,6 +34,7 @@ from .system import celery_tasks_list
 from .countries import CountryViewSet
 from .experiences import create_experience_from_json, update_experience_commission
 from .creators_landing_slots import creators_landing_slots_list, creators_landing_slots_assign
+from .creators import SuperAdminCreatorsListView
 
 __all__ = [
     # Users
@@ -70,4 +71,5 @@ __all__ = [
     'update_experience_commission',
     'creators_landing_slots_list',
     'creators_landing_slots_assign',
+    'SuperAdminCreatorsListView',
 ]

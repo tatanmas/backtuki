@@ -10,7 +10,7 @@ from datetime import timedelta
 from .models import (
     Experience, TourLanguage, TourInstance, TourBooking, OrganizerCredit,
     ExperienceResource, ExperienceReservation, ExperienceDatePriceOverride,
-    ExperienceCapacityHold, ExperienceResourceHold
+    ExperienceCapacityHold, ExperienceResourceHold, ExperienceReview,
 )
 from apps.organizers.models import OrganizerUser
 from apps.events.models import Order
@@ -451,9 +451,10 @@ class ExperienceReservationSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'reservation_id', 'experience', 'experience_title', 'instance', 'instance_info',
             'status', 'adult_count', 'child_count', 'infant_count', 'first_name', 'last_name',
-            'email', 'phone', 'user', 'subtotal', 'service_fee', 'discount', 'total', 'currency',
+            'email', 'phone', 'user', 'flow', 'creator', 'creator_commission_amount', 'creator_commission_status',
+            'subtotal', 'service_fee', 'discount', 'total', 'currency',
             'pricing_details', 'selected_resources', 'capacity_count_rule', 'expires_at', 'paid_at',
-            'notes', 'created_at', 'updated_at'
+            'attended_at', 'notes', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'reservation_id', 'created_at', 'updated_at']
     
@@ -468,3 +469,11 @@ class ExperienceReservationSerializer(serializers.ModelSerializer):
             }
         return None
 
+
+class ExperienceReviewPublicSerializer(serializers.ModelSerializer):
+    """Public serializer for approved experience reviews (no user info)."""
+
+    class Meta:
+        model = ExperienceReview
+        fields = ['id', 'rating', 'title', 'body', 'created_at']
+        read_only_fields = ['id', 'rating', 'title', 'body', 'created_at']

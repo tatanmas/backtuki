@@ -191,6 +191,17 @@ STRIPE_LIVE_MODE = config('STRIPE_LIVE_MODE', default=False, cast=bool)
 CELERY_BROKER_URL = config('REDIS_URL')
 CELERY_RESULT_BACKEND = config('REDIS_URL')
 
+# Backend public URL (media, API base) — must be set in production so media URLs are not localhost
+_backend_url = config('BACKEND_URL', default='').strip()
+if not _backend_url and not DEBUG:
+    # Fallback: use first public host from ALLOWED_HOSTS so destinos/biblioteca no devuelvan localhost
+    _hosts = ALLOWED_HOSTS if isinstance(ALLOWED_HOSTS, (list, tuple)) else [h.strip() for h in str(ALLOWED_HOSTS).split(',') if h.strip()]
+    for h in _hosts:
+        if h and h not in ('*', 'localhost', '127.0.0.1'):
+            _backend_url = f"https://{h}"
+            break
+BACKEND_URL = _backend_url
+
 # Frontend URL
 FRONTEND_URL = config('FRONTEND_URL', default='https://tuki.live')
 

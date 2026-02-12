@@ -59,8 +59,8 @@ class OTPGenerateView(APIView):
         except User.DoesNotExist:
             pass
         
-        # Generar y enviar código
-        result = OTPService.generate_and_send(
+        # Generar código y encolar envío por email (async) para evitar timeout SMTP
+        result = OTPService.generate_only(
             email=email,
             purpose=purpose,
             user=user,
@@ -68,8 +68,13 @@ class OTPGenerateView(APIView):
             request=request
         )
         
-        if result['success']:
+        if result['success'] and result.get('otp'):
             otp = result['otp']
+            try:
+                from .tasks import send_otp_email_task
+                send_otp_email_task.delay(otp.pk)
+            except Exception as e:
+                logger.warning(f"OTP enqueue send task failed (email may still send via worker): {e}")
             response_data = {
                 'success': True,
                 'message': result['message'],
@@ -80,7 +85,7 @@ class OTPGenerateView(APIView):
         else:
             return Response({
                 'success': False,
-                'message': result['message']
+                'message': result.get('message', 'Error al generar el código')
             }, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -180,6 +185,31 @@ class OTPValidateView(APIView):
                 response_data.update({
                     'next_step': 'view_tickets',
                     'requires_onboarding': False
+                })
+
+            elif purpose in (OTPPurpose.ACCOUNT_CREATION, OTPPurpose.EMAIL_VERIFICATION):
+                # Create user if not exists and return JWT so frontend can continue to creator profile
+                from rest_framework_simplejwt.tokens import RefreshToken
+                from core.utils import generate_username
+                if user is None:
+                    user = User.objects.create_user(
+                        email=email,
+                        username=generate_username(email),
+                        first_name='',
+                        last_name='',
+                        is_guest=True,
+                    )
+                    is_new_user = True
+                else:
+                    is_new_user = False
+                refresh = RefreshToken.for_user(user)
+                access_token = str(refresh.access_token)
+                response_data.update({
+                    'access_token': access_token,
+                    'refresh_token': str(refresh),
+                    'user_id': user.id,
+                    'user_email': user.email,
+                    'is_new_user': is_new_user,
                 })
             
             return Response(response_data, status=status.HTTP_200_OK)

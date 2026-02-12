@@ -323,41 +323,47 @@ def log_task_failure(sender=None, task_id=None, exception=None, traceback=None,
 
 
 @task_retry.connect
-def log_task_retry(sender=None, task_id=None, reason=None, einfo=None, **extras):
+def log_task_retry(sender=None, request=None, reason=None, einfo=None, **extras):
     """
     Log when a Celery task is retried.
     
     Connected to celery.signals.task_retry.
-    
-    Args:
-        sender: Task class (if available)
-        task_id: Unique task execution ID (UUID)
-        reason: Reason for retry (usually an exception)
-        einfo: ExceptionInfo object
-        **extras: Additional signal data
+    Celery passes: sender, request, reason, einfo. task_id may be None; use request.id.
     """
     try:
-        # Import models here to avoid AppRegistryNotReady error
         from core.models import CeleryTaskLog
         
+        # task_id can be None on retry - use request.id (Celery Request has .id)
+        effective_task_id = None
+        req = request or extras.get('request')
+        if req and hasattr(req, 'id') and req.id:
+            effective_task_id = req.id
+        if not effective_task_id:
+            effective_task_id = extras.get('task_id') or str(id(req))[:36] or 'retry-unknown'
+        
         # Get task name from sender or from request
-        task_name = sender.name if sender else extras.get('request', {}).get('task', 'unknown')
+        task_name = 'unknown'
+        if sender and hasattr(sender, 'name'):
+            task_name = sender.name
+        elif req and hasattr(req, 'task'):
+            task_name = req.task if isinstance(req.task, str) else getattr(req.task, 'name', 'unknown')
         
         # Get traceback string
         traceback_str = str(getattr(einfo, 'traceback', ''))
         
-        # Create retry log
-        CeleryTaskLog.objects.create(
-            task_id=task_id,
-            task_name=task_name,
-            status='retry',
-            error=str(reason or ''),
-            traceback=traceback_str,
-        )
+        # Create retry log only if we have a valid task_id (NOT NULL constraint)
+        if effective_task_id:
+            CeleryTaskLog.objects.create(
+                task_id=effective_task_id,
+                task_name=task_name,
+                status='retry',
+                error=str(reason or ''),
+                traceback=traceback_str,
+            )
         
         logger.warning(
             f"⚠️ [CELERY] Task retry: {task_name} "
-            f"(task_id: {task_id[:8]}, reason: {str(reason)[:100]})"
+            f"(task_id: {effective_task_id[:8] if isinstance(effective_task_id, str) else 'n/a'}, reason: {str(reason)[:100]})"
         )
     
     except Exception as e:

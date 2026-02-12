@@ -312,6 +312,76 @@ class MagicLoginView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
+class OrganizerMagicLoginView(APIView):
+    """
+    Exchange organizer reservation token for JWT. Auto-login when organizer opens
+    reservation link from payment notification (magic link flow).
+    """
+    permission_classes = [AllowAny]
+    renderer_classes = [JSONRenderer]
+
+    def post(self, request):
+        token = request.data.get('organizer_reservation_token') or request.data.get('token')
+        reservation_id = request.data.get('reservation_id')
+        if not token or not isinstance(token, str):
+            return Response({
+                'success': False,
+                'message': 'organizer_reservation_token es requerido'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        if not reservation_id:
+            return Response({
+                'success': False,
+                'message': 'reservation_id es requerido'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.whatsapp.services.payment_success_notifier import validate_organizer_reservation_token
+        from apps.experiences.models import ExperienceReservation
+        from apps.organizers.models import OrganizerUser
+
+        reservation_id_val = validate_organizer_reservation_token(token.strip())
+        if not reservation_id_val or str(reservation_id_val) != str(reservation_id):
+            return Response({
+                'success': False,
+                'message': 'Token de reserva inválido o expirado'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            res = ExperienceReservation.objects.select_related(
+                'experience', 'experience__organizer'
+            ).get(id=reservation_id)
+        except ExperienceReservation.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': 'Reserva no encontrada'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        organizer = res.experience.organizer
+        org_user = OrganizerUser.objects.filter(organizer=organizer).select_related('user').first()
+        if not org_user or not org_user.user:
+            return Response({
+                'success': False,
+                'message': 'No hay usuario organizador asociado'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        user = org_user.user
+        if not user.is_active:
+            return Response({
+                'success': False,
+                'message': 'Cuenta desactivada'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
+        user.last_login = timezone.now()
+        user.save(update_fields=['last_login'])
+
+        refresh = RefreshToken.for_user(user)
+
+        return Response({
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+        }, status=status.HTTP_200_OK)
+
+
 class UserProfileView(APIView):
     """
     Vista para obtener y actualizar el perfil del usuario

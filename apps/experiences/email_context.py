@@ -24,6 +24,19 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
+def _normalize_experience_image_urls(images_value) -> list:
+    """Extract URL strings from Experience.images (JSONField: list of URLs or dicts)."""
+    urls = []
+    for item in (images_value or [])[:5]:
+        if isinstance(item, str):
+            urls.append(item)
+        elif isinstance(item, dict):
+            url = item.get('url') or item.get('image') or item.get('src')
+            if url:
+                urls.append(str(url))
+    return urls
+
+
 def build_experience_confirmation_context(order, reservation) -> Dict[str, Any]:
     """
     Build complete context for experience confirmation email.
@@ -50,16 +63,19 @@ def build_experience_confirmation_context(order, reservation) -> Dict[str, Any]:
             'duration_minutes': experience.duration_minutes,
             'location_name': experience.location_name,
             'location_address': experience.location_address,
-            'meeting_point': experience.meeting_point or '',
-            'images': [img.image.url for img in experience.images.all()[:5]] if hasattr(experience, 'images') else [],
+            'meeting_point': getattr(experience, 'meeting_point', None) or '',
+            # Experience.images is JSONField (list of URLs or dicts), not a relation
+            'images': _normalize_experience_image_urls(experience.images or []),
         }
         
         # Pre-compute instance data
+        # Note: TourInstance.language is CharField (e.g. 'es', 'en'), not a FK
+        lang_code = instance.language if instance.language else 'es'
         instance_data = {
             'start_datetime': instance.start_datetime,
             'end_datetime': instance.end_datetime,
-            'language': instance.language.language_code if instance.language else 'es',
-            'language_name': instance.language.name if instance.language else 'Español',
+            'language': lang_code,
+            'language_name': instance.get_language_display() if instance.language else 'Español',
         }
         
         # Pre-compute reservation data

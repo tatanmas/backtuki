@@ -32,6 +32,7 @@ from .views import (
     update_experience_commission,
     creators_landing_slots_list,
     creators_landing_slots_assign,
+    SuperAdminCreatorsListView,
 )
 from .whatsapp_views import (
     whatsapp_status,
@@ -122,5 +123,6 @@ urlpatterns = [
     path('experiences/<uuid:experience_id>/commission/', update_experience_commission, name='update-experience-commission'),
     path('creators-landing-slots/', creators_landing_slots_list, name='creators-landing-slots-list'),
     path('creators-landing-slots/assign/', creators_landing_slots_assign, name='creators-landing-slots-assign'),
+    path('creators/', SuperAdminCreatorsListView.as_view(), name='superadmin-creators-list'),
 ]
 

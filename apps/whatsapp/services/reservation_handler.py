@@ -185,6 +185,11 @@ class ReservationHandler:
         if total > 0:
             # Paid: create ExperienceReservation first (needed for payment link / reservation-by-code)
             ReservationHandler._create_experience_reservation_if_needed(reservation)
+            # Extend code expiration when sending payment link (customer has 30 min to pay)
+            if code_obj:
+                code_obj.expires_at = timezone.now() + timedelta(minutes=30)
+                code_obj.save(update_fields=['expires_at'])
+                logger.info(f"Extended code {code_obj.code} expiry for payment link")
             # Send availability message, then payment link
             msg_avail = GroupNotificationService.format_availability_confirmed_message(reservation)
             service.send_message(customer_phone, msg_avail)

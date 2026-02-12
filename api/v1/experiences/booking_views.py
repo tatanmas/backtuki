@@ -681,7 +681,16 @@ class PublicExperienceBookView(APIView):
             reservation.status = 'paid'
             reservation.paid_at = timezone.now()
             reservation.save()
-            
+            # Notify creator by email when sale was with their link (free experience)
+            if reservation.creator_id:
+                try:
+                    from apps.experiences.tasks import notify_creator_on_sale
+                    notify_creator_on_sale.apply_async(
+                        args=[str(reservation.id)],
+                        queue='emails',
+                    )
+                except Exception:
+                    logger.exception("Failed to enqueue creator sale notification")
             # ✅ CRÍTICO: Incluir access_token en respuesta (seguridad)
             return Response({
                 'status': 'confirmed',

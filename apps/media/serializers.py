@@ -52,12 +52,7 @@ class MediaAssetSerializer(serializers.ModelSerializer):
         ]
     
     def get_url(self, obj):
-        """Return public URL. Prefer BACKEND_URL when set (proxy may send wrong Host)."""
-        if getattr(settings, "BACKEND_URL", None):
-            return obj.url  # model uses BACKEND_URL
-        request = self.context.get("request")
-        if request and obj.file:
-            return request.build_absolute_uri(obj.file.url)
+        """Return public URL. Always use model's url (uses BACKEND_URL or ALLOWED_HOSTS fallback)."""
         return obj.url
     
     def get_size_mb(self, obj):

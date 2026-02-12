@@ -2,7 +2,7 @@
 
 from django.db import models
 from django.utils.translation import gettext_lazy as _
-from django.core.validators import MinValueValidator
+from django.core.validators import MinValueValidator, MaxValueValidator
 from core.models import BaseModel
 from apps.organizers.models import Organizer
 
@@ -896,8 +896,26 @@ class ExperienceReservation(BaseModel):
     # Payment tracking
     paid_at = models.DateTimeField(_("paid at"), null=True, blank=True)
     
+    # Experience completed: when the attendee actually did the experience (for creator commission: pending → earned)
+    attended_at = models.DateTimeField(
+        _("attended at"),
+        null=True,
+        blank=True,
+        help_text=_("When the experience was completed by the customer; used to move creator commission to earned")
+    )
+    
     # Notes
     notes = models.TextField(_("notes"), blank=True)
+
+    # Review invite: unique token for post-experience review form (set when sending invite)
+    review_token = models.UUIDField(
+        _("review token"),
+        null=True,
+        blank=True,
+        unique=True,
+        editable=False,
+        help_text=_("Token for unique review form link sent to customer after attended")
+    )
     
     class Meta:
         verbose_name = _("experience reservation")
@@ -914,6 +932,12 @@ class ExperienceReservation(BaseModel):
     
     def __str__(self):
         return f"{self.reservation_id} - {self.experience.title} ({self.status})"
+
+    def save(self, *args, **kwargs):
+        # On refund: reverse creator commission so it is not paid out
+        if self.status == 'refunded' and self.creator_commission_status in ('pending', 'earned'):
+            self.creator_commission_status = 'reversed'
+        super().save(*args, **kwargs)
     
     def get_capacity_units(self):
         """Calculate how many capacity units this reservation consumes."""
@@ -925,6 +949,66 @@ class ExperienceReservation(BaseModel):
         elif rule == 'adults_only':
             return self.adult_count
         return self.adult_count + self.child_count + self.infant_count  # default
+
+
+class ExperienceReview(BaseModel):
+    """
+    Post-experience review: rating and text, linked to a reservation.
+    Created when customer submits the review form (by token). Shown on experience public page.
+    """
+    STATUS_CHOICES = (
+        ('draft', _('Draft')),
+        ('pending', _('Pending moderation')),
+        ('approved', _('Approved')),
+        ('rejected', _('Rejected')),
+    )
+
+    experience = models.ForeignKey(
+        Experience,
+        on_delete=models.CASCADE,
+        related_name='reviews',
+        verbose_name=_("experience"),
+    )
+    reservation = models.OneToOneField(
+        ExperienceReservation,
+        on_delete=models.CASCADE,
+        related_name='review',
+        verbose_name=_("reservation"),
+        help_text=_("Reservation this review is for (one review per reservation)")
+    )
+    user = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        related_name='experience_reviews',
+        verbose_name=_("user"),
+        null=True,
+        blank=True,
+    )
+    rating = models.PositiveSmallIntegerField(
+        _("rating"),
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text=_("1-5 stars"),
+    )
+    title = models.CharField(_("title"), max_length=255, blank=True)
+    body = models.TextField(_("body"), blank=True)
+    status = models.CharField(
+        _("status"),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='approved',
+        db_index=True,
+    )
+
+    class Meta:
+        verbose_name = _("experience review")
+        verbose_name_plural = _("experience reviews")
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['reservation'], name='unique_review_per_reservation'),
+        ]
+
+    def __str__(self):
+        return f"Review {self.rating}★ for {self.experience.title}"
 
 
 class ExperienceCapacityHold(BaseModel):

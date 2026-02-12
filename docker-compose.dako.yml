@@ -82,10 +82,11 @@ services:
       - FRONTEND_URL=https://tuki.cl
       - BACKEND_URL=https://tuki.cl
       - USE_GCS_IN_DEV=False
-      # Email configuration
-      - EMAIL_HOST=mail.tuki.cl
-      - EMAIL_PORT=465
-      - EMAIL_USE_SSL=true
+      # Email: servidor Mailu en Dako (red Docker tuki-network, hostname tuki-mail)
+      - EMAIL_HOST=tuki-mail
+      - EMAIL_PORT=587
+      - EMAIL_USE_SSL=false
+      - EMAIL_USE_TLS=true
       - EMAIL_HOST_USER=noreply@tuki.cl
       - EMAIL_HOST_PASSWORD=-W7)HsC<Hsfk
       - DEFAULT_FROM_EMAIL=Tuki <noreply@tuki.cl>
@@ -134,10 +135,11 @@ services:
       - CELERY_BROKER_URL=redis://tuki-redis:6379/0
       - CELERY_RESULT_BACKEND=redis://tuki-redis:6379/0
       - SECRET_KEY=tuki-dako-secret-key-enterprise-2026-production-secure
-      # Email configuration
-      - EMAIL_HOST=mail.tuki.cl
-      - EMAIL_PORT=465
-      - EMAIL_USE_SSL=true
+      # Email: servidor Mailu en Dako (tuki-mail)
+      - EMAIL_HOST=tuki-mail
+      - EMAIL_PORT=587
+      - EMAIL_USE_SSL=false
+      - EMAIL_USE_TLS=true
       - EMAIL_HOST_USER=noreply@tuki.cl
       - EMAIL_HOST_PASSWORD=-W7)HsC<Hsfk
       - DEFAULT_FROM_EMAIL=Tuki <noreply@tuki.cl>

@@ -1,6 +1,7 @@
 """Views for landing destinations: superadmin CRUD and public API."""
 
 import logging
+import re
 import requests
 from rest_framework import viewsets, permissions
 from rest_framework.views import APIView
@@ -25,6 +26,29 @@ def _absolute_media_url(relative_path, request=None):
     base = getattr(settings, "BACKEND_URL", None) or "http://localhost:8000"
     path = relative_path.lstrip("/")
     return f"{base.rstrip('/')}/{path}" if path else base
+
+
+def _normalize_media_url(url):
+    """Rewrite any localhost media URL to BACKEND_URL (fixes stored DB values from dev)."""
+    if not url or not isinstance(url, str):
+        return url or ""
+    if "localhost" not in url and "127.0.0.1" not in url:
+        return url
+    base = getattr(settings, "BACKEND_URL", None)
+    if not base:
+        return url
+    base = base.rstrip("/")
+    # Keep path: e.g. http://localhost:8000/media/global/... -> base + /media/global/...
+    for prefix in ("http://localhost:8000/", "http://localhost/", "https://localhost:8000/", "https://localhost/"):
+        if url.startswith(prefix):
+            path = url[len(prefix):].lstrip("/")
+            return f"{base}/{path}" if path else base
+    if "127.0.0.1" in url:
+        path_match = re.search(r"https?://127\.0\.0\.1(?::\d+)?(/.+)?", url)
+        if path_match:
+            path = (path_match.group(1) or "").lstrip("/")
+            return f"{base}/{path}" if path else base
+    return url
 
 
 def _resolve_media_urls(hero_media_id, gallery_media_ids):
@@ -143,8 +167,9 @@ class PublicDestinationBySlugView(APIView):
         hero_media_url, gallery_media_urls = _resolve_media_urls(
             dest.hero_media_id, dest.gallery_media_ids
         )
-        hero_image = hero_media_url or dest.hero_image or ""
-        images = gallery_media_urls if gallery_media_urls else (dest.images or [])
+        hero_image = _normalize_media_url(hero_media_url or dest.hero_image or "")
+        raw_images = gallery_media_urls if gallery_media_urls else (dest.images or [])
+        images = [_normalize_media_url(u) for u in raw_images] if raw_images else []
 
         from apps.experiences.models import Experience
         exp_ids = [str(e.experience_id) for e in dest.destination_experiences.order_by("order")]

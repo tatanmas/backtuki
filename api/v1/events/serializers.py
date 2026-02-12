@@ -1,6 +1,10 @@
 """Serializers for events API."""
 
+import logging
+
 from rest_framework import serializers
+
+logger = logging.getLogger(__name__)
 from django.utils import timezone
 from django.utils.text import slugify
 from django.db import transaction, models
@@ -195,7 +199,7 @@ class TicketTierSerializer(serializers.ModelSerializer):
         🚀 ENTERPRISE: Robust validation for Pay-What-You-Want tickets.
         Ensures data integrity and business rules compliance.
         """
-        print(f"🔍 SERIALIZER VALIDATION - Input data: {data}")
+        logger.debug(f"🔍 SERIALIZER VALIDATION - Input data: {data}")
         
         # Validate Pay-What-You-Want fields
         is_pwyw = data.get('is_pay_what_you_want', False)
@@ -203,7 +207,7 @@ class TicketTierSerializer(serializers.ModelSerializer):
         max_price = data.get('max_price')
         suggested_price = data.get('suggested_price')
         
-        print(f"✅ VALIDATION - PWYW: {is_pwyw}, min: {min_price}, max: {max_price}, suggested: {suggested_price}")
+        logger.debug(f"✅ VALIDATION - PWYW: {is_pwyw}, min: {min_price}, max: {max_price}, suggested: {suggested_price}")
         
         if is_pwyw:
             # Validate min_price <= max_price
@@ -226,7 +230,7 @@ class TicketTierSerializer(serializers.ModelSerializer):
             
             # For PWYW tickets, price should be 0 (users will set custom price)
             if 'price' in data and data['price'] != 0:
-                print(f"⚠️ VALIDATION - Setting price to 0 for PWYW ticket (was: {data['price']})")
+                logger.debug(f"⚠️ VALIDATION - Setting price to 0 for PWYW ticket (was: {data['price']})")
                 data['price'] = 0
         
         # 🔧 FIX: Validate price allows 0 (free tickets)
@@ -239,7 +243,7 @@ class TicketTierSerializer(serializers.ModelSerializer):
                     'price': 'Price cannot be negative.'
                 })
             # ✅ Allow price 0 for free tickets
-            print(f"✅ VALIDATION - Price value: {price_value} (0 is allowed for free tickets)")
+            logger.debug(f"✅ VALIDATION - Price value: {price_value} (0 is allowed for free tickets)")
         
         # 🔧 FIX: Validate capacity and availability with business logic
         capacity = data.get('capacity')
@@ -263,7 +267,7 @@ class TicketTierSerializer(serializers.ModelSerializer):
                 # Si available no fue proporcionado o es diferente, usar el calculado
                 if available is None or available != calculated_available:
                     data['available'] = calculated_available
-                    print(f"🔧 SERIALIZER FIX - Auto-calculated available: {calculated_available} (capacity: {capacity}, sold: {tickets_sold})")
+                    logger.debug(f"🔧 SERIALIZER FIX - Auto-calculated available: {calculated_available} (capacity: {capacity}, sold: {tickets_sold})")
         
         # Validación general: available no puede exceder capacity
         if capacity is not None and available is not None:
@@ -281,7 +285,7 @@ class TicketTierSerializer(serializers.ModelSerializer):
                 'min_per_order': 'Minimum per order cannot be greater than maximum per order.'
             })
         
-        print(f"✅ VALIDATION - All validations passed")
+        logger.debug(f"✅ VALIDATION - All validations passed")
         return data
     
     def to_representation(self, instance):
@@ -653,7 +657,7 @@ class OrderSerializer(serializers.ModelSerializer):
                 }
         except Exception as e:
             # Log error but don't fail the serializer
-            print(f"Error getting payment details for order {obj.id}: {e}")
+            logger.debug(f"Error getting payment details for order {obj.id}: {e}")
         
         # Fallback to basic payment info
         return {
@@ -1236,7 +1240,7 @@ class EventCreateSerializer(serializers.ModelSerializer):
             return event
             
         except Exception as e:
-            print(f"Error creating event: {e}")
+            logger.debug(f"Error creating event: {e}")
             raise e
 
 
@@ -1283,8 +1287,8 @@ class EventUpdateSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         """Update an event with related objects."""
         # Add detailed debug logging to see what's happening
-        print(f"DEBUG - Event update received for {instance.id}")
-        print(f"Raw update data: {validated_data}")
+        logger.debug(f"DEBUG - Event update received for {instance.id}")
+        logger.debug(f"Raw update data: {validated_data}")
         
         # Extract nested data
         location_data = validated_data.pop('location', None)
@@ -1294,19 +1298,19 @@ class EventUpdateSerializer(serializers.ModelSerializer):
         
         # Handle camelCase to snake_case field mapping
         if 'shortDescription' in validated_data:
-            print(f"Converting shortDescription: '{validated_data['shortDescription']}' to short_description")
+            logger.debug(f"Converting shortDescription: '{validated_data['shortDescription']}' to short_description")
             validated_data['short_description'] = validated_data.pop('shortDescription')
         
         if 'startDate' in validated_data:
-            print(f"Converting startDate: '{validated_data['startDate']}' to start_date")
+            logger.debug(f"Converting startDate: '{validated_data['startDate']}' to start_date")
             validated_data['start_date'] = validated_data.pop('startDate')
             
         if 'endDate' in validated_data:
-            print(f"Converting endDate: '{validated_data['endDate']}' to end_date")
+            logger.debug(f"Converting endDate: '{validated_data['endDate']}' to end_date")
             validated_data['end_date'] = validated_data.pop('endDate')
         
         # After field mapping, show what data will be applied
-        print(f"Data to apply after field mapping: {validated_data}")
+        logger.debug(f"Data to apply after field mapping: {validated_data}")
         
         # Update location if provided with valid data
         if location_data:
@@ -1361,12 +1365,12 @@ class EventUpdateSerializer(serializers.ModelSerializer):
         
         # Update base fields
         for attr, value in validated_data.items():
-            print(f"Setting {attr} = {value}")
+            logger.debug(f"Setting {attr} = {value}")
             setattr(instance, attr, value)
         
         # Save the instance and print after save
         instance.save()
-        print(f"Event after save: title={instance.title}, description={instance.description}, short_description={instance.short_description}")
+        logger.debug(f"Event after save: title={instance.title}, description={instance.description}, short_description={instance.short_description}")
         
         return instance
 
@@ -1521,7 +1525,7 @@ class BookingSerializer(serializers.Serializer):
         customer_email = customer_info['email']
         user = None
         
-        print(f"🎯 [BookingSerializer] Processing order for email: {customer_email}")
+        logger.debug(f"🎯 [BookingSerializer] Processing order for email: {customer_email}")
         
         # 1. SIEMPRE buscar primero si existe un usuario con ese email
         try:
@@ -1537,28 +1541,28 @@ class BookingSerializer(serializers.Serializer):
                 if norm and (not user.phone_number or normalize_phone_e164(user.phone_number) != norm):
                     user.phone_number = norm
                     user.save(update_fields=['phone_number'])
-            print(f"🔍 [BookingSerializer] ✅ FOUND existing user for email {customer_email}: {user.id} (is_guest: {user.is_guest})")
+            logger.debug(f"🔍 [BookingSerializer] ✅ FOUND existing user for email {customer_email}: {user.id} (is_guest: {user.is_guest})")
         except User.DoesNotExist:
             # 2. Solo si NO existe usuario, crear uno como invitado
-            print(f"👤 [BookingSerializer] No existing user found, creating NEW guest user for email: {customer_email}")
+            logger.debug(f"👤 [BookingSerializer] No existing user found, creating NEW guest user for email: {customer_email}")
             user = User.create_guest_user(
                 email=customer_email,
                 first_name=first_name,
                 last_name=last_name,
                 phone=customer_info.get('phone'),
             )
-            print(f"✅ [BookingSerializer] Created NEW guest user: {user.id}")
+            logger.debug(f"✅ [BookingSerializer] Created NEW guest user: {user.id}")
         
         # 3. Si hay usuario autenticado, verificar que coincida con el email
         if hasattr(self.context.get('request'), 'user') and self.context['request'].user.is_authenticated:
             auth_user = self.context['request'].user
             if auth_user.email.lower() == customer_email.lower():
                 user = auth_user  # Usar el usuario autenticado si coincide
-                print(f"🔐 [BookingSerializer] Using authenticated user (email matches): {user.email} (ID: {user.id})")
+                logger.debug(f"🔐 [BookingSerializer] Using authenticated user (email matches): {user.email} (ID: {user.id})")
             else:
-                print(f"⚠️ [BookingSerializer] Authenticated user email ({auth_user.email}) differs from order email ({customer_email})")
+                logger.debug(f"⚠️ [BookingSerializer] Authenticated user email ({auth_user.email}) differs from order email ({customer_email})")
         
-        print(f"🎯 [BookingSerializer] FINAL USER FOR ORDER: {user.email} (ID: {user.id}, is_guest: {user.is_guest})")
+        logger.debug(f"🎯 [BookingSerializer] FINAL USER FOR ORDER: {user.email} (ID: {user.id}, is_guest: {user.is_guest})")
         
         # 🚀 ENTERPRISE: Start platform flow tracking
         from core.flow_logger import FlowLogger
@@ -1589,7 +1593,7 @@ class BookingSerializer(serializers.Serializer):
             flow=flow.flow if flow else None  # Link order to flow
         )
         
-        print(f"📝 [BookingSerializer] Created order {order.order_number} linked to user {user.id} ({user.email})")
+        logger.debug(f"📝 [BookingSerializer] Created order {order.order_number} linked to user {user.id} ({user.email})")
         
         # 🚀 ENTERPRISE: Log order creation event
         if flow:
@@ -1614,7 +1618,7 @@ class BookingSerializer(serializers.Serializer):
 
         if reservation_id:
             # 🚀 ENTERPRISE: Use holds; do not change availability here (it was adjusted at reserve time)
-            print(f"🔍 BOOKING DEBUG - Looking for reservation: {reservation_id}")
+            logger.debug(f"🔍 BOOKING DEBUG - Looking for reservation: {reservation_id}")
             
             # Convert reservation_id to UUID if it's a string
             try:
@@ -1628,7 +1632,7 @@ class BookingSerializer(serializers.Serializer):
             # Try to find the order first
             try:
                 reservation_order = Order.objects.get(id=reservation_uuid, event=event)
-                print(f"🔍 BOOKING DEBUG - Found reservation order: {reservation_order.id}")
+                logger.debug(f"🔍 BOOKING DEBUG - Found reservation order: {reservation_order.id}")
             except Order.DoesNotExist:
                 raise serializers.ValidationError({"detail": f"Reservation {reservation_id} not found."})
             
@@ -1639,7 +1643,7 @@ class BookingSerializer(serializers.Serializer):
                 event=event, 
                 expires_at__gt=timezone.now()
             )
-            print(f"🔍 BOOKING DEBUG - Found {holds.count()} active holds")
+            logger.debug(f"🔍 BOOKING DEBUG - Found {holds.count()} active holds")
             
             if not holds.exists():
                 # Debug: check all holds for this order to provide detailed error
@@ -1655,9 +1659,9 @@ class BookingSerializer(serializers.Serializer):
                     released=True
                 )
                 
-                print(f"🔍 BOOKING DEBUG - Total holds: {all_holds.count()}, Expired: {expired_holds.count()}, Released: {released_holds.count()}")
+                logger.debug(f"🔍 BOOKING DEBUG - Total holds: {all_holds.count()}, Expired: {expired_holds.count()}, Released: {released_holds.count()}")
                 for h in all_holds:
-                    print(f"🔍 HOLD: tier={h.ticket_tier_id}, qty={h.quantity}, custom_price={h.custom_price}, expires={h.expires_at}, released={h.released}")
+                    logger.debug(f"🔍 HOLD: tier={h.ticket_tier_id}, qty={h.quantity}, custom_price={h.custom_price}, expires={h.expires_at}, released={h.released}")
                 
                 error_msg = (
                     f"Reservation has expired or is invalid. "
@@ -1700,7 +1704,7 @@ class BookingSerializer(serializers.Serializer):
             custom_price = ticket_data.get('customPrice')  # ✅ NEW: Support for PWYW
             tier = TicketTier.objects.get(id=tier_id)
             
-            print(f"🎯 BOOKING DEBUG - Processing tier {tier_id}: quantity={quantity}, custom_price={custom_price}, is_pwyw={tier.is_pay_what_you_want}")
+            logger.debug(f"🎯 BOOKING DEBUG - Processing tier {tier_id}: quantity={quantity}, custom_price={custom_price}, is_pwyw={tier.is_pay_what_you_want}")
             
             # ✅ NEW: Handle Pay-What-You-Want tickets
             if tier.is_pay_what_you_want and custom_price is not None:
@@ -1711,7 +1715,7 @@ class BookingSerializer(serializers.Serializer):
                 # Calculate amounts: custom_price = organizer_amount + platform_fee
                 from decimal import Decimal, ROUND_HALF_UP
                 custom_price_decimal = Decimal(str(custom_price))
-                print(f"🔍 PWYW CALC - custom_price_decimal: {custom_price_decimal}, service_fee_rate: {service_fee_rate}")
+                logger.debug(f"🔍 PWYW CALC - custom_price_decimal: {custom_price_decimal}, service_fee_rate: {service_fee_rate}")
                 
                 # Use proper rounding for CLP (no decimals)
                 # Round organizer_amount to nearest integer
@@ -1719,7 +1723,7 @@ class BookingSerializer(serializers.Serializer):
                 # Platform fee is the difference to ensure exact sum
                 platform_fee = custom_price_decimal - organizer_amount
                 
-                print(f"🔍 PWYW CALC - organizer_amount: {organizer_amount}, platform_fee: {platform_fee}")
+                logger.debug(f"🔍 PWYW CALC - organizer_amount: {organizer_amount}, platform_fee: {platform_fee}")
                 
                 item_subtotal = organizer_amount * quantity
                 item_service_fee = platform_fee * quantity
@@ -1786,11 +1790,11 @@ class BookingSerializer(serializers.Serializer):
                     
                     # Reserve coupon usage
                     coupon_hold = validated_coupon.reserve_usage_for_order(order)
-                    print(f"🎫 COUPON: Applied {validated_coupon.code} - Discount: ${discount_amount} - Hold: {coupon_hold.id}")
+                    logger.debug(f"🎫 COUPON: Applied {validated_coupon.code} - Discount: ${discount_amount} - Hold: {coupon_hold.id}")
                 else:
-                    print(f"⚠️ COUPON: {validated_coupon.code} generated no discount")
+                    logger.debug(f"⚠️ COUPON: {validated_coupon.code} generated no discount")
             else:
-                print(f"❌ COUPON: {validated_coupon.code} invalid at final total: {message}")
+                logger.debug(f"❌ COUPON: {validated_coupon.code} invalid at final total: {message}")
         
         # 🚀 ENTERPRISE: Calculate and store effective values
         # This is the SINGLE SOURCE OF TRUTH for revenue calculation
@@ -1798,11 +1802,11 @@ class BookingSerializer(serializers.Serializer):
         
         try:
             revenue_summary = calculate_and_store_effective_values(order)
-            print(f"✅ REVENUE: Effective values calculated and stored")
-            print(f"   Gross Revenue: ${revenue_summary['subtotal_effective']}")
-            print(f"   Service Fees: ${revenue_summary['service_fee_effective']}")
-            print(f"   Total: ${revenue_summary['total']}")
-            print(f"   Discount: ${revenue_summary['discount']}")
+            logger.debug(f"✅ REVENUE: Effective values calculated and stored")
+            logger.debug(f"   Gross Revenue: ${revenue_summary['subtotal_effective']}")
+            logger.debug(f"   Service Fees: ${revenue_summary['service_fee_effective']}")
+            logger.debug(f"   Total: ${revenue_summary['total']}")
+            logger.debug(f"   Discount: ${revenue_summary['discount']}")
             
             # Log to flow if available
             if flow:
@@ -1814,7 +1818,7 @@ class BookingSerializer(serializers.Serializer):
                     metadata=revenue_summary
                 )
         except Exception as e:
-            print(f"❌ REVENUE: Error calculating effective values: {e}")
+            logger.debug(f"❌ REVENUE: Error calculating effective values: {e}")
             if flow:
                 flow.log_event(
                     'REVENUE_CALCULATION_ERROR',
@@ -1825,16 +1829,16 @@ class BookingSerializer(serializers.Serializer):
                 )
             raise
         
-        print(f"🚀 DEBUG - Order totals FINAL: subtotal={subtotal}, service_fee={service_fee}, discount={order.discount}, total={order.total}")
-        print(f"🚀 DEBUG - Order status before: {order.status}")
+        logger.debug(f"🚀 DEBUG - Order totals FINAL: subtotal={subtotal}, service_fee={service_fee}, discount={order.discount}, total={order.total}")
+        logger.debug(f"🚀 DEBUG - Order status before: {order.status}")
         
         # 🚀 ENTERPRISE: Handle payment flow
         if order.total == 0:
             # ✅ EVENTOS GRATUITOS: Crear tickets inmediatamente
-            print(f"🚀 DEBUG - Free order detected! Setting status to 'paid'")
+            logger.debug(f"🚀 DEBUG - Free order detected! Setting status to 'paid'")
             order.status = 'paid'
             order.save()
-            print(f"🚀 DEBUG - Order status after save: {order.status}")
+            logger.debug(f"🚀 DEBUG - Order status after save: {order.status}")
             
             # 🚀 ENTERPRISE: Log order marked as paid
             if flow:
@@ -1850,7 +1854,7 @@ class BookingSerializer(serializers.Serializer):
             if order.coupon:
                 try:
                     order.coupon.confirm_usage_for_order(order)
-                    print(f"🎫 COUPON: Confirmed usage of {order.coupon.code} for order {order.id}")
+                    logger.debug(f"🎫 COUPON: Confirmed usage of {order.coupon.code} for order {order.id}")
                     if flow:
                         flow.log_event(
                             'COUPON_APPLIED',
@@ -1860,7 +1864,7 @@ class BookingSerializer(serializers.Serializer):
                             metadata={'coupon_code': order.coupon.code, 'discount': float(order.discount)}
                         )
                 except Exception as e:
-                    print(f"⚠️ COUPON: Error confirming usage: {e}")
+                    logger.debug(f"⚠️ COUPON: Error confirming usage: {e}")
             
             # ✅ CREAR TICKETS INMEDIATAMENTE para eventos gratuitos
             self._create_tickets_from_holders(order, validated_data.get('ticketHolders', []), customer_info)
@@ -1891,7 +1895,7 @@ class BookingSerializer(serializers.Serializer):
                         'flow_type': 'free_order'
                     }
                 )
-            print(f"📧 [EMAIL] Email marked as pending for order {order.id} - will be sent from frontend")
+            logger.debug(f"📧 [EMAIL] Email marked as pending for order {order.id} - will be sent from frontend")
             
             # 🚀 ENTERPRISE: Complete flow for free orders
             if flow:
@@ -1912,7 +1916,7 @@ class BookingSerializer(serializers.Serializer):
             }
         else:
             # ✅ EVENTOS PAGADOS: Almacenar holder data para creación posterior
-            print(f"🚀 DEBUG - Paid order detected! Storing holder reservations - Payment required")
+            logger.debug(f"🚀 DEBUG - Paid order detected! Storing holder reservations - Payment required")
             
             # 🚀 ENTERPRISE: Log payment required
             if flow:
@@ -1930,7 +1934,7 @@ class BookingSerializer(serializers.Serializer):
                 )
             self._store_ticket_holder_reservations(order, validated_data.get('ticketHolders', []))
             order.save()
-            print(f"🚀 DEBUG - Order status after save: {order.status}")
+            logger.debug(f"🚀 DEBUG - Order status after save: {order.status}")
             
             # 🚀 ENTERPRISE: Log holder data stored
             if flow:
@@ -1965,7 +1969,7 @@ class BookingSerializer(serializers.Serializer):
         """
         from apps.events.models import Ticket
 
-        print(f"🎫 ENTERPRISE - Creating tickets for FREE order {order.id}")
+        logger.debug(f"🎫 ENTERPRISE - Creating tickets for FREE order {order.id}")
 
         for order_item in order.items.all():
             # Find ticket holders for this tier
@@ -1976,8 +1980,8 @@ class BookingSerializer(serializers.Serializer):
                     break
 
             # Create tickets with form data
-            print(f"🎫 BOOKING DEBUG - Creating {order_item.quantity} tickets for tier {order_item.ticket_tier.name}")
-            print(f"🎫 BOOKING DEBUG - Available holders: {len(tier_holders)}")
+            logger.debug(f"🎫 BOOKING DEBUG - Creating {order_item.quantity} tickets for tier {order_item.ticket_tier.name}")
+            logger.debug(f"🎫 BOOKING DEBUG - Available holders: {len(tier_holders)}")
 
             for i in range(order_item.quantity):
                 # Get holder data if available, otherwise use default
@@ -1986,12 +1990,12 @@ class BookingSerializer(serializers.Serializer):
                     ticket_first_name = holder.get('name', customer_info.get('firstName', ''))
                     ticket_last_name = holder.get('lastName', customer_info.get('lastName', ''))
                     ticket_form_data = holder.get('formData', {})
-                    print(f"🎫 BOOKING DEBUG - Ticket {i+1}: Using holder data - {ticket_first_name} {ticket_last_name}")
+                    logger.debug(f"🎫 BOOKING DEBUG - Ticket {i+1}: Using holder data - {ticket_first_name} {ticket_last_name}")
                 else:
                     ticket_first_name = customer_info.get('firstName', '')
                     ticket_last_name = customer_info.get('lastName', '')
                     ticket_form_data = {}
-                    print(f"🎫 BOOKING DEBUG - Ticket {i+1}: Using default data - {ticket_first_name} {ticket_last_name}")
+                    logger.debug(f"🎫 BOOKING DEBUG - Ticket {i+1}: Using default data - {ticket_first_name} {ticket_last_name}")
 
                 created_ticket = Ticket.objects.create(
                     order_item=order_item,
@@ -2001,7 +2005,7 @@ class BookingSerializer(serializers.Serializer):
                     form_data=ticket_form_data,  # 🚀 ENTERPRISE: Include form data
                     status='active'
                 )
-                print(f"🎫 BOOKING DEBUG - Created ticket {created_ticket.ticket_number}: {created_ticket.first_name} {created_ticket.last_name}")
+                logger.debug(f"🎫 BOOKING DEBUG - Created ticket {created_ticket.ticket_number}: {created_ticket.first_name} {created_ticket.last_name}")
 
     def _store_ticket_holder_reservations(self, order, ticket_holders):
         """
@@ -2009,7 +2013,7 @@ class BookingSerializer(serializers.Serializer):
         """
         from apps.events.models import TicketHolderReservation
         
-        print(f"🎫 ENTERPRISE - Storing holder reservations for PAID order {order.id}")
+        logger.debug(f"🎫 ENTERPRISE - Storing holder reservations for PAID order {order.id}")
         
         for order_item in order.items.all():
             # Find ticket holders for this tier
@@ -2019,8 +2023,8 @@ class BookingSerializer(serializers.Serializer):
                     tier_holders = ticket_group.get('holders', [])
                     break
             
-            print(f"🎫 RESERVATION DEBUG - Storing {order_item.quantity} holder reservations for tier {order_item.ticket_tier.name}")
-            print(f"🎫 RESERVATION DEBUG - Available holders: {len(tier_holders)}")
+            logger.debug(f"🎫 RESERVATION DEBUG - Storing {order_item.quantity} holder reservations for tier {order_item.ticket_tier.name}")
+            logger.debug(f"🎫 RESERVATION DEBUG - Available holders: {len(tier_holders)}")
             
             for i in range(order_item.quantity):
                 # Get holder data if available, otherwise use order customer data
@@ -2030,13 +2034,13 @@ class BookingSerializer(serializers.Serializer):
                     holder_last_name = holder.get('lastName', order.last_name)
                     holder_email = holder.get('email', order.email)
                     holder_form_data = holder.get('formData', {})
-                    print(f"🎫 RESERVATION DEBUG - Holder {i}: Using specific data - {holder_first_name} {holder_last_name}")
+                    logger.debug(f"🎫 RESERVATION DEBUG - Holder {i}: Using specific data - {holder_first_name} {holder_last_name}")
                 else:
                     holder_first_name = order.first_name
                     holder_last_name = order.last_name
                     holder_email = order.email
                     holder_form_data = {}
-                    print(f"🎫 RESERVATION DEBUG - Holder {i}: Using order data - {holder_first_name} {holder_last_name}")
+                    logger.debug(f"🎫 RESERVATION DEBUG - Holder {i}: Using order data - {holder_first_name} {holder_last_name}")
                 
                 # Create holder reservation
                 reservation = TicketHolderReservation.objects.create(
@@ -2048,7 +2052,7 @@ class BookingSerializer(serializers.Serializer):
                     email=holder_email,
                     form_data=holder_form_data
                 )
-                print(f"🎫 RESERVATION DEBUG - Created reservation {reservation.id}: {reservation.first_name} {reservation.last_name}")
+                logger.debug(f"🎫 RESERVATION DEBUG - Created reservation {reservation.id}: {reservation.first_name} {reservation.last_name}")
 
 
 class TicketTierCreateUpdateSerializer(serializers.ModelSerializer):
@@ -2293,10 +2297,10 @@ class PublicEventCreateSerializer(serializers.ModelSerializer):
                 min_per_order=1
             )
             
-            print(f"✅ Created default ticket tier for public event {event.id}")
+            logger.debug(f"✅ Created default ticket tier for public event {event.id}")
             
         except Exception as e:
-            print(f"❌ Error creating default ticket tier for public event {event.id}: {e}")
+            logger.debug(f"❌ Error creating default ticket tier for public event {event.id}: {e}")
             # No fallar la creación del evento si hay error con tickets
             pass
         

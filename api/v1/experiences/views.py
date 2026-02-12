@@ -17,7 +17,7 @@ from django.contrib.auth import get_user_model
 from apps.experiences.models import (
     Experience, TourLanguage, TourInstance, TourBooking, OrganizerCredit,
     ExperienceResource, ExperienceReservation, ExperienceDatePriceOverride,
-    ExperienceCapacityHold, ExperienceResourceHold
+    ExperienceCapacityHold, ExperienceResourceHold, ExperienceReview
 )
 from apps.experiences.serializers import (
     ExperienceSerializer,
@@ -28,7 +28,8 @@ from apps.experiences.serializers import (
     OrganizerCreditSerializer,
     ExperienceResourceSerializer,
     ExperienceDatePriceOverrideSerializer,
-    ExperienceReservationSerializer
+    ExperienceReservationSerializer,
+    ExperienceReviewPublicSerializer,
 )
 from apps.organizers.models import OrganizerUser
 from core.permissions import HasExperienceModule, IsSuperAdmin
@@ -691,45 +692,6 @@ class ExperienceReservationViewSet(viewsets.ReadOnlyModelViewSet):
             return None
 
 
-class PublicOrganizerReservationDetailView(APIView):
-    """
-    Public view for a single reservation by organizer token (no auth required).
-    Used when operator clicks link from payment notification WhatsApp.
-    """
-    permission_classes = [permissions.AllowAny]
-
-    def get(self, request, pk):
-        token = request.query_params.get('token')
-        if not token:
-            return Response(
-                {'error': 'Token requerido'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
-        from apps.whatsapp.services.payment_success_notifier import validate_organizer_reservation_token
-        reservation_id = validate_organizer_reservation_token(token)
-        if not reservation_id:
-            return Response(
-                {'error': 'Token inválido o expirado'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
-        try:
-            reservation = ExperienceReservation.objects.select_related(
-                'experience', 'instance', 'instance__language', 'user'
-            ).get(pk=pk)
-        except ExperienceReservation.DoesNotExist:
-            return Response(
-                {'error': 'Reserva no encontrada'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        if str(reservation.id) != str(reservation_id):
-            return Response(
-                {'error': 'Token no corresponde a esta reserva'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        serializer = ExperienceReservationSerializer(reservation)
-        return Response(serializer.data)
-
-
 User = get_user_model()
 
 
@@ -899,6 +861,48 @@ class PublicExperienceInstancesView(APIView):
         
         serializer = TourInstanceSerializer(queryset, many=True)
         return Response(serializer.data)
+
+
+class PublicExperienceReviewsView(APIView):
+    """
+    Public API to get approved reviews for an experience (paginated).
+    Returns 200 with empty results if no reviews - never 404 for valid experience.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, experience_id):
+        """List approved reviews with pagination."""
+        allow_checkout = _allow_checkout_by_codigo(request)
+        filters = {'id': experience_id, 'deleted_at__isnull': True}
+        if not allow_checkout:
+            filters['status'] = 'published'
+        try:
+            experience = Experience.objects.get(**filters)
+        except Experience.DoesNotExist:
+            return Response(
+                {'error': 'Experience not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        queryset = ExperienceReview.objects.filter(
+            experience=experience,
+            status='approved'
+        ).order_by('-created_at')
+
+        # Pagination
+        page_size = min(int(request.query_params.get('page_size', 20)), 50)
+        page = max(int(request.query_params.get('page', 1)), 1)
+        offset = (page - 1) * page_size
+        total = queryset.count()
+        results = queryset[offset:offset + page_size]
+
+        serializer = ExperienceReviewPublicSerializer(results, many=True)
+        return Response({
+            'results': serializer.data,
+            'count': total,
+            'page': page,
+            'page_size': page_size,
+        })
 
 
 # 🚀 ENTERPRISE: Synchronous Email Endpoint for Experiences
@@ -1152,4 +1156,3 @@ def send_experience_email_sync(request, order_number):
                 'message': f'Critical error: {str(e)}',
                 'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-

@@ -18,6 +18,7 @@ from .views import (
     LoginView,
     OTPLoginView,
     MagicLoginView,
+    OrganizerMagicLoginView,
     create_guest_user_from_purchase,
     OrganizerOTPSendView,
     OrganizerOTPValidateView,
@@ -35,6 +36,7 @@ urlpatterns = [
     path('login-password/', LoginView.as_view(), name='login_password'),
     path('login/otp/', OTPLoginView.as_view(), name='otp_login'),
     path('magic-login/', MagicLoginView.as_view(), name='magic_login'),
+    path('organizer-magic-login/', OrganizerMagicLoginView.as_view(), name='organizer_magic_login'),
     path('logout/', LogoutView.as_view(), name='logout'),
     
     # User Profile

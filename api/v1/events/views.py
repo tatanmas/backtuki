@@ -5431,7 +5431,10 @@ def get_order_tickets(request, order_number):
                 order = Order.objects.select_related(
                     'event',
                     'event__location',
-                    'event__organizer'
+                    'event__organizer',
+                    'experience_reservation',
+                    'experience_reservation__experience',
+                    'experience_reservation__instance'
                 ).prefetch_related(
                     'items__tickets',
                     'items__ticket_tier',
@@ -5443,6 +5446,46 @@ def get_order_tickets(request, order_number):
                     'error': 'ORDER_NOT_FOUND',
                     'message': 'Order not found'
                 }, status=status.HTTP_404_NOT_FOUND)
+            
+            # 🚀 ENTERPRISE: Experience orders - return reservation data
+            if getattr(order, 'order_kind', 'event') == 'experience' or order.event is None:
+                exp_res = getattr(order, 'experience_reservation', None)
+                experience_reservation = None
+                if exp_res:
+                    exp = exp_res.experience
+                    inst = getattr(exp_res, 'instance', None)
+                    start_dt = inst.start_datetime if inst else None
+                    event_image = None
+                    if exp and getattr(exp, 'images', None) and len(exp.images or []) > 0:
+                        img = (exp.images or [])[0]
+                        event_image = img if isinstance(img, str) else (img.get('url') if isinstance(img, dict) else None)
+                    experience_reservation = {
+                        'reservation_id': exp_res.reservation_id,
+                        'experience_title': exp.title if exp else 'Experiencia',
+                        'experience_id': str(exp.id) if exp else None,
+                        'start_datetime': start_dt.isoformat() if start_dt else None,
+                        'location': getattr(exp, 'location_name', None) or getattr(exp, 'location_address', '') or '',
+                        'image_url': event_image,
+                        'first_name': exp_res.first_name,
+                        'last_name': exp_res.last_name,
+                        'email': exp_res.email,
+                        'phone': exp_res.phone or '',
+                        'adult_count': exp_res.adult_count or 0,
+                        'child_count': exp_res.child_count or 0,
+                        'infant_count': exp_res.infant_count or 0,
+                        'total': float(exp_res.total) if exp_res.total else float(order.total),
+                        'currency': exp_res.currency or order.currency,
+                    }
+                return Response({
+                    'success': True,
+                    'order_number': order.order_number,
+                    'order_kind': 'experience',
+                    'order_created_at': order.created_at.isoformat(),
+                    'event': None,
+                    'tickets': [],
+                    'ticket_count': 0,
+                    'experience_reservation': experience_reservation,
+                }, status=status.HTTP_200_OK)
             
             # For organizers (not admin requests), verify they have access to this event
             if is_organizer and not is_superadmin and not is_admin_request:
@@ -5474,7 +5517,10 @@ def get_order_tickets(request, order_number):
                 order = Order.objects.select_related(
                     'event',
                     'event__location',
-                    'event__organizer'
+                    'event__organizer',
+                    'experience_reservation',
+                    'experience_reservation__experience',
+                    'experience_reservation__instance'
                 ).prefetch_related(
                     'items__tickets',
                     'items__ticket_tier',
@@ -5487,6 +5533,46 @@ def get_order_tickets(request, order_number):
                     'message': 'Invalid access token or order not found'
                 }, status=status.HTTP_404_NOT_FOUND)
         
+        # 🚀 ENTERPRISE: Experience orders - return reservation data for confirmation page
+        if getattr(order, 'order_kind', 'event') == 'experience' or order.event is None:
+            exp_res = getattr(order, 'experience_reservation', None)
+            experience_reservation = None
+            if exp_res:
+                exp = exp_res.experience
+                inst = getattr(exp_res, 'instance', None)
+                start_dt = inst.start_datetime if inst else None
+                event_image = None
+                if exp and getattr(exp, 'images', None) and len(exp.images or []) > 0:
+                    img = (exp.images or [])[0]
+                    event_image = img if isinstance(img, str) else (img.get('url') if isinstance(img, dict) else None)
+                experience_reservation = {
+                    'reservation_id': exp_res.reservation_id,
+                    'experience_title': exp.title if exp else 'Experiencia',
+                    'experience_id': str(exp.id) if exp else None,
+                    'start_datetime': start_dt.isoformat() if start_dt else None,
+                    'location': getattr(exp, 'location_name', None) or getattr(exp, 'location_address', '') or '',
+                    'image_url': event_image,
+                    'first_name': exp_res.first_name,
+                    'last_name': exp_res.last_name,
+                    'email': exp_res.email,
+                    'phone': exp_res.phone or '',
+                    'adult_count': exp_res.adult_count or 0,
+                    'child_count': exp_res.child_count or 0,
+                    'infant_count': exp_res.infant_count or 0,
+                    'total': float(exp_res.total) if exp_res.total else float(order.total),
+                    'currency': exp_res.currency or order.currency,
+                }
+            return Response({
+                'success': True,
+                'order_number': order.order_number,
+                'order_kind': 'experience',
+                'order_created_at': order.created_at.isoformat(),
+                'event': None,
+                'tickets': [],
+                'ticket_count': 0,
+                'experience_reservation': experience_reservation,
+            }, status=status.HTTP_200_OK)
+        
         # Get all tickets for this order
         tickets = Ticket.objects.filter(
             order_item__order=order
@@ -5494,12 +5580,12 @@ def get_order_tickets(request, order_number):
             'order_item__ticket_tier'
         ).order_by('created_at')
         
-        # Build event data
+        # Build event data (event is guaranteed non-None here)
         event = order.event
         
         # 🚀 ENTERPRISE: Build absolute image URL for robustness (works in all environments)
         image_url = None
-        if event.images.exists():
+        if event and hasattr(event, 'images') and event.images.exists():
             first_image = event.images.first()
             if first_image and first_image.image:
                 relative_url = first_image.image.url
@@ -5796,6 +5882,13 @@ def send_order_email_sync(request, order_number):
                 'success': False,
                 'message': 'Order not found or invalid token'
             }, status=status.HTTP_404_NOT_FOUND)
+        
+        # 🚀 ENTERPRISE: Route experience orders to the experience email flow (same API contract)
+        # Pass raw HttpRequest: send_experience_email_sync is @api_view and expects Django HttpRequest
+        if getattr(order, 'order_kind', 'event') == 'experience':
+            from api.v1.experiences.views import send_experience_email_sync
+            raw_request = getattr(request, '_request', request)
+            return send_experience_email_sync(raw_request, order_number)
         
         # 3. Get flow for logging and idempotency check
         flow_obj = None

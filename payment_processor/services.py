@@ -397,6 +397,16 @@ class TransbankWebPayPlusService(BasePaymentService):
                                 reservation.resource_holds.filter(released=False).update(expires_at=end_dt)
                             
                             logger.info(f"✅ [PAYMENT] Experience reservation {reservation.reservation_id} marked as paid")
+                            # Notify creator by email when sale was with their link
+                            if reservation.creator_id:
+                                try:
+                                    from apps.experiences.tasks import notify_creator_on_sale
+                                    notify_creator_on_sale.apply_async(
+                                        args=[str(reservation.id)],
+                                        queue='emails',
+                                    )
+                                except Exception:
+                                    logger.exception("Failed to enqueue creator sale notification")
                             # Notify operator and customer via WhatsApp
                             try:
                                 from apps.whatsapp.services.payment_success_notifier import (

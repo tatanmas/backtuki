@@ -35,6 +35,12 @@ class CreatorProfile(BaseModel):
         help_text=_("Avatar image URL (or use media asset later)"),
     )
     location = models.CharField(_("location"), max_length=255, blank=True)
+    phone = models.CharField(
+        _("phone"),
+        max_length=30,
+        blank=True,
+        help_text=_("For work group and notifications (e.g. WhatsApp)"),
+    )
     social_links = models.JSONField(
         _("social links"),
         default=list,
@@ -45,6 +51,12 @@ class CreatorProfile(BaseModel):
         _("is approved"),
         default=False,
         help_text=_("Whether creator can access dashboard and earn commissions"),
+    )
+    bank_details = models.JSONField(
+        _("bank details"),
+        default=dict,
+        blank=True,
+        help_text=_("Optional: { bank_name, account_type, account_number, rut?, holder_name } for payouts"),
     )
 
     class Meta:

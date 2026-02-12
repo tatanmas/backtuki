@@ -71,14 +71,16 @@ def send_experience_confirmation_email_optimized(
         
         # 1. Fetch order with optimized query
         fetch_start = time.time()
+        # Note: TourInstance.language is CharField, not FK. Do NOT use
+        # experience_reservation__instance in select_related - it can trigger
+        # "Non-relational field given in select_related: 'language'" if Django
+        # or any manager tries to follow instance fields. Instance is lazy-loaded.
+        # Note: Experience.images is JSONField (list), not a relation - do not prefetch
         order = Order.objects.select_related(
             'experience_reservation',
             'experience_reservation__experience',
             'experience_reservation__experience__organizer',
-            'experience_reservation__instance',
-            'experience_reservation__instance__language',
         ).prefetch_related(
-            'experience_reservation__experience__images',
             'experience_reservation__resource_holds__resource',
         ).get(id=order_id)
         metrics['fetch_time_ms'] = int((time.time() - fetch_start) * 1000)

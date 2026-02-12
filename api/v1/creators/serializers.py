@@ -50,8 +50,8 @@ class CreatorProfileMeSerializer(serializers.ModelSerializer):
     class Meta:
         model = CreatorProfile
         fields = [
-            'id', 'slug', 'display_name', 'bio', 'avatar', 'location',
-            'social_links', 'is_approved', 'recommended_experiences',
+            'id', 'slug', 'display_name', 'bio', 'avatar', 'location', 'phone',
+            'social_links', 'is_approved', 'bank_details', 'recommended_experiences',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'is_approved']
@@ -70,6 +70,40 @@ class CreatorProfileMeSerializer(serializers.ModelSerializer):
         if CreatorProfile.objects.filter(slug=s).exclude(pk=self.instance.pk if self.instance else None).exists():
             raise serializers.ValidationError("Este slug ya está en uso.")
         return s  # return slugified value for storage
+
+
+class CreatorApplySerializer(serializers.Serializer):
+    """Apply as creator: creates CreatorProfile with is_approved=True (direct access, no approval queue)."""
+    display_name = serializers.CharField(max_length=255)
+    slug = serializers.CharField(max_length=100)
+    bio = serializers.CharField(required=False, allow_blank=True, default='')
+    phone = serializers.CharField(max_length=30, allow_blank=True)
+    social_links = serializers.ListField(required=False, default=list)
+    bank_details = serializers.JSONField(required=False, default=dict)
+
+    def validate_slug(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("El handle (slug) es requerido.")
+        from django.utils.text import slugify
+        s = slugify(value)
+        if not s:
+            raise serializers.ValidationError("El handle no es válido.")
+        if CreatorProfile.objects.filter(slug=s).exists():
+            raise serializers.ValidationError("Este handle ya está en uso.")
+        return s
+
+    def create(self, validated_data):
+        user = self.context['request'].user
+        return CreatorProfile.objects.create(
+            user=user,
+            display_name=validated_data['display_name'].strip(),
+            slug=validated_data['slug'],
+            bio=validated_data.get('bio', '') or '',
+            phone=validated_data.get('phone', '') or '',
+            social_links=validated_data.get('social_links') or [],
+            bank_details=validated_data.get('bank_details') or {},
+            is_approved=True,
+        )
 
 
 def validate_body_blocks(value):

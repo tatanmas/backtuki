@@ -15,6 +15,7 @@ from apps.experiences.models import Experience, ExperienceReservation
 from .serializers import (
     CreatorProfilePublicSerializer,
     CreatorProfileMeSerializer,
+    CreatorApplySerializer,
     ExperienceMinimalSerializer,
     RelatoListSerializer,
     RelatoDetailSerializer,
@@ -72,14 +73,37 @@ class PublicCreatorProfileView(APIView):
                 {'error': 'Creator not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        # Only show approved creators publicly (optional: show all for testing)
-        if not profile.is_approved:
-            return Response(
-                {'error': 'Creator not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
+        # Show profile so the link always works; include is_approved so frontend can show "En revisión" if needed
         serializer = CreatorProfilePublicSerializer(profile)
-        return Response(serializer.data)
+        data = dict(serializer.data)
+        data['is_approved'] = profile.is_approved
+        return Response(data)
+
+
+class CreatorApplyView(APIView):
+    """
+    Authenticated user: apply to become a creator (creates profile with is_approved=False).
+    POST /api/v1/creators/apply/
+    Body: { display_name, slug, bio?, phone?, social_links? }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        if CreatorProfile.objects.filter(user=request.user).exists():
+            return Response(
+                {'error': 'Ya tienes un perfil de creador.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        serializer = CreatorApplySerializer(
+            data=request.data,
+            context={'request': request},
+        )
+        serializer.is_valid(raise_exception=True)
+        creator = serializer.save()
+        return Response(
+            CreatorProfileMeSerializer(creator).data,
+            status=status.HTTP_201_CREATED
+        )
 
 
 class CreatorMeView(APIView):
@@ -344,7 +368,7 @@ class PublicRelatoView(APIView):
 
     def get(self, request, creator_slug, relato_slug):
         try:
-            creator = CreatorProfile.objects.get(slug=creator_slug, is_approved=True)
+            creator = CreatorProfile.objects.get(slug=creator_slug)
         except CreatorProfile.DoesNotExist:
             return Response(
                 {'error': 'Creator or relato not found'},
@@ -421,14 +445,20 @@ class CreatorPerformanceView(APIView):
         paid = reservations.filter(status='paid')
         total_earnings = paid.aggregate(s=Sum('creator_commission_amount'))['s'] or Decimal('0')
         bookings_count = paid.count()
-        pending = reservations.filter(
-            creator_commission_status__in=('pending', 'earned'),
-            status='paid',
-        ).aggregate(s=Sum('creator_commission_amount'))['s'] or Decimal('0')
+        # Pending: commission reserved but experience not yet completed
+        pending_experience = paid.filter(creator_commission_status='pending').aggregate(
+            s=Sum('creator_commission_amount')
+        )['s'] or Decimal('0')
+        # Earned: experience completed, available for withdrawal
+        available_for_withdrawal = paid.filter(creator_commission_status='earned').aggregate(
+            s=Sum('creator_commission_amount')
+        )['s'] or Decimal('0')
         return Response({
             'total_earnings': float(total_earnings),
             'bookings_count': bookings_count,
-            'pending_withdrawal': float(pending),
+            'pending_experience': float(pending_experience),
+            'available_for_withdrawal': float(available_for_withdrawal),
+            'pending_withdrawal': float(available_for_withdrawal),  # legacy alias
             'currency': 'CLP',
         })
 

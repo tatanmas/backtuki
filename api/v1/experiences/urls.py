@@ -11,17 +11,18 @@ from .views import (
     ExperienceResourceViewSet,
     ExperienceDatePriceOverrideViewSet,
     ExperienceReservationViewSet,
-    PublicOrganizerReservationDetailView,
     PublicExperienceListView,
     PublicExperienceDetailView,
     PublicExperienceResourcesView,
     PublicExperienceInstancesView,
+    PublicExperienceReviewsView,
     send_experience_email_sync,
 )
 from .booking_views import (
     PublicExperienceReserveView,
     PublicExperienceBookView,
 )
+from .public_reservation_view import get_reservation_by_organizer_token
 
 router = DefaultRouter()
 router.register(r'experiences', ExperienceViewSet, basename='experience')
@@ -34,20 +35,19 @@ router.register(r'date-price-overrides', ExperienceDatePriceOverrideViewSet, bas
 router.register(r'reservations', ExperienceReservationViewSet, basename='experience-reservation')
 
 urlpatterns = [
+    # 🚀 ENTERPRISE: Organizer reservation by token (BEFORE router so path matches)
+    path('reservations/public/<uuid:id>/', get_reservation_by_organizer_token, name='reservation-public-by-token'),
     path('', include(router.urls)),
-    
-    # Organizer reservation public view (token-based, no auth)
-    path('reservations/public/<uuid:pk>/', PublicOrganizerReservationDetailView.as_view(), name='organizer-reservation-public'),
     
     # Public endpoints
     path('public/', PublicExperienceListView.as_view(), name='public-experience-list'),
     path('public/<str:slug_or_id>/', PublicExperienceDetailView.as_view(), name='public-experience-detail'),
     path('public/<uuid:experience_id>/resources/', PublicExperienceResourcesView.as_view(), name='public-experience-resources'),
     path('public/<uuid:experience_id>/instances/', PublicExperienceInstancesView.as_view(), name='public-experience-instances'),
+    path('public/<uuid:experience_id>/reviews/', PublicExperienceReviewsView.as_view(), name='public-experience-reviews'),
     path('public/<uuid:experience_id>/reserve/', PublicExperienceReserveView.as_view(), name='public-experience-reserve'),
     path('public/<uuid:experience_id>/book/', PublicExperienceBookView.as_view(), name='public-experience-book'),
     
     # 🚀 ENTERPRISE: Synchronous email endpoint
     path('orders/<str:order_number>/send-email/', send_experience_email_sync, name='send-experience-email-sync'),
 ]
-

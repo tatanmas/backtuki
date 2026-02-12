@@ -107,6 +107,52 @@ class OTPService:
                 'otp': None,
                 'message': 'Error interno del sistema'
             }
+
+    @classmethod
+    def generate_only(cls, email, purpose, user=None, metadata=None, request=None, custom_expiry=None):
+        """
+        Genera y persiste un código OTP sin enviar el email.
+        Para uso con envío asíncrono (Celery). Retorna el OTP creado.
+        """
+        try:
+            with transaction.atomic():
+                expiry_minutes = custom_expiry or cls.EXPIRY_TIMES.get(purpose, 10)
+                ip_address = None
+                user_agent = None
+                if request:
+                    ip_address = cls._get_client_ip(request)
+                    user_agent = request.META.get('HTTP_USER_AGENT', '')
+                otp = OTP.objects.generate_code(
+                    email=email,
+                    purpose=purpose,
+                    expiry_minutes=expiry_minutes,
+                    user=user,
+                    metadata=metadata or {}
+                )
+                otp.ip_address = ip_address
+                otp.user_agent = user_agent
+                otp.save(update_fields=['ip_address', 'user_agent'])
+                logger.info(f"OTP generado (async send): {email} - {purpose}")
+                return {'success': True, 'otp': otp, 'message': 'Código enviado correctamente'}
+        except Exception as e:
+            logger.error(f"Error generando OTP: {str(e)}")
+            return {'success': False, 'otp': None, 'message': 'Error interno del sistema'}
+
+    @classmethod
+    def send_email_for_otp_id(cls, otp_id):
+        """
+        Envía el email para un OTP ya persistido (por id).
+        Usado por la tarea Celery para envío asíncrono.
+        """
+        try:
+            otp = OTP.objects.get(pk=otp_id)
+        except OTP.DoesNotExist:
+            logger.error(f"OTP no encontrado para id={otp_id}")
+            return False
+        if otp.is_used or otp.expires_at <= timezone.now():
+            logger.warning(f"OTP {otp_id} ya usado o expirado, no se envía email")
+            return False
+        return cls._send_otp_email(otp)
     
     @classmethod
     def validate_code(cls, email, code, purpose, request=None):

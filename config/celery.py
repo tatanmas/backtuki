@@ -83,7 +83,9 @@ app.conf.task_routes = {
 
     # Experiences emails
     'apps.experiences.tasks.send_experience_confirmation_email': {'queue': 'emails'},
-    
+    # OTP email (async to avoid SMTP timeout on generate)
+    'apps.otp.tasks.send_otp_email_task': {'queue': 'emails'},
+
     # 🚀 ENTERPRISE: WooCommerce Sync Task Routing (disabled by default)
 }
 

@@ -9,6 +9,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.events.models import Event, Order, OrderItem
+from apps.experiences.models import ExperienceReservation
 from .serializers import UserReservationSerializer
 import logging
 
@@ -37,40 +38,84 @@ class UserReservationsView(APIView):
             user = request.user
             
             # 🚀 ENTERPRISE: Obtener órdenes del usuario - tanto las vinculadas por user_id como por email
-            # Esto permite mostrar compras hechas como invitado antes de registrarse
+            # Incluye event orders Y experience orders
             orders = Order.objects.filter(
-                Q(user=user) | Q(email__iexact=user.email),  # Órdenes vinculadas al user O al email
+                Q(user=user) | Q(email__iexact=user.email),
                 status__in=['paid']
-            ).select_related('event', 'event__location').prefetch_related('items__ticket_tier', 'event__images').order_by('-created_at')
+            ).select_related(
+                'event', 'event__location', 'experience_reservation',
+                'experience_reservation__experience', 'experience_reservation__instance'
+            ).prefetch_related('items__ticket_tier', 'items__tickets', 'event__images').order_by('-created_at')
             
-            print(f"🔍 [UserReservationsView] User: {user.email} (ID: {user.id})")
-            print(f"🔍 [UserReservationsView] Found {orders.count()} orders for user")
+            logger.info(f"[UserReservationsView] User: {user.email} (ID: {user.id}), orders: {orders.count()}")
             
-            # 🚀 ENTERPRISE: Serializar reservas usando modelo completo
             reservations = []
             for order in orders:
                 try:
-                    # Obtener información del evento
                     event = order.event
+                    exp_res = getattr(order, 'experience_reservation', None)
+                    
+                    # Experience order (experience_reservation exists)
+                    if exp_res:
+                        experience = exp_res.experience
+                        instance = getattr(exp_res, 'instance', None)
+                        start_dt = instance.start_datetime if instance else None
+                        ticket_count = (exp_res.adult_count or 0) + (exp_res.child_count or 0) + (exp_res.infant_count or 0) or 1
+                        event_image = None
+                        if experience and getattr(experience, 'images', None) and len(experience.images) > 0:
+                            event_image = experience.images[0] if isinstance(experience.images[0], str) else experience.images[0].get('url', None)
+                        reservation = {
+                            'id': str(exp_res.id),
+                            'orderId': order.order_number,
+                            'eventId': str(experience.id) if experience else str(exp_res.id),
+                            'eventTitle': experience.title if experience else 'Experiencia',
+                            'eventImage': event_image,
+                            'eventDate': start_dt.strftime('%d %B %Y') if start_dt else '',
+                            'eventTime': start_dt.strftime('%H:%M') if start_dt else '',
+                            'date': start_dt.isoformat() if start_dt else order.created_at.isoformat(),
+                            'location': getattr(experience, 'location_name', None) or getattr(experience, 'location_address', '') or 'Ubicación no especificada',
+                            'status': 'confirmed' if exp_res.status == 'paid' else exp_res.status,
+                            'totalAmount': float(order.total),
+                            'subtotal': float(order.subtotal),
+                            'serviceFee': float(order.service_fee),
+                            'discount': float(order.discount or 0),
+                            'currency': order.currency,
+                            'ticketCount': ticket_count,
+                            'tickets': [],
+                            'attendees': [{
+                                'name': f"{exp_res.first_name} {exp_res.last_name}".strip(),
+                                'email': exp_res.email,
+                                'ticketType': 'Experiencia',
+                                'checkIn': '',
+                                'ticketNumber': exp_res.reservation_id
+                            }],
+                            'purchaseDate': order.created_at.isoformat(),
+                            'type': 'experience',
+                            'paymentInfo': {'method': 'Transbank', 'provider': 'Webpay', 'status': 'Pagado'},
+                            'customerInfo': {
+                                'name': f"{exp_res.first_name} {exp_res.last_name}".strip(),
+                                'email': exp_res.email,
+                                'phone': exp_res.phone or ''
+                            }
+                        }
+                        reservations.append(reservation)
+                        continue
+                    
+                    # Event order (event exists)
                     if not event:
                         continue
                     
-                    # 🎯 ENTERPRISE: Obtener imagen del evento correctamente
                     event_image = None
                     if event.images.exists():
                         first_image = event.images.first()
                         if first_image and hasattr(first_image, 'image') and first_image.image:
                             event_image = first_image.image.url
                     
-                    # 🎯 ENTERPRISE: Construir información de tickets y asistentes reales
                     ticket_count = 0
                     tickets = []
                     attendees = []
-                    
                     for item in order.items.all():
                         ticket_count += item.quantity
-                        
-                        # Información del ticket tier
                         tickets.append({
                             'id': item.id,
                             'tierName': item.ticket_tier.name if item.ticket_tier else 'General',
@@ -79,8 +124,6 @@ class UserReservationsView(APIView):
                             'subtotal': float(item.subtotal),
                             'status': 'Válido' if order.status == 'paid' else 'Pendiente'
                         })
-                        
-                        # 🎯 ENTERPRISE: Obtener asistentes reales de los tickets
                         for ticket in item.tickets.all():
                             attendees.append({
                                 'name': f"{ticket.first_name} {ticket.last_name}".strip(),
@@ -90,13 +133,11 @@ class UserReservationsView(APIView):
                                 'ticketNumber': ticket.ticket_number
                             })
                     
-                    # 🎯 ENTERPRISE: Información de pago (basada en modelo real)
                     payment_info = {
                         'method': order.payment_method or 'Método desconocido',
                         'provider': 'Transbank' if order.payment_method else 'Desconocido',
                         'status': 'Pagado' if order.status == 'paid' else 'Pendiente'
                     }
-                    
                     reservation = {
                         'id': order.id,
                         'orderId': order.order_number,
@@ -119,14 +160,12 @@ class UserReservationsView(APIView):
                         'purchaseDate': order.created_at.isoformat(),
                         'type': 'event',
                         'paymentInfo': payment_info,
-                        # 🎯 ENTERPRISE: Información del cliente
                         'customerInfo': {
                             'name': f"{order.first_name} {order.last_name}".strip(),
                             'email': order.email,
                             'phone': order.phone or ''
                         }
                     }
-                    
                     reservations.append(reservation)
                     
                 except Exception as e:

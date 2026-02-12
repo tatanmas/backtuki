@@ -285,14 +285,15 @@ class PaymentViewSet(viewsets.ModelViewSet):
                     user_owns_order = order.user == request.user
                     email_matches = request.user.email.lower() == order.email.lower()
                     
-                    # 🚀 ENTERPRISE: Check if user is organizer of the event
+                    # 🚀 ENTERPRISE: Check if user is organizer of the event (event orders only)
                     from apps.organizers.models import OrganizerUser
                     is_event_organizer = False
                     try:
-                        organizer_user = OrganizerUser.objects.get(user=request.user)
-                        is_event_organizer = order.event.organizer == organizer_user.organizer
-                        if is_event_organizer:
-                            logger.info(f"🎯 ORGANIZER: User {request.user.id} is organizer of event {order.event.id}")
+                        if order.event:
+                            organizer_user = OrganizerUser.objects.get(user=request.user)
+                            is_event_organizer = order.event.organizer == organizer_user.organizer
+                            if is_event_organizer:
+                                logger.info(f"🎯 ORGANIZER: User {request.user.id} is organizer of event {order.event.id}")
                     except OrganizerUser.DoesNotExist:
                         pass
                     

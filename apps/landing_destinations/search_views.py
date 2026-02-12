@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from django.db.models import Q
 
 from .models import LandingDestination
+from .views import _normalize_media_url
 
 
 class PublicSearchView(APIView):
@@ -33,7 +34,7 @@ class PublicSearchView(APIView):
                 Q(name__icontains=q) | Q(slug__icontains=q) | Q(region__icontains=q) | Q(country__icontains=q)
             )[:10]
             result["destinations"] = [
-                {"id": str(d.id), "name": d.name, "slug": d.slug, "image": d.hero_image, "region": d.region}
+                {"id": str(d.id), "name": d.name, "slug": d.slug, "image": _normalize_media_url(d.hero_image), "region": d.region}
                 for d in dests
             ]
 

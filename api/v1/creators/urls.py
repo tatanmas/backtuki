@@ -3,6 +3,7 @@
 from django.urls import path
 from .views import (
     PublicCreatorProfileView,
+    CreatorApplyView,
     CreatorMeView,
     CreatorRecommendedExperiencesView,
     LandingSlotsPublicView,
@@ -16,6 +17,7 @@ from .views import (
 
 urlpatterns = [
     path('landing-slots/', LandingSlotsPublicView.as_view(), name='creators-landing-slots'),
+    path('apply/', CreatorApplyView.as_view(), name='creators-apply'),
     path('public/<str:slug>/', PublicCreatorProfileView.as_view(), name='creators-public-profile'),
     path('public/<str:creator_slug>/relatos/<str:relato_slug>/', PublicRelatoView.as_view(), name='creators-public-relato'),
     path('me/', CreatorMeView.as_view(), name='creators-me'),
