@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     'apps.terminal',  # 🚀 ENTERPRISE: Terminal bus schedule management
     'apps.landing_destinations',  # 🚀 ENTERPRISE: Landing destinations (superadmin + public page)
     'apps.creators',  # 🚀 ENTERPRISE: TUKI Creators (influencers)
+    'apps.erasmus',  # 🚀 ENTERPRISE: Erasmus registration and leads
     'payment_processor',  # 🚀 ENTERPRISE Payment System
     'core',
 ]

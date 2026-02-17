@@ -245,6 +245,122 @@ class TourOperator(TimeStampedModel, UUIDModel):
         return self.name
 
 
+class WhatsAppChat(TimeStampedModel, UUIDModel):
+    """WhatsApp chat (individual or group)."""
+    
+    TYPE_CHOICES = [
+        ('individual', _('Individual')),
+        ('group', _('Grupo')),
+    ]
+    
+    chat_id = models.CharField(
+        max_length=100,
+        unique=True,
+        db_index=True,
+        verbose_name=_('Chat ID')
+    )
+    name = models.CharField(
+        max_length=255,
+        verbose_name=_('Name')
+    )
+    type = models.CharField(
+        max_length=20,
+        choices=TYPE_CHOICES,
+        db_index=True,
+        verbose_name=_('Type')
+    )
+    assigned_operator = models.ForeignKey(
+        TourOperator,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_chats',
+        verbose_name=_('Assigned Operator')
+    )
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        verbose_name=_('Active')
+    )
+    last_message_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_('Last Message At')
+    )
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name=_('Metadata')
+    )
+    # Nuevos campos para funcionalidades de WhatsApp Business
+    nickname = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text=_('Apodo personalizado para identificar el chat'),
+        verbose_name=_('Nickname')
+    )
+    notes = models.TextField(
+        blank=True,
+        help_text=_('Notas sobre el chat/cliente'),
+        verbose_name=_('Notes')
+    )
+    whatsapp_name = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text=_('Nombre real del contacto en WhatsApp'),
+        verbose_name=_('WhatsApp Name')
+    )
+    profile_picture_url = models.URLField(
+        blank=True,
+        help_text=_('URL de la foto de perfil del contacto'),
+        verbose_name=_('Profile Picture URL')
+    )
+    unread_count = models.IntegerField(
+        default=0,
+        db_index=True,
+        help_text=_('Número de mensajes sin leer'),
+        verbose_name=_('Unread Count')
+    )
+    last_message_preview = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text=_('Preview of last message for chat list (without opening)'),
+        verbose_name=_('Last Message Preview')
+    )
+    tags = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=_('Lista de tags/etiquetas para categorizar el chat'),
+        verbose_name=_('Tags')
+    )
+    # Campos específicos para grupos
+    participants = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=_('Lista de participantes del grupo (solo para grupos)'),
+        verbose_name=_('Participants')
+    )
+    group_description = models.TextField(
+        blank=True,
+        help_text=_('Descripción del grupo (solo para grupos)'),
+        verbose_name=_('Group Description')
+    )
+    
+    class Meta:
+        app_label = 'whatsapp'
+        verbose_name = _('WhatsApp Chat')
+        verbose_name_plural = _('WhatsApp Chats')
+        ordering = ['-last_message_at']
+        indexes = [
+            models.Index(fields=['type', 'is_active']),
+            models.Index(fields=['assigned_operator', 'is_active']),
+        ]
+    
+    def __str__(self):
+        return f"{self.name} ({self.type})"
+
+
 class WhatsAppReservationRequest(TimeStampedModel, UUIDModel):
     """Reservation request from WhatsApp."""
     
@@ -291,6 +407,15 @@ class WhatsAppReservationRequest(TimeStampedModel, UUIDModel):
         related_name='whatsapp_reservations',
         verbose_name=_('Experience')
     )
+    accommodation = models.ForeignKey(
+        'accommodations.Accommodation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='whatsapp_reservations',
+        verbose_name=_('Accommodation'),
+        help_text=_('Accommodation for WhatsApp reservation (when product is accommodation)')
+    )
     status = models.CharField(
         max_length=30,
         choices=STATUS_CHOICES,
@@ -318,7 +443,15 @@ class WhatsAppReservationRequest(TimeStampedModel, UUIDModel):
         related_name='whatsapp_requests',
         verbose_name=_('Linked Experience Reservation')
     )
-    
+    linked_accommodation_reservation = models.ForeignKey(
+        'accommodations.AccommodationReservation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='whatsapp_requests',
+        verbose_name=_('Linked Accommodation Reservation')
+    )
+
     # Campos para tracking del flujo de pago
     payment_link = models.URLField(
         blank=True,
@@ -484,8 +617,83 @@ class ExperienceGroupBinding(TimeStampedModel, UUIDModel):
         return f"{self.experience.title} -> {group_name}"
 
 
+class AccommodationOperatorBinding(TimeStampedModel, UUIDModel):
+    """Binding between Accommodation and TourOperator (same pattern as Experience)."""
+    accommodation = models.ForeignKey(
+        'accommodations.Accommodation',
+        on_delete=models.CASCADE,
+        related_name='operator_bindings',
+        verbose_name=_('Accommodation')
+    )
+    tour_operator = models.ForeignKey(
+        TourOperator,
+        on_delete=models.CASCADE,
+        related_name='accommodation_bindings',
+        verbose_name=_('Tour Operator')
+    )
+    priority = models.IntegerField(
+        default=0,
+        help_text=_('Lower number = higher priority'),
+        verbose_name=_('Priority')
+    )
+    is_active = models.BooleanField(default=True, verbose_name=_('Active'))
+
+    class Meta:
+        app_label = 'whatsapp'
+        verbose_name = _('Accommodation-Operator Binding')
+        verbose_name_plural = _('Accommodation-Operator Bindings')
+        ordering = ['accommodation', 'priority']
+        unique_together = [('accommodation', 'tour_operator')]
+
+    def __str__(self):
+        return f"{self.accommodation.title} -> {self.tour_operator.name}"
+
+
+class AccommodationGroupBinding(TimeStampedModel, UUIDModel):
+    """Binding between Accommodation and WhatsApp Group (same pattern as Experience)."""
+    accommodation = models.ForeignKey(
+        'accommodations.Accommodation',
+        on_delete=models.CASCADE,
+        related_name='whatsapp_group_bindings',
+        verbose_name=_('Accommodation')
+    )
+    whatsapp_group = models.ForeignKey(
+        'whatsapp.WhatsAppChat',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='accommodation_bindings',
+        verbose_name=_('WhatsApp Group'),
+        limit_choices_to={'type': 'group'}
+    )
+    tour_operator = models.ForeignKey(
+        TourOperator,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='accommodation_group_bindings',
+        verbose_name=_('Tour Operator')
+    )
+    is_active = models.BooleanField(default=True, verbose_name=_('Active'))
+    is_override = models.BooleanField(default=False, verbose_name=_('Override Default'))
+
+    class Meta:
+        app_label = 'whatsapp'
+        verbose_name = _('Accommodation-Group Binding')
+        verbose_name_plural = _('Accommodation-Group Bindings')
+        unique_together = [('accommodation', 'whatsapp_group')]
+        indexes = [
+            models.Index(fields=['accommodation', 'is_active']),
+            models.Index(fields=['whatsapp_group', 'is_active']),
+        ]
+
+    def __str__(self):
+        group_name = self.whatsapp_group.name if self.whatsapp_group else 'No Group'
+        return f"{self.accommodation.title} -> {group_name}"
+
+
 class WhatsAppReservationCode(TimeStampedModel, UUIDModel):
-    """Unique reservation code generated at checkout."""
+    """Unique reservation code generated at checkout (experience or accommodation)."""
     
     STATUS_CHOICES = [
         ('pending', _('Pendiente')),
@@ -503,7 +711,19 @@ class WhatsAppReservationCode(TimeStampedModel, UUIDModel):
         'experiences.Experience',
         on_delete=models.CASCADE,
         related_name='whatsapp_reservation_codes',
-        verbose_name=_('Experience')
+        verbose_name=_('Experience'),
+        null=True,
+        blank=True,
+        help_text=_('Experience for experience codes. Null when accommodation is set.')
+    )
+    accommodation = models.ForeignKey(
+        'accommodations.Accommodation',
+        on_delete=models.CASCADE,
+        related_name='whatsapp_reservation_codes',
+        verbose_name=_('Accommodation'),
+        null=True,
+        blank=True,
+        help_text=_('Accommodation for accommodation codes. Null when experience is set.')
     )
     checkout_data = models.JSONField(
         default=dict,
@@ -545,122 +765,6 @@ class WhatsAppReservationCode(TimeStampedModel, UUIDModel):
     
     def is_expired(self):
         return timezone.now() > self.expires_at
-
-
-class WhatsAppChat(TimeStampedModel, UUIDModel):
-    """WhatsApp chat (individual or group)."""
-    
-    TYPE_CHOICES = [
-        ('individual', _('Individual')),
-        ('group', _('Grupo')),
-    ]
-    
-    chat_id = models.CharField(
-        max_length=100,
-        unique=True,
-        db_index=True,
-        verbose_name=_('Chat ID')
-    )
-    name = models.CharField(
-        max_length=255,
-        verbose_name=_('Name')
-    )
-    type = models.CharField(
-        max_length=20,
-        choices=TYPE_CHOICES,
-        db_index=True,
-        verbose_name=_('Type')
-    )
-    assigned_operator = models.ForeignKey(
-        TourOperator,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='assigned_chats',
-        verbose_name=_('Assigned Operator')
-    )
-    is_active = models.BooleanField(
-        default=True,
-        db_index=True,
-        verbose_name=_('Active')
-    )
-    last_message_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        db_index=True,
-        verbose_name=_('Last Message At')
-    )
-    metadata = models.JSONField(
-        default=dict,
-        blank=True,
-        verbose_name=_('Metadata')
-    )
-    # Nuevos campos para funcionalidades de WhatsApp Business
-    nickname = models.CharField(
-        max_length=255,
-        blank=True,
-        help_text=_('Apodo personalizado para identificar el chat'),
-        verbose_name=_('Nickname')
-    )
-    notes = models.TextField(
-        blank=True,
-        help_text=_('Notas sobre el chat/cliente'),
-        verbose_name=_('Notes')
-    )
-    whatsapp_name = models.CharField(
-        max_length=255,
-        blank=True,
-        help_text=_('Nombre real del contacto en WhatsApp'),
-        verbose_name=_('WhatsApp Name')
-    )
-    profile_picture_url = models.URLField(
-        blank=True,
-        help_text=_('URL de la foto de perfil del contacto'),
-        verbose_name=_('Profile Picture URL')
-    )
-    unread_count = models.IntegerField(
-        default=0,
-        db_index=True,
-        help_text=_('Número de mensajes sin leer'),
-        verbose_name=_('Unread Count')
-    )
-    last_message_preview = models.CharField(
-        max_length=255,
-        blank=True,
-        help_text=_('Preview of last message for chat list (without opening)'),
-        verbose_name=_('Last Message Preview')
-    )
-    tags = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_('Lista de tags/etiquetas para categorizar el chat'),
-        verbose_name=_('Tags')
-    )
-    # Campos específicos para grupos
-    participants = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_('Lista de participantes del grupo (solo para grupos)'),
-        verbose_name=_('Participants')
-    )
-    group_description = models.TextField(
-        blank=True,
-        help_text=_('Descripción del grupo (solo para grupos)'),
-        verbose_name=_('Group Description')
-    )
-    
-    class Meta:
-        app_label = 'whatsapp'
-        verbose_name = _('WhatsApp Chat')
-        verbose_name_plural = _('WhatsApp Chats')
-        ordering = ['-last_message_at']
-        indexes = [
-            models.Index(fields=['type', 'is_active']),
-            models.Index(fields=['assigned_operator', 'is_active']),
-        ]
-    
-    def __str__(self):
-        return f"{self.name} ({self.type})"
 
 
 class OperatorMessageTemplate(TimeStampedModel, UUIDModel):
@@ -814,7 +918,7 @@ class ConversationState(TimeStampedModel, UUIDModel):
     ]
     
     chat = models.OneToOneField(
-        WhatsAppChat,
+        'whatsapp.WhatsAppChat',
         on_delete=models.CASCADE,
         related_name='conversation_state',
         verbose_name=_('Chat')
@@ -827,7 +931,7 @@ class ConversationState(TimeStampedModel, UUIDModel):
         verbose_name=_('State')
     )
     current_reservation = models.ForeignKey(
-        WhatsAppReservationRequest,
+        'whatsapp.WhatsAppReservationRequest',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

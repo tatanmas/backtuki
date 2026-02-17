@@ -991,6 +991,7 @@ class Order(BaseModel):
     ORDER_KIND_CHOICES = (
         ('event', _('Event Order')),
         ('experience', _('Experience Order')),
+        ('accommodation', _('Accommodation Order')),
     )
     
     order_number = models.CharField(
@@ -1032,7 +1033,17 @@ class Order(BaseModel):
         verbose_name=_("experience reservation"),
         null=True,
         blank=True,
-        help_text=_("Linked experience reservation for experience orders. Null for event orders."),
+        help_text=_("Linked experience reservation for experience orders. Null for event/acc orders."),
+    )
+    # 🚀 ENTERPRISE: link to AccommodationReservation for accommodation orders.
+    accommodation_reservation = models.ForeignKey(
+        'accommodations.AccommodationReservation',
+        on_delete=models.PROTECT,
+        related_name='orders',
+        verbose_name=_("accommodation reservation"),
+        null=True,
+        blank=True,
+        help_text=_("Linked accommodation reservation for accommodation orders. Null otherwise."),
     )
     status = models.CharField(
         _("status"),

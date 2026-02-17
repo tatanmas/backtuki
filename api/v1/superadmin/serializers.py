@@ -92,6 +92,25 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
         child=serializers.URLField(), required=False, allow_empty=True
     )
     
+    # Duration (optional)
+    duration_minutes = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1,
+        help_text="Duración en minutos"
+    )
+
+    # Carga: when experience is under Tuki organizer, real operator identifier for future transfer
+    managed_operator_slug = serializers.CharField(
+        max_length=100, required=False, allow_blank=True,
+        help_text="Real operator slug when managed by Tuki (e.g. molantours)"
+    )
+
+    # Payment model (DB has NOT NULL; migration 0011)
+    payment_model = serializers.ChoiceField(
+        choices=[('full_upfront', 'Full upfront'), ('deposit_only', 'Deposit only')],
+        default='full_upfront',
+        required=False,
+    )
+
     # Optional fields
     booking_horizon_days = serializers.IntegerField(default=90, min_value=1)
     
@@ -323,15 +342,17 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
         # Extract date_price_overrides (se crearán después)
         date_price_overrides = validated_data.pop('date_price_overrides', [])
         
-        # Generate slug if not provided
-        if 'slug' not in validated_data or not validated_data['slug']:
-            validated_data['slug'] = slugify(validated_data['title'])
-            # Ensure unique slug
-            base_slug = validated_data['slug']
-            counter = 1
-            while Experience.objects.filter(slug=validated_data['slug']).exists():
-                validated_data['slug'] = f"{base_slug}-{counter}"
-                counter += 1
+        # Slug: usar el pasado o generar desde título (Experience.slug max_length=50)
+        if 'slug' not in validated_data or not (validated_data.get('slug') or '').strip():
+            raw_slug = slugify(validated_data['title'])
+            base_slug = raw_slug[:47] if len(raw_slug) > 47 else raw_slug
+        else:
+            base_slug = slugify(validated_data['slug'].strip())[:47]
+        validated_data['slug'] = base_slug
+        counter = 1
+        while Experience.objects.filter(slug=validated_data['slug']).exists():
+            validated_data['slug'] = (f"{base_slug}-{counter}")[:50]
+            counter += 1
         
         # Set default values for lists if not provided (campos del flujo de WhatsApp)
         if 'included' not in validated_data:
@@ -357,6 +378,9 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
             validated_data['booking_horizon_days'] = 90
         if 'sales_cutoff_hours' not in validated_data:
             validated_data['sales_cutoff_hours'] = 2
+        # DB has NOT NULL on payment_model (migration 0011); never pass None
+        if validated_data.get('payment_model') is None:
+            validated_data['payment_model'] = 'full_upfront'
         
         # Create experience
         experience = Experience.objects.create(**validated_data)

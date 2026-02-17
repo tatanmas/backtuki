@@ -2,6 +2,8 @@
 
 import logging
 import re
+from urllib.parse import urlparse
+
 import requests
 from rest_framework import viewsets, permissions
 from rest_framework.views import APIView
@@ -13,6 +15,17 @@ from .models import LandingDestination
 from .serializers import LandingDestinationSerializer, LandingDestinationListSerializer
 
 logger = logging.getLogger(__name__)
+
+
+def _rewrite_media_url_to_request_host(url, request):
+    """Rewrite a media URL to use the request's scheme and host (so images load from same domain as the page)."""
+    if not url or not request:
+        return url or ""
+    parsed = urlparse(url)
+    path = parsed.path or ""
+    if not path:
+        return url
+    return request.build_absolute_uri(path)
 
 
 def _absolute_media_url(relative_path, request=None):
@@ -72,6 +85,50 @@ def _resolve_media_urls(hero_media_id, gallery_media_ids):
         if u:
             gallery_urls.append(u)
     return hero_url, gallery_urls
+
+
+def _build_destination_media_urls_from_request(dest, request):
+    """
+    Build hero and gallery URLs using the request host (robust: same as San Pedro).
+    Does not depend on BACKEND_URL or MediaAsset.url; uses asset.file.url + request.build_absolute_uri.
+    Returns (hero_image, images_list).
+    """
+    from apps.media.models import MediaAsset
+    hero_image = ""
+    images = []
+    if not request:
+        return hero_image, images
+    # Hero: one asset by hero_media_id
+    if dest.hero_media_id:
+        a = MediaAsset.objects.filter(id=dest.hero_media_id, deleted_at__isnull=True).first()
+        if a and a.file:
+            hero_image = request.build_absolute_uri(a.file.url)
+    # Fallback to legacy hero_image URL if no media asset
+    if not hero_image and getattr(dest, "hero_image", None):
+        raw = dest.hero_image.strip()
+        if raw:
+            hero_image = _normalize_media_url(raw)
+            hero_image = _rewrite_media_url_to_request_host(hero_image, request) if hero_image else ""
+    # Gallery: preserve order from gallery_media_ids
+    if dest.gallery_media_ids:
+        assets_map = {
+            str(a.id): a
+            for a in MediaAsset.objects.filter(
+                id__in=dest.gallery_media_ids, deleted_at__isnull=True
+            )
+            if a.file
+        }
+        for eid in dest.gallery_media_ids:
+            a = assets_map.get(str(eid))
+            if a:
+                images.append(request.build_absolute_uri(a.file.url))
+    if not images and getattr(dest, "images", None):
+        for raw in dest.images or []:
+            if raw:
+                u = _normalize_media_url(raw)
+                if u:
+                    images.append(_rewrite_media_url_to_request_host(u, request))
+    return hero_image, images
 
 
 class LandingDestinationViewSet(viewsets.ModelViewSet):
@@ -164,12 +221,16 @@ class PublicDestinationBySlugView(APIView):
     def get(self, request, slug):
         dest = get_object_or_404(LandingDestination, slug=slug, is_active=True)
 
-        hero_media_url, gallery_media_urls = _resolve_media_urls(
-            dest.hero_media_id, dest.gallery_media_ids
-        )
-        hero_image = _normalize_media_url(hero_media_url or dest.hero_image or "")
-        raw_images = gallery_media_urls if gallery_media_urls else (dest.images or [])
-        images = [_normalize_media_url(u) for u in raw_images] if raw_images else []
+        # Robust: build media URLs from request + asset.file (same behaviour as San Pedro, no BACKEND_URL dependency)
+        if request:
+            hero_image, images = _build_destination_media_urls_from_request(dest, request)
+        else:
+            hero_media_url, gallery_media_urls = _resolve_media_urls(
+                dest.hero_media_id, dest.gallery_media_ids
+            )
+            hero_image = _normalize_media_url(hero_media_url or getattr(dest, "hero_image", "") or "")
+            raw_images = gallery_media_urls or (getattr(dest, "images", None) or [])
+            images = [_normalize_media_url(u) for u in raw_images] if raw_images else []
 
         from apps.experiences.models import Experience
         exp_ids = [str(e.experience_id) for e in dest.destination_experiences.order_by("order")]
@@ -201,6 +262,35 @@ class PublicDestinationBySlugView(APIView):
                     events.append(_event_to_card(ev_map[eid], request=request))
 
         accommodations = []
+        acc_ids = getattr(dest, "accommodation_ids", None) or []
+        if acc_ids:
+            try:
+                from apps.accommodations.models import Accommodation
+                from apps.accommodations.serializers import _accommodation_to_public_dict
+
+                qs = Accommodation.objects.filter(
+                    id__in=[str(aid) for aid in acc_ids],
+                    status="published",
+                    deleted_at__isnull=True,
+                )
+                acc_map = {str(a.id): a for a in qs}
+                for aid in acc_ids:
+                    aid_str = str(aid).strip()
+                    acc = acc_map.get(aid_str)
+                    if acc:
+                        d = _accommodation_to_public_dict(acc, request=request)
+                        imgs = d.get("images") or []
+                        accommodations.append({
+                            "id": d["id"],
+                            "title": d["title"],
+                            "image": imgs[0] if imgs else "",
+                            "price": d["price"],
+                            "rating": d["rating"],
+                            "reviews": d["reviews"],
+                            "location": d["location"],
+                        })
+            except Exception as e:
+                logger.warning("Failed to load accommodations for destination %s: %s", dest.slug, e)
 
         featured = _build_featured(dest, request=request)
 
@@ -227,6 +317,29 @@ class PublicDestinationBySlugView(APIView):
             "featured": featured,
         }
         return Response(payload)
+
+
+class PublicDestinationListView(APIView):
+    """
+    Public API: GET list of all active destinations.
+    Returns [{ slug, name, country, region, heroImage }] for the destinations page.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        dests = LandingDestination.objects.filter(is_active=True).order_by("country", "name")
+        result = []
+        for d in dests:
+            hero_image, _ = _build_destination_media_urls_from_request(d, request)
+            result.append({
+                "slug": d.slug,
+                "name": d.name,
+                "country": d.country or "",
+                "region": d.region or "",
+                "heroImage": hero_image,
+            })
+        return Response(result)
 
 
 class PublicDestinationWeatherTimeView(APIView):

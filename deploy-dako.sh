@@ -16,8 +16,10 @@
 set -e
 
 SKIP_GIT_PULL=false
+SKIP_FRONTEND_BUILD=false
 for arg in "$@"; do
     [ "$arg" = "--skip-git-pull" ] && SKIP_GIT_PULL=true
+    [ "$arg" = "--skip-frontend-build" ] && SKIP_FRONTEND_BUILD=true
 done
 
 # Siempre build sin caché: así la imagen lleva el código que está en el servidor.
@@ -122,9 +124,17 @@ cp backtuki/nginx.dako.conf nginx.conf
 echo "   ✅ nginx.conf"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 3: Compilar Frontend
+# PASO 3: Compilar Frontend (omitir si --skip-frontend-build: ya llegó dist/ por rsync)
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
+if [ "$SKIP_FRONTEND_BUILD" = true ]; then
+    echo "🔨 Paso 3: Omitiendo compilación frontend (dist/ ya sincronizado desde tu Mac)"
+    if [ ! -d "$TUKI_DIR/tuki-experiencias/dist" ]; then
+        echo "   ❌ Error: No existe tuki-experiencias/dist. Ejecuta el deploy desde tu Mac con deploy-dako-remote.sh"
+        exit 1
+    fi
+    echo "   ✅ Usando dist/ existente"
+else
 echo "🔨 Paso 3: Compilando frontend..."
 
 cd "$TUKI_DIR/tuki-experiencias"
@@ -155,6 +165,7 @@ npm run build
 echo "   ✅ Frontend compilado"
 
 cd "$TUKI_DIR"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PASO 4: Asegurar PostgreSQL y Redis (sin bajar la instancia; actualización en caliente)
@@ -280,6 +291,23 @@ sleep 3
 echo "   ✅ Frontend corriendo en puerto 80"
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# PASO 12: Cloudflare Tunnel (tuki.cl → host:80/8000)
+# ═══════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "🚇 Paso 12: Levantando Cloudflare Tunnel..."
+if [ -d "$HOME/.cloudflared" ] && [ -f "$HOME/.cloudflared/config.yml" ]; then
+    docker-compose up -d tuki-cloudflared 2>/dev/null || true
+    sleep 2
+    if docker ps | grep -q tuki-cloudflared; then
+        echo "   ✅ Tunnel corriendo (tuki.cl / www.tuki.cl)"
+    else
+        echo "   ⚠️ Tunnel no arrancó (revisar ~/.cloudflared/config.yml y credenciales)"
+    fi
+else
+    echo "   ⚠️ Omitiendo tunnel (~/.cloudflared no configurado)"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # VERIFICACIÓN FINAL
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
@@ -363,5 +391,8 @@ echo "   • Ver logs whatsapp: docker-compose logs -f tuki-whatsapp-service"
 echo "   • Reiniciar:         docker-compose restart"
 echo "   • Detener todo:      docker-compose down"
 echo "   • Actualizar:        ./backtuki/deploy-dako.sh"
+echo ""
+echo "📌 Persistencia tras reinicio: ver docs/DAKO_PERSISTENCIA.md"
+echo "   (Docker al boot + opcional: ./backtuki/install-tuki-boot-service.sh)"
 echo ""
 echo "═══════════════════════════════════════════════════════════════════════════════"

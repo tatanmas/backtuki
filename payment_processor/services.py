@@ -20,6 +20,41 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def finalize_accommodation_payment(payment: Payment) -> None:
+    """
+    Mark accommodation reservation as paid, update WhatsApp request, and send notifications.
+    Used by webhook success path and tests.
+    """
+    order = payment.order
+    if getattr(order, 'order_kind', None) != 'accommodation':
+        return
+    acc_res = order.accommodation_reservation
+    if not acc_res:
+        return
+    acc_res.status = 'paid'
+    acc_res.paid_at = timezone.now()
+    acc_res.save(update_fields=['status', 'paid_at'])
+    logger.info(f"✅ [PAYMENT] Accommodation reservation {acc_res.reservation_id} marked as paid")
+
+    from apps.whatsapp.models import WhatsAppReservationRequest
+    wa_req = WhatsAppReservationRequest.objects.filter(
+        linked_accommodation_reservation=acc_res
+    ).first()
+    if wa_req:
+        wa_req.payment_received_at = timezone.now()
+        wa_req.save(update_fields=['payment_received_at'])
+
+    try:
+        from apps.whatsapp.services.payment_success_notifier import (
+            notify_operator_payment_received,
+            notify_customer_payment_success,
+        )
+        notify_operator_payment_received(payment)
+        notify_customer_payment_success(payment)
+    except Exception:
+        logger.exception("WhatsApp accommodation payment notifications failed")
+
+
 class PaymentServiceException(Exception):
     """Custom exception for payment service errors"""
     pass
@@ -381,7 +416,8 @@ class TransbankWebPayPlusService(BasePaymentService):
                     )
                 
                 # ✅ Domain-specific post-payment handling
-                if getattr(payment.order, 'order_kind', 'event') == 'experience':
+                order_kind = getattr(payment.order, 'order_kind', 'event')
+                if order_kind == 'experience':
                     # Mark experience reservation paid and keep holds until the instance ends
                     try:
                         reservation = payment.order.experience_reservation
@@ -423,12 +459,17 @@ class TransbankWebPayPlusService(BasePaymentService):
                                 logger.exception("WhatsApp payment notifications failed")
                     except Exception:
                         logger.exception("Failed to finalize experience reservation after payment")
+                elif order_kind == 'accommodation':
+                    try:
+                        finalize_accommodation_payment(payment)
+                    except Exception:
+                        logger.exception("Failed to finalize accommodation reservation after payment")
                 else:
-                    # ✅ CREAR TICKETS desde reservations almacenadas (ENTERPRISE PATTERN)
+                    # Event: create tickets from reservations
                     self._create_tickets_from_reservations(payment.order)
                 
-                # Log tickets created + cleanup only for event orders
-                if getattr(payment.order, 'order_kind', 'event') != 'experience':
+                # Log tickets created + cleanup only for event orders (not experience, not accommodation)
+                if order_kind not in ('experience', 'accommodation'):
                     if flow:
                         tickets_count = payment.order.items.aggregate(total=models.Sum('quantity'))['total'] or 0
                         flow.log_event(

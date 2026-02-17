@@ -4,8 +4,15 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from apps.landing_destinations.views import LandingDestinationViewSet
 from .views import (
-    SuperAdminUserViewSet, 
+    SuperAdminUserViewSet,
     CountryViewSet,
+    SuperAdminAccommodationListView,
+    SuperAdminAccommodationDetailView,
+    SuperAdminAccommodationGalleryUpdateView,
+    ErasmusLeadsView,
+    ErasmusTrackingLinkViewSet,
+    ErasmusExtraFieldViewSet,
+    ErasmusDestinationGuideViewSet,
     superadmin_stats, 
     sales_analytics, 
     organizer_sales, 
@@ -124,5 +131,17 @@ urlpatterns = [
     path('creators-landing-slots/', creators_landing_slots_list, name='creators-landing-slots-list'),
     path('creators-landing-slots/assign/', creators_landing_slots_assign, name='creators-landing-slots-assign'),
     path('creators/', SuperAdminCreatorsListView.as_view(), name='superadmin-creators-list'),
+    # Accommodations (photo tour / gallery)
+    path('accommodations/', SuperAdminAccommodationListView.as_view(), name='superadmin-accommodations-list'),
+    path('accommodations/<uuid:accommodation_id>/', SuperAdminAccommodationDetailView.as_view(), name='superadmin-accommodations-detail'),
+    path('accommodations/<uuid:accommodation_id>/gallery/', SuperAdminAccommodationGalleryUpdateView.as_view(), name='superadmin-accommodations-gallery'),
+    # Erasmus: leads (list + export ?format=csv), tracking links, extra form fields
+    path('erasmus/leads/', ErasmusLeadsView.as_view(), name='superadmin-erasmus-leads'),
+    path('erasmus/tracking-links/', ErasmusTrackingLinkViewSet.as_view({'get': 'list', 'post': 'create'}), name='superadmin-erasmus-tracking-links'),
+    path('erasmus/tracking-links/<int:pk>/', ErasmusTrackingLinkViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='superadmin-erasmus-tracking-link-detail'),
+    path('erasmus/extra-fields/', ErasmusExtraFieldViewSet.as_view({'get': 'list', 'post': 'create'}), name='superadmin-erasmus-extra-fields'),
+    path('erasmus/extra-fields/<int:pk>/', ErasmusExtraFieldViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='superadmin-erasmus-extra-field-detail'),
+    path('erasmus/destination-guides/', ErasmusDestinationGuideViewSet.as_view({'get': 'list', 'post': 'create'}), name='superadmin-erasmus-destination-guides'),
+    path('erasmus/destination-guides/<int:pk>/', ErasmusDestinationGuideViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='superadmin-erasmus-destination-guide-detail'),
 ]
 

@@ -247,6 +247,27 @@ class PaymentSerializer(serializers.ModelSerializer):
                     'image': event_image,
                     'ticket_holders': self._get_experience_holders(order)
                 }
+            # Accommodation order (order_kind='accommodation')
+            if getattr(order, 'order_kind', None) == 'accommodation' and order.accommodation_reservation:
+                acc_res = order.accommodation_reservation
+                acc = acc_res.accommodation
+                event_image = None
+                if getattr(acc, 'images', None) and isinstance(acc.images, list) and len(acc.images) > 0:
+                    img_url = acc.images[0] if isinstance(acc.images[0], str) else acc.images[0].get('url', '')
+                    if img_url:
+                        event_image = self._build_absolute_image_url(img_url)
+                location_info = {
+                    'name': getattr(acc, 'location_name', None) or 'Ubicación no disponible',
+                    'address': getattr(acc, 'location_address', None) or ''
+                }
+                return {
+                    'id': str(acc.id),
+                    'title': acc.title,
+                    'date': acc_res.check_in.isoformat() if acc_res.check_in else None,
+                    'location': location_info,
+                    'image': event_image,
+                    'ticket_holders': self._get_accommodation_holders(order)
+                }
             return None
         except Exception as e:
             import logging
@@ -265,6 +286,23 @@ class PaymentSerializer(serializers.ModelSerializer):
                     'tier_name': 'Experiencia',
                     'ticket_number': res.reservation_id or order.order_number,
                     'ticket_id': str(res.id),
+                })
+        except Exception:
+            pass
+        return holders
+
+    def _get_accommodation_holders(self, order):
+        """Get participant info for accommodation orders."""
+        holders = []
+        try:
+            acc_res = order.accommodation_reservation
+            if acc_res:
+                holders.append({
+                    'name': f"{acc_res.first_name} {acc_res.last_name}".strip(),
+                    'email': acc_res.email,
+                    'tier_name': 'Alojamiento',
+                    'ticket_number': acc_res.reservation_id or order.order_number,
+                    'ticket_id': str(acc_res.id),
                 })
         except Exception:
             pass

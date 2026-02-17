@@ -118,6 +118,13 @@ cloudflared tunnel route dns "$TUNNEL_NAME" www.tuki.cl 2>/dev/null || echo "   
 echo "   Configurando api.tuki.cl..."
 cloudflared tunnel route dns "$TUNNEL_NAME" api.tuki.cl 2>/dev/null || echo "   ⚠️ api.tuki.cl ya configurado o error"
 
+echo "   Configurando tuki.live..."
+cloudflared tunnel route dns "$TUNNEL_NAME" tuki.live 2>/dev/null || echo "   ⚠️ tuki.live (zona debe estar en este Cloudflare account)"
+echo "   Configurando www.tuki.live..."
+cloudflared tunnel route dns "$TUNNEL_NAME" www.tuki.live 2>/dev/null || echo "   ⚠️ www.tuki.live ya configurado o error"
+echo "   Configurando api.tuki.live..."
+cloudflared tunnel route dns "$TUNNEL_NAME" api.tuki.live 2>/dev/null || echo "   ⚠️ api.tuki.live ya configurado o error"
+
 echo -e "${GREEN}   ✅ DNS configurado${NC}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -139,20 +146,35 @@ credentials-file: $CRED_FILE
 
 # Configuración de ingress (rutas)
 ingress:
-  # API Backend - api.tuki.cl va directo al backend
+  # API Backend - 127.0.0.1 evita 502 por IPv6 (localhost puede resolverse a ::1)
   - hostname: api.tuki.cl
-    service: http://localhost:8000
+    service: http://127.0.0.1:8000
+    originRequest:
+      noTLSVerify: true
+  - hostname: api.tuki.live
+    service: http://127.0.0.1:8000
     originRequest:
       noTLSVerify: true
   
   # Frontend principal - tuki.cl y www.tuki.cl
   - hostname: tuki.cl
-    service: http://localhost:80
+    service: http://127.0.0.1:80
     originRequest:
       noTLSVerify: true
   
   - hostname: www.tuki.cl
-    service: http://localhost:80
+    service: http://127.0.0.1:80
+    originRequest:
+      noTLSVerify: true
+  
+  # tuki.live (evita error 525 si DNS apunta al túnel)
+  - hostname: tuki.live
+    service: http://127.0.0.1:80
+    originRequest:
+      noTLSVerify: true
+  
+  - hostname: www.tuki.live
+    service: http://127.0.0.1:80
     originRequest:
       noTLSVerify: true
   

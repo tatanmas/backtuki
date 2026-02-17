@@ -35,6 +35,12 @@ from .countries import CountryViewSet
 from .experiences import create_experience_from_json, update_experience_commission
 from .creators_landing_slots import creators_landing_slots_list, creators_landing_slots_assign
 from .creators import SuperAdminCreatorsListView
+from .erasmus import ErasmusLeadsView, ErasmusTrackingLinkViewSet, ErasmusExtraFieldViewSet, ErasmusDestinationGuideViewSet
+from .accommodations import (
+    SuperAdminAccommodationListView,
+    SuperAdminAccommodationDetailView,
+    SuperAdminAccommodationGalleryUpdateView,
+)
 
 __all__ = [
     # Users
@@ -72,4 +78,13 @@ __all__ = [
     'creators_landing_slots_list',
     'creators_landing_slots_assign',
     'SuperAdminCreatorsListView',
+    # Erasmus
+    'ErasmusLeadsView',
+    'ErasmusTrackingLinkViewSet',
+    'ErasmusExtraFieldViewSet',
+    'ErasmusDestinationGuideViewSet',
+    # Accommodations (photo tour)
+    'SuperAdminAccommodationListView',
+    'SuperAdminAccommodationDetailView',
+    'SuperAdminAccommodationGalleryUpdateView',
 ]

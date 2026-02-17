@@ -66,6 +66,7 @@ class PlatformFlow(BaseModel):
         ('experience_booking', 'Experience Booking'),
         ('accommodation_booking', 'Accommodation Booking'),
         ('tour_booking', 'Tour Booking'),
+        ('erasmus_registration', 'Erasmus Registration'),
     ]
     
     STATUS_CHOICES = [
@@ -142,8 +143,15 @@ class PlatformFlow(BaseModel):
         related_name='flows',
         help_text="Creator (influencer) who referred this flow (for commission)"
     )
-    # Future: accommodation field
-    
+    accommodation = models.ForeignKey(
+        'accommodations.Accommodation',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='flows',
+        help_text="Accommodation associated with this flow (if applicable)",
+    )
+
     # Timing
     completed_at = models.DateTimeField(
         null=True, 
@@ -236,8 +244,14 @@ class PlatformFlowEvent(BaseModel):
         ('FLOW_COMPLETED', 'Flow Completed Successfully'),
         ('FLOW_FAILED', 'Flow Failed'),
         ('FLOW_ABANDONED', 'Flow Abandoned'),
+        # Erasmus registration flow
+        ('ERASMUS_LINK_VISIT', 'Erasmus Link Visit'),
+        ('ERASMUS_FORM_STARTED', 'Erasmus Form Started'),
+        ('ERASMUS_STEP_COMPLETED', 'Erasmus Step Completed'),
+        ('ERASMUS_FORM_SUBMITTED', 'Erasmus Form Submitted'),
+        ('ERASMUS_FLOW_ABANDONED', 'Erasmus Flow Abandoned'),
     ]
-    
+
     SOURCE_CHOICES = [
         ('api', 'API'),
         ('celery', 'Celery Task'),

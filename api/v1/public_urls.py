@@ -5,6 +5,7 @@ from rest_framework.routers import DefaultRouter
 
 from apps.landing_destinations.views import (
     PublicDestinationBySlugView,
+    PublicDestinationListView,
     PublicDestinationWeatherTimeView,
 )
 
@@ -56,7 +57,8 @@ urlpatterns = [
     path('otp/event-creation/', EventCreationOTPView.as_view(), name='otp_event_creation'),
     path('otp/login/', LoginOTPView.as_view(), name='otp_login'),
     path('otp/ticket-access/', TicketAccessOTPView.as_view(), name='otp_ticket_access'),
-    # Public landing destinations (página /destino/:slug)
+    # Public landing destinations (páginas /destinos, /destino/:slug)
+    path('public/destinations/', PublicDestinationListView.as_view(), name='public-destination-list'),
     path('public/destinations/<str:slug>/', PublicDestinationBySlugView.as_view(), name='public-destination-by-slug'),
     path('public/destinations/<str:slug>/weather-time/', PublicDestinationWeatherTimeView.as_view(), name='public-destination-weather-time'),
 ] 

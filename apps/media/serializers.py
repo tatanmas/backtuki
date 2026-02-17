@@ -2,11 +2,52 @@
 🚀 ENTERPRISE MEDIA LIBRARY SERIALIZERS
 """
 
+import logging
+from urllib.parse import urlparse
+
 from django.conf import settings
 from rest_framework import serializers
+
+logger = logging.getLogger(__name__)
 from apps.media.models import MediaAsset, MediaUsage
 from apps.organizers.models import Organizer
 from django.contrib.contenttypes.models import ContentType
+
+
+def _build_media_url_for_request(url, request):
+    """
+    Build absolute media URL for the client. En producción la biblioteca de medios
+    debe cargar imágenes desde el dominio público (ej. https://tuki.cl), nunca desde
+    localhost o el host interno del contenedor.
+    - Si BACKEND_URL está definido, se usa SIEMPRE como base para URLs de medios
+      (path relativo o URL con localhost), así las thumbnails cargan en el navegador.
+    - Si no hay BACKEND_URL, se usa el host del request (desarrollo local).
+    """
+    if not url:
+        return None
+    backend_url = (getattr(settings, "BACKEND_URL", None) or "").rstrip("/")
+    # En producción (Dako): usar siempre BACKEND_URL para que la biblioteca reciba URLs públicas
+    if backend_url:
+        if url.startswith(("http://", "https://")):
+            if "localhost" in url or "127.0.0.1" in url:
+                parsed = urlparse(url)
+                path = parsed.path or ""
+                if path:
+                    return f"{backend_url}{path}" if path.startswith("/") else f"{backend_url}/{path}"
+            return url
+        path = url if url.startswith("/") else f"/{url}"
+        return f"{backend_url}{path}"
+    # Desarrollo local: usar request si está disponible
+    if request:
+        if url.startswith(("http://", "https://")):
+            if "localhost" in url or "127.0.0.1" in url:
+                parsed = urlparse(url)
+                path = parsed.path or ""
+                if path:
+                    return request.build_absolute_uri(path)
+            return url
+        return request.build_absolute_uri(url if url.startswith("/") else f"/{url}")
+    return url
 
 
 class MediaAssetSerializer(serializers.ModelSerializer):
@@ -52,7 +93,18 @@ class MediaAssetSerializer(serializers.ModelSerializer):
         ]
     
     def get_url(self, obj):
-        """Return public URL. Always use model's url (uses BACKEND_URL or ALLOWED_HOSTS fallback)."""
+        """
+        Return public URL using request host when available (igual que destinos/experiencias).
+        Así la biblioteca de medios sirve imágenes desde tuki.cl en prod, no desde localhost.
+        """
+        if not obj.file:
+            return None
+        raw = obj.file.url
+        if not raw:
+            return None
+        request = self.context.get("request")
+        if request:
+            return _build_media_url_for_request(raw, request)
         return obj.url
     
     def get_size_mb(self, obj):
@@ -101,23 +153,37 @@ class MediaAssetCreateSerializer(serializers.ModelSerializer):
         ]
     
     def validate_file(self, value):
-        """Validate file size and type."""
-        # Check file size
+        """Validate file size and type. Accept by extension or by image/* Content-Type."""
         max_size = MediaAsset.MAX_FILE_SIZE_MB * 1024 * 1024
         if value.size > max_size:
             raise serializers.ValidationError(
                 f"File size exceeds {MediaAsset.MAX_FILE_SIZE_MB}MB limit"
             )
-        
-        # Check content type
-        content_type = value.content_type
-        if content_type not in MediaAsset.ALLOWED_CONTENT_TYPES:
-            raise serializers.ValidationError(
-                f"File type {content_type} not allowed. "
-                f"Allowed types: {', '.join(MediaAsset.ALLOWED_CONTENT_TYPES)}"
-            )
-        
-        return value
+        if value.size <= 0:
+            raise serializers.ValidationError("File is empty")
+
+        allowed_extensions = ('jpg', 'jpeg', 'png', 'webp', 'gif', 'avif')
+        name = getattr(value, 'name', '') or ''
+        ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+        content_type = (value.content_type or '').strip().lower()
+
+        # Accept if extension is allowed (browsers often send application/octet-stream)
+        if ext in allowed_extensions:
+            return value
+        # Accept if Content-Type is in our list
+        if content_type and content_type in MediaAsset.ALLOWED_CONTENT_TYPES:
+            return value
+
+        logger.warning(
+            "MEDIA upload 400: file name=%r content_type=%r size=%s",
+            name or '(no name)',
+            content_type or '(none)',
+            value.size,
+        )
+        raise serializers.ValidationError(
+            f"File type not allowed (got {content_type or 'unknown'}, extension .{ext or 'none'}). "
+            f"Allowed: {', '.join(allowed_extensions)}"
+        )
     
     def validate(self, attrs):
         """Validate scope/organizer consistency."""
@@ -160,8 +226,16 @@ class MediaUsageSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'deleted_at']
     
     def get_asset_url(self, obj):
-        """Return asset URL."""
-        return obj.asset.url if obj.asset else None
+        """Return asset URL (usa request host como MediaAssetSerializer)."""
+        if not obj.asset or not obj.asset.file:
+            return None
+        raw = obj.asset.file.url
+        if not raw:
+            return None
+        request = self.context.get("request")
+        if request:
+            return _build_media_url_for_request(raw, request)
+        return obj.asset.url
     
     def get_asset_filename(self, obj):
         """Return asset filename."""

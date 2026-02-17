@@ -34,40 +34,52 @@ def validate_organizer_reservation_token(token: str) -> str | None:
 
 def notify_operator_payment_received(payment) -> bool:
     """
-    Notify operator/group when experience payment succeeds.
-    Message: name, date, time, paid full or deposit, reservation number, link with token.
+    Notify operator/group when experience or accommodation payment succeeds.
+    Experience: name, date, time, paid full or deposit, reservation number, link with token.
+    Accommodation: name, check-in/out, reservation number, link.
     """
     try:
         order = payment.order
-        if getattr(order, 'order_kind', 'event') != 'experience':
-            return False
-        exp_res = order.experience_reservation
-        if not exp_res:
-            return False
+        order_kind = getattr(order, 'order_kind', 'event')
 
-        wa_req = WhatsAppReservationRequest.objects.filter(
-            linked_experience_reservation=exp_res
-        ).select_related('experience', 'operator', 'whatsapp_message').first()
-        if not wa_req:
-            logger.info(f"No WhatsApp reservation linked to exp_res {exp_res.id}, skipping operator notify")
-            return False
+        if order_kind == 'experience':
+            return _notify_operator_experience_payment(payment)
+        if order_kind == 'accommodation':
+            return _notify_operator_accommodation_payment(payment)
+        return False
+    except Exception as e:
+        logger.exception(f"Error notifying operator of payment: {e}")
+        return False
 
-        experience = exp_res.experience
-        instance = getattr(exp_res, 'instance', None)
-        start_dt = instance.start_datetime if instance else None
-        date_str = start_dt.strftime('%d/%m/%Y') if start_dt else 'N/A'
-        time_str = start_dt.strftime('%H:%M') if start_dt else 'N/A'
-        name = f"{exp_res.first_name or ''} {exp_res.last_name or ''}".strip() or 'Cliente'
 
-        # deposit_only: paga diferencia en la experiencia; else: pagó todo
-        is_deposit = getattr(experience, 'payment_model', None) == 'deposit_only'
-        payment_desc = "Paga la diferencia en la experiencia" if is_deposit else "Pagó el total"
+def _notify_operator_experience_payment(payment) -> bool:
+    order = payment.order
+    exp_res = order.experience_reservation
+    if not exp_res:
+        return False
 
-        token = generate_organizer_reservation_token(str(exp_res.id))
-        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080').rstrip('/')
-        org_link = f"{frontend_url}/organizer/experiences/reservations/{exp_res.id}?token={token}"
+    wa_req = WhatsAppReservationRequest.objects.filter(
+        linked_experience_reservation=exp_res
+    ).select_related('experience', 'operator', 'whatsapp_message').first()
+    if not wa_req:
+        logger.info(f"No WhatsApp reservation linked to exp_res {exp_res.id}, skipping operator notify")
+        return False
 
-        message = f"""✅ Pago recibido - Nueva reserva confirmada
+    experience = exp_res.experience
+    instance = getattr(exp_res, 'instance', None)
+    start_dt = instance.start_datetime if instance else None
+    date_str = start_dt.strftime('%d/%m/%Y') if start_dt else 'N/A'
+    time_str = start_dt.strftime('%H:%M') if start_dt else 'N/A'
+    name = f"{exp_res.first_name or ''} {exp_res.last_name or ''}".strip() or 'Cliente'
+
+    is_deposit = getattr(experience, 'payment_model', None) == 'deposit_only'
+    payment_desc = "Paga la diferencia en la experiencia" if is_deposit else "Pagó el total"
+
+    token = generate_organizer_reservation_token(str(exp_res.id))
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080').rstrip('/')
+    org_link = f"{frontend_url}/organizer/experiences/reservations/{exp_res.id}?token={token}"
+
+    message = f"""✅ Pago recibido - Nueva reserva confirmada
 
 Cliente: {name}
 Fecha: {date_str}
@@ -77,73 +89,151 @@ N° Reserva: {exp_res.reservation_id}
 
 Ver reserva: {org_link}"""
 
-        group_info = GroupNotificationService.get_group_for_experience(experience)
-        service = WhatsAppWebService()
+    group_info = GroupNotificationService.get_group_for_experience(experience)
+    service = WhatsAppWebService()
 
-        if group_info and group_info.get('chat_id'):
-            service.send_message('', message, group_id=group_info['chat_id'])
-            logger.info(f"Sent payment notification to group for reservation {exp_res.reservation_id}")
+    if group_info and group_info.get('chat_id'):
+        service.send_message('', message, group_id=group_info['chat_id'])
+        logger.info(f"Sent payment notification to group for reservation {exp_res.reservation_id}")
+        return True
+    operator = wa_req.operator
+    if operator:
+        phone = operator.whatsapp_number or operator.contact_phone
+        if phone:
+            service.send_message(phone, message)
+            logger.info(f"Sent payment notification to operator for reservation {exp_res.reservation_id}")
             return True
-        operator = wa_req.operator
-        if operator:
-            phone = operator.whatsapp_number or operator.contact_phone
-            if phone:
-                service.send_message(phone, message)
-                logger.info(f"Sent payment notification to operator for reservation {exp_res.reservation_id}")
-                return True
+    return False
+
+
+def _notify_operator_accommodation_payment(payment) -> bool:
+    from apps.whatsapp.services.accommodation_operator_service import AccommodationOperatorService
+
+    order = payment.order
+    acc_res = order.accommodation_reservation
+    if not acc_res:
         return False
-    except Exception as e:
-        logger.exception(f"Error notifying operator of payment: {e}")
-        return False
+
+    name = f"{acc_res.first_name or ''} {acc_res.last_name or ''}".strip() or 'Cliente'
+    check_in = acc_res.check_in.strftime('%d/%m/%Y') if acc_res.check_in else 'N/A'
+    check_out = acc_res.check_out.strftime('%d/%m/%Y') if acc_res.check_out else 'N/A'
+
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080').rstrip('/')
+    message = f"""✅ Pago recibido - Reserva alojamiento confirmada
+
+Cliente: {name}
+Alojamiento: {acc_res.accommodation.title}
+Check-in: {check_in}
+Check-out: {check_out}
+N° Reserva: {acc_res.reservation_id}"""
+
+    group_info = AccommodationOperatorService.get_accommodation_whatsapp_group(acc_res.accommodation)
+    service = WhatsAppWebService()
+
+    if group_info and group_info.get('chat_id'):
+        service.send_message('', message, group_id=group_info['chat_id'])
+        logger.info(f"Sent accommodation payment notification to group for {acc_res.reservation_id}")
+        return True
+    wa_req = WhatsAppReservationRequest.objects.filter(
+        linked_accommodation_reservation=acc_res
+    ).select_related('operator').first()
+    if wa_req and wa_req.operator:
+        phone = wa_req.operator.whatsapp_number or wa_req.operator.contact_phone
+        if phone:
+            service.send_message(phone, message)
+            logger.info(f"Sent accommodation payment notification to operator for {acc_res.reservation_id}")
+            return True
+    return False
 
 
 def notify_customer_payment_success(payment, receipt_base64: str | None = None) -> bool:
     """
-    Send WhatsApp to customer: thanks, success, optional receipt, magic link.
+    Send WhatsApp to customer: thanks, success, optional receipt (experience only), magic link.
+    Supports experience and accommodation orders.
     """
     try:
         order = payment.order
-        if getattr(order, 'order_kind', 'event') != 'experience':
-            return False
-        exp_res = order.experience_reservation
-        if not exp_res:
-            return False
+        order_kind = getattr(order, 'order_kind', 'event')
 
-        phone_raw = exp_res.phone or getattr(order, 'phone', '') or ''
-        if not phone_raw:
-            wa_req = WhatsAppReservationRequest.objects.filter(
-                linked_experience_reservation=exp_res
-            ).select_related('whatsapp_message').first()
-            if wa_req and wa_req.whatsapp_message:
-                phone_raw = getattr(wa_req.whatsapp_message, 'phone', '') or ''
-        if not phone_raw:
-            logger.warning("No customer phone for payment success notification")
-            return False
-
-        customer_phone = WhatsAppWebService.clean_phone_number(phone_raw)
-        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080').rstrip('/')
-        magic_link = f"{frontend_url}/reservation/{order.order_number}?token={order.access_token}"
-
-        message = f"""¡Gracias por tu compra! Fue realizada con éxito.
-
-Ver el detalle de tu reserva: {magic_link}"""
-
-        service = WhatsAppWebService()
-        service.send_message(customer_phone, message)
-        logger.info(f"Sent payment success to customer {customer_phone}")
-
-        if receipt_base64:
-            try:
-                service.send_media(
-                    customer_phone,
-                    media_base64=receipt_base64,
-                    mimetype='image/png',
-                    filename='comprobante-reserva.png',
-                    caption='Comprobante de tu reserva.'
-                )
-            except Exception as e:
-                logger.warning(f"Could not send receipt image: {e}")
-        return True
+        if order_kind == 'experience':
+            return _notify_customer_experience_payment(payment, receipt_base64)
+        if order_kind == 'accommodation':
+            return _notify_customer_accommodation_payment(payment)
+        return False
     except Exception as e:
         logger.exception(f"Error notifying customer of payment: {e}")
         return False
+
+
+def _notify_customer_experience_payment(payment, receipt_base64: str | None = None) -> bool:
+    order = payment.order
+    exp_res = order.experience_reservation
+    if not exp_res:
+        return False
+
+    phone_raw = exp_res.phone or getattr(order, 'phone', '') or ''
+    if not phone_raw:
+        wa_req = WhatsAppReservationRequest.objects.filter(
+            linked_experience_reservation=exp_res
+        ).select_related('whatsapp_message').first()
+        if wa_req and wa_req.whatsapp_message:
+            phone_raw = getattr(wa_req.whatsapp_message, 'phone', '') or ''
+    if not phone_raw:
+        logger.warning("No customer phone for payment success notification")
+        return False
+
+    customer_phone = WhatsAppWebService.clean_phone_number(phone_raw)
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080').rstrip('/')
+    magic_link = f"{frontend_url}/reservation/{order.order_number}?token={order.access_token}"
+
+    message = f"""¡Gracias por tu compra! Fue realizada con éxito.
+
+Ver el detalle de tu reserva: {magic_link}"""
+
+    service = WhatsAppWebService()
+    service.send_message(customer_phone, message)
+    logger.info(f"Sent payment success to customer {customer_phone}")
+
+    if receipt_base64:
+        try:
+            service.send_media(
+                customer_phone,
+                media_base64=receipt_base64,
+                mimetype='image/png',
+                filename='comprobante-reserva.png',
+                caption='Comprobante de tu reserva.'
+            )
+        except Exception as e:
+            logger.warning(f"Could not send receipt image: {e}")
+    return True
+
+
+def _notify_customer_accommodation_payment(payment) -> bool:
+    order = payment.order
+    acc_res = order.accommodation_reservation
+    if not acc_res:
+        return False
+
+    phone_raw = acc_res.phone or getattr(order, 'phone', '') or ''
+    if not phone_raw:
+        wa_req = WhatsAppReservationRequest.objects.filter(
+            linked_accommodation_reservation=acc_res
+        ).select_related('whatsapp_message').first()
+        if wa_req and wa_req.whatsapp_message:
+            phone_raw = getattr(wa_req.whatsapp_message, 'phone', '') or ''
+    if not phone_raw:
+        logger.warning("No customer phone for accommodation payment success notification")
+        return False
+
+    customer_phone = WhatsAppWebService.clean_phone_number(phone_raw)
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080').rstrip('/')
+    magic_link = f"{frontend_url}/reservation/{order.order_number}?token={order.access_token}"
+
+    message = f"""¡Gracias por tu reserva! El pago fue realizado con éxito.
+
+Ver el detalle de tu reserva: {magic_link}"""
+
+    service = WhatsAppWebService()
+    service.send_message(customer_phone, message)
+    logger.info(f"Sent accommodation payment success to customer {customer_phone}")
+    return True

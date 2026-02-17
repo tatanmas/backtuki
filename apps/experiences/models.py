@@ -281,6 +281,35 @@ class Experience(BaseModel):
         help_text=_("Creator share of platform fee (e.g., 0.5 = 50%). If null, uses platform default.")
     )
     
+    # Payment model (migration 0011): full_upfront = Tuki cobra todo; deposit_only = Tuki cobra comisión, resto en destino
+    PAYMENT_MODEL_CHOICES = (
+        ('full_upfront', _('Full upfront (client pays total online)')),
+        ('deposit_only', _('Deposit only (client pays commission online, rest at experience)')),
+    )
+    payment_model = models.CharField(
+        _("payment model"),
+        max_length=20,
+        choices=PAYMENT_MODEL_CHOICES,
+        default='full_upfront',
+        help_text=_("full_upfront: Tuki collects total. deposit_only: Tuki collects commission, client pays rest to operator.")
+    )
+    operator_net_price = models.DecimalField(
+        _("operator net price"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_("Price operator receives per person/base. If null, inferred from price in full_upfront.")
+    )
+    tuki_collects_online = models.DecimalField(
+        _("tuki collects online"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_("Amount Tuki collects online (commission for deposit_only). If null, calculated.")
+    )
+    
     # 🚀 ENTERPRISE: Soft delete and activation control
     is_active = models.BooleanField(
         _("is active"),
@@ -292,6 +321,15 @@ class Experience(BaseModel):
         null=True,
         blank=True,
         help_text=_("When this experience was soft-deleted (null if not deleted)")
+    )
+    
+    # Experiencias gestionadas por Tuki/superadmin: operador real (para transferencia futura)
+    managed_operator_slug = models.CharField(
+        _("managed operator slug"),
+        max_length=100,
+        blank=True,
+        db_index=True,
+        help_text=_("When managed by Tuki (organizer = Tuki), the real operator identifier e.g. molantours for future transfer")
     )
     
     class Meta:

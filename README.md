@@ -176,11 +176,28 @@ The API is documented using OpenAPI 3.0 and can be viewed through:
 
 ## Testing
 
+**Desde la raíz del repositorio** la forma estándar para ejecutar backend y frontend es `npm test` o `./test`. Ver **[TESTING.md](../TESTING.md)** en la raíz para detalles (alias, solo backend/frontend, requisitos).
+
 Run the test suite with:
 
 ```bash
 docker-compose exec web python manage.py test
 ```
+
+### Docker: migrar todo y probar (enterprise)
+
+Desde la **raíz del repositorio** (no desde `backtuki/`):
+
+1. **Levantar servicios**: `docker compose up -d` (o `docker compose -f docker-compose.yml up -d`)
+2. **Comprobar contenedores**: `docker ps` — deben aparecer `tuki-backend`, `tuki-db`, `tuki-redis`
+3. **Migraciones**:  
+   `docker compose run --rm tuki-backend python manage.py migrate --noinput`
+4. **Tests**: usar el script que monta el código local y ejecuta la suite ampliada (Erasmus, core, WhatsApp, accommodations, events, payment_processor):  
+   `./run_tests.sh`  
+   O el script único que hace migrar + probar:  
+   `./scripts/docker-migrate-and-test.sh`
+
+El script `scripts/docker-migrate-and-test.sh` hace: levantar servicios si no están, verificar con `docker ps`, ejecutar migraciones y luego los tests en un solo flujo.
 
 ## Deployment
 

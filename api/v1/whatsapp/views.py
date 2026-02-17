@@ -211,33 +211,47 @@ def webhook_qr(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])  # TODO: Add proper authentication
 def generate_reservation_code(request):
-    """Generate a unique reservation code for checkout."""
+    """Generate a unique reservation code for checkout (experience or accommodation)."""
     experience_id = request.data.get('experience_id')
+    accommodation_id = request.data.get('accommodation_id')
     checkout_data = request.data.get('checkout_data', {})
-    
-    if not experience_id:
-        return Response({
-            'error': 'experience_id is required'
-        }, status=status.HTTP_400_BAD_REQUEST)
-    
-    try:
-        code_obj = ReservationCodeGenerator.generate_code(experience_id, checkout_data)
-        
+
+    if accommodation_id:
+        if experience_id:
+            return Response({'error': 'Provide either experience_id or accommodation_id, not both.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            code_obj = ReservationCodeGenerator.generate_code_for_accommodation(accommodation_id, checkout_data)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Error generating accommodation reservation code: %s", e)
+            return Response({'error': 'Internal server error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response({
             'code': code_obj.code,
             'expires_at': code_obj.expires_at.isoformat(),
-            'code_id': str(code_obj.id)
+            'code_id': str(code_obj.id),
+            'product_type': 'accommodation',
         }, status=status.HTTP_201_CREATED)
-    
-    except ValueError as e:
+
+    if not experience_id:
         return Response({
-            'error': str(e)
+            'error': 'experience_id or accommodation_id is required'
         }, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        code_obj = ReservationCodeGenerator.generate_code(experience_id, checkout_data)
+    except ValueError as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
-        logger.exception(f"Error generating reservation code: {e}")
-        return Response({
-            'error': 'Internal server error'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.exception("Error generating reservation code: %s", e)
+        return Response({'error': 'Internal server error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({
+        'code': code_obj.code,
+        'expires_at': code_obj.expires_at.isoformat(),
+        'code_id': str(code_obj.id),
+        'product_type': 'experience',
+    }, status=status.HTTP_201_CREATED)
 
 
 def _serialize_decimal(value):
@@ -269,7 +283,9 @@ def reservation_by_code(request):
 
     try:
         code_obj = WhatsAppReservationCode.objects.select_related(
-            'experience', 'linked_reservation', 'linked_reservation__linked_experience_reservation',
+            'experience', 'accommodation',
+            'linked_reservation', 'linked_reservation__linked_experience_reservation',
+            'linked_reservation__linked_accommodation_reservation',
             'linked_reservation__whatsapp_message'
         ).get(code=code)
     except WhatsAppReservationCode.DoesNotExist:
@@ -303,12 +319,14 @@ def reservation_by_code(request):
     checkout_data = code_obj.checkout_data or {}
     participants = checkout_data.get('participants') or {}
     pricing = _serialize_decimal(checkout_data.get('pricing') or {})
-    total = pricing.get('total') or checkout_data.get('total_price')
+    total = pricing.get('total') or checkout_data.get('total_price') or checkout_data.get('total')
     if isinstance(total, Decimal):
         total = float(total)
 
     experience = code_obj.experience
+    accommodation = code_obj.accommodation
     experience_data = None
+    accommodation_data = None
     if experience:
         experience_data = {
             'id': str(experience.id),
@@ -317,9 +335,19 @@ def reservation_by_code(request):
             'price': float(experience.price) if isinstance(experience.price, Decimal) else experience.price,
             'currency': getattr(experience, 'currency', 'CLP'),
         }
+    if accommodation:
+        accommodation_data = {
+            'id': str(accommodation.id),
+            'title': accommodation.title,
+            'slug': accommodation.slug,
+            'price': float(accommodation.price) if accommodation.price and isinstance(accommodation.price, Decimal) else (float(accommodation.price) if accommodation.price else 0),
+            'currency': getattr(accommodation, 'currency', 'CLP'),
+        }
 
     exp_res = getattr(reservation, 'linked_experience_reservation', None)
+    acc_res = getattr(reservation, 'linked_accommodation_reservation', None)
     experience_reservation_id = str(exp_res.reservation_id) if exp_res else None
+    accommodation_reservation_id = str(acc_res.reservation_id) if acc_res else None
 
     # Customer: merge checkout_data.customer with WhatsApp phone from sender
     from core.phone_utils import normalize_phone_e164, format_phone_display
@@ -355,12 +383,20 @@ def reservation_by_code(request):
         except Exception:
             pass
 
+    currency = (
+        pricing.get('currency')
+        or (getattr(experience, 'currency', 'CLP') if experience else None)
+        or (getattr(accommodation, 'currency', 'CLP') if accommodation else 'CLP')
+    )
+
     response_data = {
         'code': code_obj.code,
         'status': reservation.status,
         'expires_at': code_obj.expires_at.isoformat() if code_obj.expires_at else None,
         'experience': experience_data,
         'experience_reservation_id': experience_reservation_id,
+        'accommodation': accommodation_data,
+        'accommodation_reservation_id': accommodation_reservation_id,
         'participants': {
             'adults': participants.get('adults', 0),
             'children': participants.get('children', 0),
@@ -368,15 +404,117 @@ def reservation_by_code(request):
         },
         'date': checkout_data.get('date'),
         'time': checkout_data.get('time'),
+        'check_in': checkout_data.get('check_in'),
+        'check_out': checkout_data.get('check_out'),
+        'guests': checkout_data.get('guests'),
         'pricing': pricing,
         'total': total,
-        'currency': pricing.get('currency') or getattr(experience, 'currency', 'CLP') if experience else None,
+        'currency': currency,
         'customer': customer,
         'payment_link': reservation.payment_link,
         'payment_link_sent_at': reservation.payment_link_sent_at.isoformat() if reservation.payment_link_sent_at else None,
         'allow_payment': reservation.payment_received_at is None,
+        'product_type': 'accommodation' if accommodation else 'experience',
     }
 
     return Response(response_data, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def create_order_for_accommodation(request):
+    """
+    Create an Order for accommodation checkout (WhatsApp flow).
+    Body: { "codigo": "RES-..." }. Validates code and reservation; creates Order with
+    order_kind='accommodation' linked to AccommodationReservation. Returns order id for payment init.
+    """
+    from apps.events.models import Order
+    from apps.accommodations.models import AccommodationReservation
+
+    codigo = (request.data.get('codigo') or request.data.get('code') or '').strip()
+    if not codigo:
+        return Response(
+            {'error': 'El parámetro codigo es obligatorio.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        code_obj = WhatsAppReservationCode.objects.select_related(
+            'linked_reservation', 'linked_reservation__linked_accommodation_reservation'
+        ).get(code=codigo)
+    except WhatsAppReservationCode.DoesNotExist:
+        return Response(
+            {'error': 'El código indicado no existe o no pertenece a esta instancia.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if code_obj.status == 'expired' or code_obj.is_expired():
+        return Response(
+            {'error': 'El código de reserva ha expirado.'},
+            status=status.HTTP_410_GONE
+        )
+
+    reservation = code_obj.linked_reservation
+    if not reservation:
+        return Response(
+            {'error': 'La solicitud aún no ha sido vinculada a una reserva.'},
+            status=status.HTTP_409_CONFLICT
+        )
+    if reservation.status not in ('availability_confirmed', 'confirmed'):
+        return Response(
+            {'error': 'La reserva todavía no está lista para el pago.', 'status': reservation.status},
+            status=status.HTTP_409_CONFLICT
+        )
+
+    acc_res = reservation.linked_accommodation_reservation
+    if not acc_res:
+        return Response(
+            {'error': 'No hay reserva de alojamiento vinculada.'},
+            status=status.HTTP_409_CONFLICT
+        )
+    if acc_res.status != 'pending':
+        return Response(
+            {'error': f'La reserva ya no está pendiente de pago (estado: {acc_res.status}).'},
+            status=status.HTTP_409_CONFLICT
+        )
+
+    existing = Order.objects.filter(
+        order_kind='accommodation',
+        accommodation_reservation=acc_res,
+        status='pending'
+    ).first()
+    if existing:
+        return Response({
+            'order_id': str(existing.id),
+            'order_number': existing.order_number,
+            'total': float(existing.total),
+            'currency': existing.currency,
+        }, status=status.HTTP_200_OK)
+
+    with transaction.atomic():
+        order = Order.objects.create(
+            order_kind='accommodation',
+            accommodation_reservation=acc_res,
+            experience_reservation=None,
+            event=None,
+            email=acc_res.email,
+            first_name=acc_res.first_name,
+            last_name=acc_res.last_name,
+            phone=acc_res.phone or '',
+            total=acc_res.total,
+            subtotal=acc_res.total,
+            service_fee=0,
+            discount=0,
+            taxes=0,
+            currency=acc_res.currency or 'CLP',
+            status='pending',
+        )
+    logger.info("Created accommodation order %s for reservation %s", order.order_number, acc_res.reservation_id)
+    return Response({
+        'order_id': str(order.id),
+        'order_number': order.order_number,
+        'total': float(order.total),
+        'currency': order.currency,
+    }, status=status.HTTP_201_CREATED)
 
 

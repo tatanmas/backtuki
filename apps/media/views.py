@@ -9,6 +9,7 @@ from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.exceptions import ValidationError
 from django.db.models import Q, Count
 from django.core.files.storage import default_storage
 
@@ -21,6 +22,15 @@ from apps.media.serializers import (
 from apps.organizers.models import OrganizerUser
 
 logger = logging.getLogger(__name__)
+
+# Fallback filename when request has no name (e.g. pasted image)
+_ct_to_filename = {
+    'image/jpeg': 'image.jpg',
+    'image/png': 'image.png',
+    'image/webp': 'image.webp',
+    'image/gif': 'image.gif',
+    'image/avif': 'image.avif',
+}
 
 
 class MediaAssetViewSet(viewsets.ModelViewSet):
@@ -159,7 +169,27 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
         if self.action == 'create':
             return MediaAssetCreateSerializer
         return MediaAssetSerializer
-    
+
+    def create(self, request, *args, **kwargs):
+        """Log 400 causes: missing file or validation."""
+        if request.content_type and 'multipart' not in request.content_type.lower():
+            logger.warning(
+                "MEDIA upload 400: Content-Type is %s (expected multipart/form-data)",
+                request.content_type,
+            )
+        if not request.FILES:
+            logger.warning("MEDIA upload 400: request.FILES is empty (no file in request)")
+        elif 'file' not in request.FILES:
+            logger.warning(
+                "MEDIA upload 400: 'file' not in FILES, keys=%s",
+                list(request.FILES.keys()),
+            )
+        try:
+            return super().create(request, *args, **kwargs)
+        except ValidationError as e:
+            logger.warning("MEDIA upload 400 validation: %s", e.detail)
+            raise
+
     def perform_create(self, serializer):
         """
         Create media asset with automatic metadata extraction.
@@ -183,13 +213,23 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
                     serializer.validated_data['scope'] = 'global'
                 else:
                     from rest_framework.exceptions import PermissionDenied
-                    raise PermissionDenied("No organizer associated with user")
+                    logger.warning(
+                        "MEDIA upload 403: user %s has no organizer (organizer scope)",
+                        user.id,
+                    )
+                    raise PermissionDenied(
+                        "No organizer associated with your account. You must be linked to an organizer to upload to the media library."
+                    )
         
         # Extract file metadata
         file_obj = serializer.validated_data['file']
-        # Use provided values or extract from file
-        original_filename = serializer.validated_data.get('original_filename') or file_obj.name
-        content_type = serializer.validated_data.get('content_type') or file_obj.content_type
+        # Use provided values or extract from file; fallback so we never save empty filename
+        _name = (serializer.validated_data.get('original_filename') or file_obj.name or '').strip()
+        _ct = (serializer.validated_data.get('content_type') or file_obj.content_type or '').strip().lower()
+        if not _name:
+            _name = _ct_to_filename.get(_ct, 'image.jpg')
+        original_filename = _name
+        content_type = _ct or 'image/jpeg'
         size_bytes = file_obj.size
         
         # Compute SHA256 hash for deduplication

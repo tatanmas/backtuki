@@ -204,19 +204,18 @@ services:
       - tuki-network
 
   # ═══════════════════════════════════════════════════════════════
-  # 🔐 Cloudflare Tunnel (SSL + acceso seguro)
+  # 🔐 Cloudflare Tunnel (SSL + acceso seguro, persistente)
+  # Config en ~/.cloudflared/config.yml debe usar 127.0.0.1 (no localhost).
   # ═══════════════════════════════════════════════════════════════
   tuki-cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2024.12.1
     container_name: tuki-cloudflared
     command: tunnel --config /etc/cloudflared/config.yml run tuki-production
     volumes:
       - /home/tatan/.cloudflared:/etc/cloudflared:ro
-    depends_on:
-      - tuki-frontend
-    restart: unless-stopped
-    networks:
-      - tuki-network
+    restart: always
+    # host: túnel ve 127.0.0.1:80/8000/8081 del host (frontend, backend, mail)
+    network_mode: host
 
   # ═══════════════════════════════════════════════════════════════
   # 📱 WhatsApp Web Service (Node.js)

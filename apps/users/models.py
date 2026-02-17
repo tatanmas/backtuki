@@ -181,17 +181,17 @@ class User(AbstractUser, TimeStampedModel):
             counter += 1
         
         normalized_phone = normalize_phone_e164(phone) if phone else None
-        
-        user = cls.objects.create_user(
+
+        user = cls(
             username=username,
             email=email,
             first_name=first_name or '',
             last_name=last_name or '',
             phone_number=normalized_phone or None,
             is_guest=True,
-            password=None  # No password initially
         )
-        
+        user.set_unusable_password()
+        user.save()
         return user
 
 

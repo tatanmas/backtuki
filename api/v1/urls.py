@@ -75,8 +75,10 @@ urlpatterns = [
     path('migration/', include('api.v1.migration.urls')),  # 🚀 ENTERPRISE: Backend-to-Backend Migration System
     path('', include('api.v1.events.urls')),  # ✅ NUEVO: Incluir URLs de eventos (incluye endpoints públicos)
     path('', include('api.v1.experiences.urls')),  # 🚀 ENTERPRISE: Experiences/Tours endpoints
+    path('accommodations/', include('api.v1.accommodations.urls')),  # 🚀 Alojamientos (public list/detail)
     path('student-centers/', include('api.v1.student_centers.urls')),  # 🚀 ENTERPRISE: Student Centers endpoints
     path('creators/', include('api.v1.creators.urls')),  # 🚀 ENTERPRISE: TUKI Creators (influencers)
+    path('erasmus/', include('api.v1.erasmus.urls')),  # 🚀 ENTERPRISE: Erasmus registration (public)
     path('terminal/', include('apps.terminal.urls')),  # 🚀 ENTERPRISE: Terminal bus schedule management
     # Onboarding URLs
     path('organizers/onboarding/start/', CurrentOnboardingView.as_view(), name='onboarding-start'),

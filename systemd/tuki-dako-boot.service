@@ -1,0 +1,32 @@
+# Servicio systemd para levantar el stack Tuki en Dako tras cada arranque.
+# Así la web, API, túnel y WhatsApp vuelven solos después de un reinicio.
+#
+# Instalación en Dako (una vez):
+#   sudo cp backtuki/systemd/tuki-dako-boot.service /etc/systemd/system/
+#   sudo sed -i "s|/home/tatan/Desktop/tuki|$(pwd)|g" /etc/systemd/system/tuki-dako-boot.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable tuki-dako-boot
+#
+# Opcional: levantar ahora sin reiniciar
+#   sudo systemctl start tuki-dako-boot
+#
+# Comandos útiles:
+#   sudo systemctl status tuki-dako-boot
+#   journalctl -u tuki-dako-boot -f
+
+[Unit]
+Description=Tuki stack on Dako (Docker Compose up on boot)
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/tatan/Desktop/tuki
+ExecStart=/usr/bin/docker compose up -d
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

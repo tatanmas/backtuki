@@ -42,12 +42,34 @@ Design Principles:
 - Extensible: Metadata fields support arbitrary JSON data
 """
 
+import uuid
+import logging
+
 from django.utils import timezone
 from django.db import transaction
 from core.models import PlatformFlow, PlatformFlowEvent
-import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _json_safe_metadata(data):
+    """Return a copy of data with UUIDs and other non-JSON types converted for JSONField."""
+    if data is None:
+        return {}
+    result = {}
+    for k, v in data.items():
+        if isinstance(v, uuid.UUID):
+            result[k] = str(v)
+        elif isinstance(v, dict):
+            result[k] = _json_safe_metadata(v)
+        elif isinstance(v, list):
+            result[k] = [
+                str(x) if isinstance(x, uuid.UUID) else _json_safe_metadata(x) if isinstance(x, dict) else x
+                for x in v
+            ]
+        else:
+            result[k] = v
+    return result
 
 
 class FlowLogger:
@@ -69,30 +91,22 @@ class FlowLogger:
         self.flow = flow
     
     @classmethod
-    def start_flow(cls, flow_type: str, user=None, organizer=None, event=None, 
-                   experience=None, metadata=None):
+    def start_flow(cls, flow_type: str, user=None, organizer=None, event=None,
+                   experience=None, accommodation=None, metadata=None):
         """
         Start a new platform flow.
-        
+
         Args:
-            flow_type: Type of flow ('ticket_checkout', 'experience_booking', etc.)
+            flow_type: Type of flow ('ticket_checkout', 'experience_booking', 'accommodation_booking', 'erasmus_registration', etc.)
             user: User initiating the flow (optional)
             organizer: Organizer associated with the flow (optional)
             event: Event being purchased/booked (optional)
             experience: Experience being booked (optional)
+            accommodation: Accommodation being booked (optional)
             metadata: Additional flow-level data as dict (optional)
-        
+
         Returns:
             FlowLogger instance for logging events
-        
-        Example:
-            flow = FlowLogger.start_flow(
-                'ticket_checkout',
-                user=request.user,
-                event=event,
-                organizer=event.organizer,
-                metadata={'session_id': request.session.session_key}
-            )
         """
         try:
             flow = PlatformFlow.objects.create(
@@ -102,7 +116,8 @@ class FlowLogger:
                 organizer=organizer,
                 event=event,
                 experience=experience,
-                metadata=metadata or {}
+                accommodation=accommodation,
+                metadata=_json_safe_metadata(metadata or {})
             )
             logger.info(
                 f"🚀 [FLOW] Started {flow_type} flow: {flow.id} "
@@ -189,7 +204,7 @@ class FlowLogger:
                 payment=payment,
                 email_log=email_log,
                 celery_task_log=celery_task_log,
-                metadata=metadata or {}
+                metadata=_json_safe_metadata(metadata or {})
             )
             
             # Log to standard logger as well for immediate visibility

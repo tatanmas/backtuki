@@ -62,25 +62,37 @@ class ContextBuilder:
         operator = reservation.operator
         context['contacto'] = (operator.contact_name or operator.name) if operator else 'Operador'
         
-        # Experience info
+        # Product info (experience or accommodation)
         exp = reservation.experience
+        acc = getattr(reservation, 'accommodation', None)
         if exp:
             context['experiencia'] = exp.title
             context['punto_encuentro'] = exp.location_name or 'Por confirmar'
             context['instrucciones'] = exp.short_description or ''
+        elif acc:
+            context['experiencia'] = acc.title
+            context['punto_encuentro'] = (acc.location_name or acc.location_address or 'Por confirmar')[:200]
+            context['instrucciones'] = (acc.short_description or '')[:200]
         else:
-            context['experiencia'] = 'Experiencia'
+            context['experiencia'] = 'Reserva'
             context['punto_encuentro'] = 'Por confirmar'
             context['instrucciones'] = ''
-        
+
         # Checkout data
         checkout = code_obj.checkout_data if code_obj else {}
-        
-        # Date and time
+
+        # Date and time (for accommodation: check_in/check_out)
         date_str = checkout.get('date', '')
         dt = cls.parse_datetime(date_str)
         context['fecha'] = cls.format_date(dt) if dt else checkout.get('date', 'Por confirmar')
         context['hora'] = checkout.get('time') or (cls.format_time(dt) if dt else 'Por confirmar')
+        if checkout.get('check_in'):
+            context['check_in'] = checkout.get('check_in')
+            context['check_out'] = checkout.get('check_out', '')
+        else:
+            context['check_in'] = ''
+            context['check_out'] = ''
+        context['guests'] = checkout.get('guests', 1)
         
         # Participants
         participants = checkout.get('participants', {})

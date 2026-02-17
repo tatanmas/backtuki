@@ -1,0 +1,251 @@
+"""Models for accommodations (alojamientos)."""
+
+from django.db import models
+from django.utils.translation import gettext_lazy as _
+from django.core.validators import MinValueValidator, MaxValueValidator
+
+from core.models import BaseModel
+from apps.organizers.models import Organizer
+
+
+class Accommodation(BaseModel):
+    """Alojamiento: cabaña, casa, departamento, etc. Con reseñas y amenities."""
+
+    STATUS_CHOICES = [
+        ("draft", _("Draft")),
+        ("published", _("Published")),
+        ("cancelled", _("Cancelled")),
+    ]
+    PROPERTY_TYPE_CHOICES = [
+        ("cabin", _("Cabin")),
+        ("house", _("House")),
+        ("apartment", _("Apartment")),
+        ("hotel", _("Hotel")),
+        ("hostel", _("Hostel")),
+        ("villa", _("Villa")),
+        ("other", _("Other")),
+    ]
+
+    title = models.CharField(_("title"), max_length=255)
+    slug = models.SlugField(_("slug"), max_length=255, unique=True, db_index=True)
+    description = models.TextField(_("description"), blank=True)
+    short_description = models.CharField(_("short description"), max_length=500, blank=True)
+
+    status = models.CharField(
+        _("status"),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="draft",
+        db_index=True,
+    )
+    property_type = models.CharField(
+        _("property type"),
+        max_length=20,
+        choices=PROPERTY_TYPE_CHOICES,
+        default="cabin",
+    )
+
+    organizer = models.ForeignKey(
+        Organizer,
+        on_delete=models.CASCADE,
+        related_name="accommodations",
+        verbose_name=_("organizer"),
+        null=True,
+        blank=True,
+    )
+
+    # Location
+    location_name = models.CharField(_("location name"), max_length=255, blank=True)
+    location_address = models.TextField(_("address"), blank=True)
+    latitude = models.DecimalField(
+        _("latitude"),
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
+    longitude = models.DecimalField(
+        _("longitude"),
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
+    country = models.CharField(_("country"), max_length=255, default="Chile")
+    city = models.CharField(_("city / region"), max_length=255, blank=True)
+
+    # Capacity
+    guests = models.PositiveIntegerField(_("max guests"), default=2, validators=[MinValueValidator(1)])
+    bedrooms = models.PositiveIntegerField(_("bedrooms"), default=1, validators=[MinValueValidator(0)])
+    bathrooms = models.PositiveIntegerField(_("bathrooms"), default=1, validators=[MinValueValidator(0)])
+    beds = models.PositiveIntegerField(_("beds"), default=1, validators=[MinValueValidator(0)], blank=True, null=True)
+
+    # Pricing (per night). Precio mostrado al huésped; la plataforma retiene 20%, neto anfitrión = 80%.
+    price = models.DecimalField(
+        _("price per night (guest-facing)"),
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text=_("Precio por noche mostrado al huésped. Plataforma retiene 20%; anfitrión recibe 80%."),
+    )
+    currency = models.CharField(_("currency"), max_length=3, default="CLP")
+
+    # Amenities
+    amenities = models.JSONField(
+        _("amenities"),
+        default=list,
+        help_text=_("List of amenity strings, e.g. ['WiFi', 'Cocina', 'Parrilla']"),
+    )
+    not_amenities = models.JSONField(
+        _("not available"),
+        default=list,
+        help_text=_("List of things not available, e.g. ['TV', 'Lavadora']"),
+    )
+
+    # Media: list of image URLs (from MediaAsset or external)
+    images = models.JSONField(_("image URLs"), default=list)
+    gallery_media_ids = models.JSONField(
+        _("gallery media asset IDs"),
+        default=list,
+        help_text=_("UUIDs of MediaAsset for gallery (optional)"),
+    )
+    gallery_items = models.JSONField(
+        _("gallery items with order and room category"),
+        default=list,
+        blank=True,
+        help_text=_(
+            "List of {media_id, room_category, sort_order}. "
+            "Order of display; room_category from ROOM_CATEGORIES or null. "
+            "When saving, gallery_media_ids is synced from this."
+        ),
+    )
+
+    # Rating (computed or manual)
+    rating_avg = models.DecimalField(
+        _("average rating"),
+        max_digits=2,
+        decimal_places=1,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+    )
+    review_count = models.PositiveIntegerField(_("review count"), default=0)
+
+    deleted_at = models.DateTimeField(_("deleted at"), null=True, blank=True, db_index=True)
+
+    class Meta:
+        verbose_name = _("Accommodation")
+        verbose_name_plural = _("Accommodations")
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.title
+
+
+class AccommodationReview(models.Model):
+    """Reseña de un alojamiento (autor, puntuación, texto, respuesta del anfitrión)."""
+
+    id = models.BigAutoField(primary_key=True)
+    accommodation = models.ForeignKey(
+        Accommodation,
+        on_delete=models.CASCADE,
+        related_name="reviews",
+        verbose_name=_("accommodation"),
+    )
+    author_name = models.CharField(_("author name"), max_length=255)
+    author_location = models.CharField(_("author location"), max_length=255, blank=True)
+    rating = models.PositiveSmallIntegerField(
+        _("rating"),
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+    )
+    text = models.TextField(_("review text"), blank=True)
+    review_date = models.DateField(_("review date"), null=True, blank=True)
+    stay_type = models.CharField(_("stay type"), max_length=100, blank=True)  # e.g. "Estadía de varias noches"
+    host_reply = models.TextField(_("host reply"), blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _("Accommodation review")
+        verbose_name_plural = _("Accommodation reviews")
+        ordering = ["-review_date", "-created_at"]
+
+    def __str__(self):
+        return f"{self.author_name} – {self.accommodation.title} ({self.rating}★)"
+
+
+class AccommodationReservation(BaseModel):
+    """
+    Reservation for an accommodation (WhatsApp flow: operator confirms then payment).
+    Reuses Order/payment_processor; linked from WhatsAppReservationRequest.
+    """
+
+    STATUS_CHOICES = [
+        ("pending", _("Pending")),
+        ("paid", _("Paid")),
+        ("cancelled", _("Cancelled")),
+        ("expired", _("Expired")),
+        ("refunded", _("Refunded")),
+    ]
+
+    reservation_id = models.CharField(
+        _("reservation ID"),
+        max_length=100,
+        unique=True,
+        db_index=True,
+    )
+    accommodation = models.ForeignKey(
+        Accommodation,
+        on_delete=models.CASCADE,
+        related_name="reservations",
+        verbose_name=_("accommodation"),
+    )
+    status = models.CharField(
+        _("status"),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="pending",
+        db_index=True,
+    )
+
+    check_in = models.DateField(_("check-in"))
+    check_out = models.DateField(_("check-out"))
+    guests = models.PositiveIntegerField(_("guests"), default=1, validators=[MinValueValidator(1)])
+
+    first_name = models.CharField(_("first name"), max_length=100)
+    last_name = models.CharField(_("last name"), max_length=100)
+    email = models.EmailField(_("email"))
+    phone = models.CharField(_("phone"), max_length=20, blank=True)
+
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        related_name="accommodation_reservations",
+        verbose_name=_("user"),
+        null=True,
+        blank=True,
+    )
+
+    total = models.DecimalField(
+        _("total"),
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(0)],
+    )
+    currency = models.CharField(_("currency"), max_length=3, default="CLP")
+
+    paid_at = models.DateTimeField(_("paid at"), null=True, blank=True)
+
+    class Meta:
+        verbose_name = _("Accommodation reservation")
+        verbose_name_plural = _("Accommodation reservations")
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["reservation_id"]),
+            models.Index(fields=["accommodation", "status"]),
+            models.Index(fields=["check_in", "check_out"]),
+        ]
+
+    def __str__(self):
+        return f"{self.reservation_id} - {self.accommodation.title} ({self.status})"
