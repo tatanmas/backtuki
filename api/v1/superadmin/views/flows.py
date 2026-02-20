@@ -288,10 +288,12 @@ def all_flows(request):
         # Calculate date range
         start_date = timezone.now() - timedelta(days=days)
         
-        # Base queryset - Prefetch events with order for efficient lookup
+        # Base queryset - Prefetch events with order; include experience & accommodation for WhatsApp flows
         queryset = PlatformFlow.objects.filter(
             created_at__gte=start_date
-        ).select_related('user', 'organizer', 'primary_order', 'event').prefetch_related('events__order')
+        ).select_related(
+            'user', 'organizer', 'primary_order', 'event', 'experience', 'accommodation'
+        ).prefetch_related('events__order')
         
         # Apply filters
         if status_filter:
@@ -484,6 +486,14 @@ def all_flows(request):
                     'id': str(flow.event.id) if flow.event else None,
                     'title': flow.event.title if flow.event else None
                 } if flow.event else None,
+                'experience': {
+                    'id': str(flow.experience.id) if flow.experience else None,
+                    'title': flow.experience.title if flow.experience else None
+                } if flow.experience else None,
+                'accommodation': {
+                    'id': str(flow.accommodation.id) if flow.accommodation else None,
+                    'title': flow.accommodation.title if flow.accommodation else None
+                } if flow.accommodation else None,
                 'last_event': {
                     'step': last_event.step,
                     'status': last_event.status,
@@ -627,11 +637,11 @@ def flow_detail(request, flow_id):
     - Related email logs
     """
     try:
-        from core.models import PlatformFlow, CeleryTaskLog
+        from core.models import PlatformFlow, PlatformFlowEvent, CeleryTaskLog
         from apps.events.models import EmailLog
         
         flow = PlatformFlow.objects.select_related(
-            'user', 'organizer', 'primary_order', 'event', 'experience'
+            'user', 'organizer', 'primary_order', 'event', 'experience', 'accommodation'
         ).prefetch_related('events__order').get(id=flow_id)
         
         # 🚀 ENTERPRISE: Buscar orden en primary_order o en eventos si no está en primary_order
@@ -691,11 +701,20 @@ def flow_detail(request, flow_id):
                 'event': {
                     'id': str(flow.event.id) if flow.event else None,
                     'title': flow.event.title if flow.event else None
-                } if flow.event else None
+                } if flow.event else None,
+                'experience': {
+                    'id': str(flow.experience.id) if flow.experience else None,
+                    'title': flow.experience.title if flow.experience else None
+                } if flow.experience else None,
+                'accommodation': {
+                    'id': str(flow.accommodation.id) if flow.accommodation else None,
+                    'title': flow.accommodation.title if flow.accommodation else None
+                } if flow.accommodation else None
             },
             'events': [{
                 'id': str(e.id),
                 'step': e.step,
+                'step_display': dict(PlatformFlowEvent.STEP_CHOICES).get(e.step, e.step),
                 'status': e.status,
                 'source': e.source,
                 'message': e.message,

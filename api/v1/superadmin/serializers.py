@@ -121,6 +121,11 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
     date_price_overrides = serializers.ListField(
         child=serializers.DictField(), required=False, allow_empty=True
     )
+
+    # Imported reviews (Google, GetYourGuide, etc.) - created in view after experience
+    reviews = serializers.ListField(
+        child=serializers.DictField(), required=False, allow_empty=True
+    )
     
     def validate_title(self, value):
         """Validate title is not empty."""
@@ -341,6 +346,8 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
         
         # Extract date_price_overrides (se crearán después)
         date_price_overrides = validated_data.pop('date_price_overrides', [])
+        # Extract reviews (imported reviews se crean en la vista)
+        validated_data.pop('reviews', None)
         
         # Slug: usar el pasado o generar desde título (Experience.slug max_length=50)
         if 'slug' not in validated_data or not (validated_data.get('slug') or '').strip():
@@ -390,4 +397,148 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
         )
         
         return experience
+
+
+class JsonAccommodationCreateSerializer(serializers.Serializer):
+    """Serializer for creating Accommodation from JSON (create-from-json flow). organizer_id is optional (superadmin-owned)."""
+
+    organizer_id = serializers.UUIDField(required=False, allow_null=True)
+    title = serializers.CharField(max_length=255, required=True)
+    slug = serializers.SlugField(required=False, allow_blank=True)
+    description = serializers.CharField(required=False, allow_blank=True)
+    short_description = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    status = serializers.ChoiceField(
+        choices=["draft", "published", "cancelled"],
+        default="draft",
+        required=False,
+    )
+    property_type = serializers.ChoiceField(
+        choices=["cabin", "house", "apartment", "hotel", "hostel", "villa", "other"],
+        default="cabin",
+        required=False,
+    )
+    location_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    location_address = serializers.CharField(required=False, allow_blank=True)
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
+    country = serializers.CharField(max_length=255, default="Chile", required=False)
+    city = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    guests = serializers.IntegerField(default=2, min_value=1, required=False)
+    bedrooms = serializers.IntegerField(default=1, min_value=0, required=False)
+    bathrooms = serializers.IntegerField(default=1, min_value=0, required=False)
+    beds = serializers.IntegerField(default=1, min_value=0, required=False, allow_null=True)
+    price = serializers.DecimalField(max_digits=12, decimal_places=2, default=0, min_value=0, required=False)
+    currency = serializers.CharField(max_length=3, default="CLP", required=False)
+    amenities = serializers.ListField(child=serializers.CharField(), required=False, allow_empty=True)
+    not_amenities = serializers.ListField(child=serializers.CharField(), required=False, allow_empty=True)
+    images = serializers.ListField(child=serializers.URLField(), required=False, allow_empty=True)
+    gallery_media_ids = serializers.ListField(child=serializers.UUIDField(), required=False, allow_empty=True)
+
+
+class JsonDestinationCreateSerializer(serializers.Serializer):
+    """Serializer for creating LandingDestination from JSON (create-from-json flow)."""
+
+    name = serializers.CharField(max_length=255, required=True)
+    slug = serializers.SlugField(max_length=255, required=True)
+    country = serializers.CharField(max_length=255, default="Chile", required=False)
+    region = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    description = serializers.CharField(required=False, allow_blank=True)
+    hero_image = serializers.URLField(max_length=500, required=False, allow_blank=True)
+    hero_media_id = serializers.UUIDField(required=False, allow_null=True)
+    gallery_media_ids = serializers.ListField(child=serializers.UUIDField(), required=False, allow_empty=True)
+    latitude = serializers.FloatField(required=False, allow_null=True)
+    longitude = serializers.FloatField(required=False, allow_null=True)
+    is_active = serializers.BooleanField(default=True, required=False)
+    images = serializers.ListField(child=serializers.URLField(), required=False, allow_empty=True)
+    travel_guides = serializers.ListField(required=False, allow_empty=True)
+    transportation = serializers.ListField(required=False, allow_empty=True)
+    accommodation_ids = serializers.ListField(required=False, allow_empty=True)
+    experience_ids = serializers.ListField(child=serializers.UUIDField(), required=False, allow_empty=True)
+    event_ids = serializers.ListField(child=serializers.UUIDField(), required=False, allow_empty=True)
+    featured_type = serializers.ChoiceField(
+        choices=["experience", "event", "accommodation"],
+        required=False,
+        allow_null=True,
+    )
+    featured_id = serializers.UUIDField(required=False, allow_null=True)
+
+
+class JsonErasmusTimelineItemSerializer(serializers.Serializer):
+    """Serializer for creating ErasmusTimelineItem from JSON."""
+
+    title_es = serializers.CharField(max_length=255, required=True)
+    title_en = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    location = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    image = serializers.URLField(max_length=500, required=False, allow_blank=True)
+    scheduled_date = serializers.DateField(required=False, allow_null=True)
+    display_order = serializers.IntegerField(default=0, min_value=0, required=False)
+    experience_id = serializers.UUIDField(required=False, allow_null=True)
+    is_active = serializers.BooleanField(default=True, required=False)
+
+
+class JsonErasmusActivityInstanceSerializer(serializers.Serializer):
+    """One instance in create-from-json or bulk instances."""
+
+    scheduled_date = serializers.DateField(required=False, allow_null=True)
+    scheduled_month = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=12)
+    scheduled_year = serializers.IntegerField(required=False, allow_null=True)
+    scheduled_label_es = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    scheduled_label_en = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    start_time = serializers.CharField(max_length=8, required=False, allow_blank=True, allow_null=True)  # HH:MM or HH:MM:SS
+    end_time = serializers.CharField(max_length=8, required=False, allow_blank=True, allow_null=True)
+    display_order = serializers.IntegerField(default=0, min_value=0, required=False)
+    is_active = serializers.BooleanField(default=True, required=False)
+
+    def validate(self, attrs):
+        has_date = attrs.get("scheduled_date") is not None
+        has_month_year = (
+            attrs.get("scheduled_month") is not None or attrs.get("scheduled_year") is not None
+        )
+        has_labels = bool(
+            (attrs.get("scheduled_label_es") or "").strip() or (attrs.get("scheduled_label_en") or "").strip()
+        )
+        if not (has_date or has_month_year or has_labels):
+            raise serializers.ValidationError(
+                "Set either scheduled_date, or scheduled_month/scheduled_year, or scheduled_label_es/en."
+            )
+        return attrs
+
+
+class JsonErasmusActivityCreateSerializer(serializers.Serializer):
+    """Activity data for create-from-json (same structure as Experience: itinerary, meeting point, included/not_included)."""
+
+    title_es = serializers.CharField(max_length=255, required=True)
+    title_en = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    slug = serializers.SlugField(max_length=255, required=True)
+    description_es = serializers.CharField(required=False, allow_blank=True)
+    description_en = serializers.CharField(required=False, allow_blank=True)
+    short_description_es = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    short_description_en = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    location = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    location_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    location_address = serializers.CharField(required=False, allow_blank=True)
+    duration_minutes = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    included = serializers.ListField(
+        child=serializers.CharField(allow_blank=True),
+        required=False,
+        allow_empty=True,
+    )
+    not_included = serializers.ListField(
+        child=serializers.CharField(allow_blank=True),
+        required=False,
+        allow_empty=True,
+    )
+    itinerary = serializers.ListField(
+        required=False,
+        allow_empty=True,
+        child=serializers.DictField(allow_empty=True),
+    )
+    images = serializers.ListField(
+        child=serializers.URLField(max_length=500, allow_blank=True),
+        required=False,
+        allow_empty=True,
+    )
+    display_order = serializers.IntegerField(default=0, min_value=0, required=False)
+    is_active = serializers.BooleanField(default=True, required=False)
+    experience_id = serializers.UUIDField(required=False, allow_null=True)
 

@@ -2,6 +2,7 @@
 
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+from django.core.validators import MinValueValidator
 from core.models import TimeStampedModel, UUIDModel
 from django.contrib.auth import get_user_model
 from django.utils.text import slugify
@@ -416,6 +417,48 @@ class BankingDetails(TimeStampedModel):
     
     def __str__(self):
         return f"Banking for {self.organizer.name}"
+
+
+class Payout(TimeStampedModel):
+    """
+    Records when the platform transfers money to an organizer.
+    Superadmin marks a transfer as done; this creates a Payout.
+    Pending amount = total_revenue - sum(payouts for organizer).
+    """
+    id = models.UUIDField(
+        primary_key=True,
+        default=UUIDModel._meta.get_field('id').default,
+        editable=False
+    )
+    organizer = models.ForeignKey(
+        Organizer,
+        on_delete=models.CASCADE,
+        related_name='payouts'
+    )
+    amount = models.DecimalField(
+        _("amount"),
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        help_text=_("Amount transferred to organizer")
+    )
+    paid_at = models.DateTimeField(_("paid at"), help_text=_("When the transfer was made"))
+    reference = models.CharField(_("reference"), max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        related_name='payouts_created',
+        null=True,
+        blank=True
+    )
+
+    class Meta:
+        verbose_name = _("payout")
+        verbose_name_plural = _("payouts")
+        ordering = ['-paid_at']
+
+    def __str__(self):
+        return f"Payout {self.amount} to {self.organizer.name}"
 
 
 class OrganizerUser(TimeStampedModel):

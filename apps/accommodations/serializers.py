@@ -58,12 +58,61 @@ def _rewrite_media_url_to_request_host(url, request):
     return request.build_absolute_uri(path)
 
 
+def _build_images_from_gallery_items(acc, request=None):
+    """
+    Lista plana de URLs ordenada por sort_order global.
+    Si algún item tiene is_principal=True, esa URL va primero (para card/listado).
+    """
+    from apps.media.models import MediaAsset
+
+    items = list(acc.gallery_items or [])
+    if not items and acc.gallery_media_ids:
+        items = [
+            {"media_id": str(mid), "room_category": None, "sort_order": i, "is_principal": False}
+            for i, mid in enumerate(acc.gallery_media_ids)
+        ]
+    if not items:
+        return []
+
+    ids = [str(it.get("media_id")) for it in items if it.get("media_id")]
+    assets = MediaAsset.objects.filter(id__in=ids, deleted_at__isnull=True)
+    asset_map = {str(a.id): a for a in assets if a.file}
+
+    resolved = []
+    for it in items:
+        mid = it.get("media_id")
+        if not mid:
+            continue
+        asset = asset_map.get(str(mid))
+        if not asset or not asset.file:
+            continue
+        url = _resolve_image_url_for_asset(asset, request)
+        if not url:
+            continue
+        resolved.append({
+            "url": url,
+            "sort_order": it.get("sort_order", 0),
+            "is_principal": bool(it.get("is_principal")),
+        })
+
+    resolved.sort(key=lambda x: x["sort_order"])
+    urls = [r["url"] for r in resolved]
+    principal_url = next((r["url"] for r in resolved if r["is_principal"]), None)
+    if principal_url and urls and urls[0] != principal_url:
+        urls = [principal_url] + [u for u in urls if u != principal_url]
+    return urls
+
+
 def _resolve_images(acc, request=None):
     """
     Lista de URLs de imagen: mismo patrón que destinos (landing_destinations/views.py).
-    En Dako todo se sirve desde el mismo origen: request.build_absolute_uri(a.file.url)
-    cuando hay request; si no, BACKEND_URL + path para que el front cargue desde tuki.cl.
+    Orden global por sort_order; si is_principal en algún item, esa imagen va primero (card).
     """
+    urls = _build_images_from_gallery_items(acc, request)
+    if urls:
+        return urls
+
+    # Fallback: gallery_media_ids sin categorías, o legacy images
     urls = []
     media_base = (getattr(django_settings, "BACKEND_URL", None) or "").rstrip("/")
 
@@ -207,6 +256,7 @@ def _accommodation_to_public_dict(acc, request=None, include_photo_tour=False):
         "id": str(acc.id),
         "title": acc.title,
         "description": acc.description or "",
+        "short_description": acc.short_description or "",
         "price": float(acc.price or 0),
         "rating": float(acc.rating_avg or 0),
         "reviews": acc.review_count or 0,

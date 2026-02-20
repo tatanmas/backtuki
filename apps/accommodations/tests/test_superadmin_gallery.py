@@ -212,14 +212,18 @@ class SuperAdminAccommodationGalleryPatchTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_patch_400_invalid_room_category(self):
+    def test_patch_success_custom_room_category_allowed(self):
+        """Custom room_category (e.g. custom place name) is allowed and stored."""
         self.client.force_authenticate(user=self.superuser)
         response = self.client.patch(
             BASE + f"/{self.acc.id}/gallery/",
-            data={"gallery_items": [{"media_id": str(self.asset.id), "room_category": "invalid_cat", "sort_order": 0}]},
+            data={"gallery_items": [{"media_id": str(self.asset.id), "room_category": "Terraza", "sort_order": 0}]},
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["gallery_items"][0]["room_category"], "Terraza")
+        self.acc.refresh_from_db()
+        self.assertEqual(self.acc.gallery_items[0]["room_category"], "Terraza")
 
     def test_patch_success_updates_gallery_and_syncs_media_ids(self):
         self.client.force_authenticate(user=self.superuser)

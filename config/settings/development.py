@@ -23,12 +23,12 @@ DEBUG_TOOLBAR_CONFIG = {
     ),
 }
 
-# 🚀 ENTERPRISE EMAIL CONFIGURATION for Tuki
+# 🚀 ENTERPRISE EMAIL CONFIGURATION for Tuki (local: Mailu en Dako; Mailu tiene TLS_FLAVOR=notls, usar USE_TLS=False)
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'mail.tuki.cl'
-EMAIL_PORT = 465
-EMAIL_USE_SSL = True
-EMAIL_USE_TLS = False  # SSL and TLS are mutually exclusive
+EMAIL_HOST = 'tukitickets.duckdns.org'
+EMAIL_PORT = 587
+EMAIL_USE_SSL = False
+EMAIL_USE_TLS = False
 EMAIL_HOST_USER = 'noreply@tuki.cl'
 EMAIL_HOST_PASSWORD = '-W7)HsC<Hsfk'
 DEFAULT_FROM_EMAIL = 'Tuki <noreply@tuki.cl>'

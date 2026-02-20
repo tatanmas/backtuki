@@ -8,23 +8,51 @@
 #
 # Opciones:
 #   --skip-git-pull   Omitir git pull (útil cuando el código llegó por rsync)
+#   --no-cache        Reconstruir imágenes sin caché (requerido si cambiaste requirements.txt, Dockerfile, etc.)
+#   --force-recreate-frontend  Recrear contenedor nginx (breve caída; solo si cambiaste montajes o config nginx)
 #
-# El build del backend siempre usa --no-cache para desplegar el código actual.
-# Los datos persistentes (DB, media, Redis) están en volúmenes y no se tocan.
+# Por defecto: build con caché (menos RAM/tiempo). Blue-green: downtime cercano a 0.
+# Durante el switch hay ~1 min con dos backends en RAM; luego se para el viejo.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set -e
 
 SKIP_GIT_PULL=false
 SKIP_FRONTEND_BUILD=false
+BUILD_NO_CACHE=""
+FORCE_RECREATE_FRONTEND=false
 for arg in "$@"; do
     [ "$arg" = "--skip-git-pull" ] && SKIP_GIT_PULL=true
     [ "$arg" = "--skip-frontend-build" ] && SKIP_FRONTEND_BUILD=true
+    [ "$arg" = "--no-cache" ] && BUILD_NO_CACHE="--no-cache"
+    [ "$arg" = "--force-recreate-frontend" ] && FORCE_RECREATE_FRONTEND=true
 done
 
-# Siempre build sin caché: así la imagen lleva el código que está en el servidor.
-# No borra volúmenes ni datos (solo reconstruye la imagen).
-BUILD_NO_CACHE="--no-cache"
+# Si no se pasó --no-cache y la sesión es interactiva, preguntar (ahorra RAM en servidores justos)
+if [ -z "$BUILD_NO_CACHE" ] && [ -t 0 ]; then
+    echo "   ¿Reconstruir imágenes sin caché? (s/n)"
+    echo "   [Recomendado si cambiaste requirements.txt, package.json o Dockerfile; si no, n ahorra RAM y tiempo]"
+    read -r REPLY
+    if [ "$REPLY" = "s" ] || [ "$REPLY" = "S" ]; then
+        BUILD_NO_CACHE="--no-cache"
+        echo "   → Se usará --no-cache"
+    else
+        echo "   → Build con caché"
+    fi
+fi
+if [ -n "$BUILD_NO_CACHE" ]; then
+    echo "   📦 Build sin caché (--no-cache)"
+fi
+# Preguntar recrear frontend solo si interactivo y no se pasó el flag
+if [ "$FORCE_RECREATE_FRONTEND" = false ] && [ -t 0 ]; then
+    echo "   ¿Recrear contenedor del frontend (nginx)? (s/n)"
+    echo "   [Normalmente n; solo s si cambiaste montajes, nginx.conf o necesitas reiniciar el contenedor]"
+    read -r REPLY
+    if [ "$REPLY" = "s" ] || [ "$REPLY" = "S" ]; then
+        FORCE_RECREATE_FRONTEND=true
+        echo "   → Se recreará el contenedor frontend (breve caída)"
+    fi
+fi
 
 echo "═══════════════════════════════════════════════════════════════════════════════"
 echo "🚀 TUKI PLATFORM - DEPLOY COMPLETO A PRODUCCIÓN"
@@ -123,6 +151,17 @@ echo "   ✅ docker-compose.yml"
 cp backtuki/nginx.dako.conf nginx.conf
 echo "   ✅ nginx.conf"
 
+# backend_upstream.conf: creado desde template si no existe (blue-green)
+if [ ! -f backend_upstream.conf ]; then
+    cp backtuki/backend_upstream.conf.template backend_upstream.conf
+    echo "   ✅ backend_upstream.conf (creado desde template)"
+fi
+# backend_live.txt: "a" o "b", quién recibe el tráfico
+if [ ! -f backend_live.txt ]; then
+    echo "a" > backend_live.txt
+    echo "   ✅ backend_live.txt (creado, live=a)"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PASO 3: Compilar Frontend (omitir si --skip-frontend-build: ya llegó dist/ por rsync)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -130,7 +169,7 @@ echo ""
 if [ "$SKIP_FRONTEND_BUILD" = true ]; then
     echo "🔨 Paso 3: Omitiendo compilación frontend (dist/ ya sincronizado desde tu Mac)"
     if [ ! -d "$TUKI_DIR/tuki-experiencias/dist" ]; then
-        echo "   ❌ Error: No existe tuki-experiencias/dist. Ejecuta el deploy desde tu Mac con deploy-dako-remote.sh"
+        echo "   ❌ Error: No existe tuki-experiencias/dist. Ejecuta el deploy desde tu Mac: ./deploy-dako"
         exit 1
     fi
     echo "   ✅ Usando dist/ existente"
@@ -188,53 +227,85 @@ done
 echo "   ✅ Redis listo"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 5: Construir y levantar Backend (recrea contenedor si ya corría)
+# PASO 5: Backend blue-green (cero downtime; dos backends solo durante el switch)
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🐍 Paso 5: Construyendo Backend..."
+echo "🐍 Paso 5: Backend blue-green (sin cortar tráfico)..."
 
-# Version = git commit (para ver qué está en producción vía GET /api/v1/version/)
+# Quitar contenedor huérfano del compose antiguo (tuki-backend) para liberar puerto 8000
+docker rm -f tuki-backend 2>/dev/null || true
+
+CURRENT_LIVE=$(cat backend_live.txt 2>/dev/null || echo "a")
+if [ "$CURRENT_LIVE" = "a" ]; then
+    IDLE="b"
+else
+    IDLE="a"
+fi
+echo "   📍 Live actual: tuki-backend-${CURRENT_LIVE} → nuevo: tuki-backend-${IDLE}"
+
 export APP_VERSION=$(cd backtuki && git rev-parse --short HEAD 2>/dev/null || echo "norepo")
-# Última vez desplegado en hora Santiago (America/Santiago)
 export DEPLOYED_AT=$(TZ=America/Santiago date -Iseconds)
 echo "   📌 APP_VERSION=$APP_VERSION"
-echo "   📅 DEPLOYED_AT=$DEPLOYED_AT (America/Santiago)"
-docker-compose build $BUILD_NO_CACHE tuki-backend
-docker-compose up -d tuki-backend
 
-echo "   ⏳ Esperando Backend..."
-sleep 15
+# Asegurar que el live actual está arriba (por si es el primer deploy con este script)
+docker-compose up -d "tuki-backend-${CURRENT_LIVE}" 2>/dev/null || true
 
-# Verificar que está corriendo
-if ! docker ps | grep -q tuki-backend; then
-    echo "   ❌ Error: Backend no arrancó"
-    docker logs tuki-backend --tail 50
-    exit 1
+# Construir imagen (compartida por a y b)
+docker-compose build $BUILD_NO_CACHE tuki-backend-a tuki-backend-b
+
+# Levantar el backend "idle" (el que va a pasar a ser live)
+if [ "$IDLE" = "b" ]; then
+    docker-compose --profile bluegreen up -d tuki-backend-b
+else
+    docker-compose up -d tuki-backend-a
 fi
-echo "   ✅ Backend corriendo"
+
+echo "   ⏳ Esperando health del nuevo backend (máx 90s; durante esto hay dos backends en RAM)..."
+for i in $(seq 1 45); do
+    if docker inspect --format='{{.State.Health.Status}}' "tuki-backend-${IDLE}" 2>/dev/null | grep -q healthy; then
+        echo "   ✅ tuki-backend-${IDLE} healthy"
+        break
+    fi
+    if [ "$i" -eq 45 ]; then
+        echo "   ❌ Timeout: tuki-backend-${IDLE} no pasó healthcheck"
+        docker logs "tuki-backend-${IDLE}" --tail 30
+        exit 1
+    fi
+    sleep 2
+done
+
+# Cambiar tráfico al nuevo y parar el viejo (ventana con dos backends termina aquí)
+echo "upstream tuki_backend_live { server tuki-backend-${IDLE}:8080; }" > backend_upstream.conf
+docker exec tuki-frontend nginx -s reload 2>/dev/null || true
+echo "   ✅ Nginx apuntando a tuki-backend-${IDLE}"
+
+docker-compose stop "tuki-backend-${CURRENT_LIVE}"
+echo "$IDLE" > backend_live.txt
+echo "   ✅ Backend viejo parado (solo un backend en RAM ahora)"
+LIVE_CONTAINER="tuki-backend-${IDLE}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 6: Migraciones y setup
+# PASO 6: Migraciones y setup (en el backend que quedó en vivo)
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🗄️ Paso 6: Ejecutando migraciones..."
+echo "🗄️ Paso 6: Ejecutando migraciones (en $LIVE_CONTAINER)..."
 
-docker-compose exec -T tuki-backend python manage.py migrate --noinput
+docker-compose exec -T "$LIVE_CONTAINER" python manage.py migrate --noinput
 echo "   ✅ Migraciones completadas"
 
 echo ""
 echo "💳 Paso 6b: Activando medios de pago (Transbank WebPay Plus)..."
-docker-compose exec -T tuki-backend python manage.py setup_payment_providers 2>/dev/null || echo "   ⚠️ setup_payment_providers falló (puede estar ya configurado)"
+docker-compose exec -T "$LIVE_CONTAINER" python manage.py setup_payment_providers 2>/dev/null || echo "   ⚠️ setup_payment_providers falló (puede estar ya configurado)"
 echo "   ✅ Medios de pago configurados"
 
 echo ""
 echo "📁 Paso 7: Collectstatic..."
-docker-compose exec -T tuki-backend python manage.py collectstatic --noinput
+docker-compose exec -T "$LIVE_CONTAINER" python manage.py collectstatic --noinput
 echo "   ✅ Archivos estáticos recolectados"
 
 echo ""
 echo "👤 Paso 8: Verificando superusuario..."
-docker-compose exec -T tuki-backend python manage.py shell << 'PYEOF'
+docker-compose exec -T "$LIVE_CONTAINER" python manage.py shell << 'PYEOF'
 from django.contrib.auth import get_user_model
 User = get_user_model()
 if not User.objects.filter(email='admin@tuki.cl').exists():
@@ -281,14 +352,20 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 11: Levantar Frontend
+# PASO 11: Frontend (Nginx) — sin recrear = sin caída; reload si no se fuerza recrear
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "🌐 Paso 11: Levantando Frontend (Nginx)..."
+echo "🌐 Paso 11: Frontend (Nginx)..."
 
-docker-compose up -d tuki-frontend
-sleep 3
-echo "   ✅ Frontend corriendo en puerto 80"
+if [ "$FORCE_RECREATE_FRONTEND" = true ]; then
+    echo "   ⚠️ Recreando contenedor (breve caída)..."
+    docker-compose up -d --force-recreate tuki-frontend
+    sleep 3
+else
+    docker-compose up -d tuki-frontend
+    docker exec tuki-frontend nginx -s reload 2>/dev/null || true
+fi
+echo "   ✅ Frontend en puerto 80 (dist/ actualizado)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PASO 12: Cloudflare Tunnel (tuki.cl → host:80/8000)
@@ -304,7 +381,8 @@ if [ -d "$HOME/.cloudflared" ] && [ -f "$HOME/.cloudflared/config.yml" ]; then
         echo "   ⚠️ Tunnel no arrancó (revisar ~/.cloudflared/config.yml y credenciales)"
     fi
 else
-    echo "   ⚠️ Omitiendo tunnel (~/.cloudflared no configurado)"
+    echo "   ⚠️ Omitiendo tunnel: en este servidor no existe $HOME/.cloudflared/config.yml"
+    echo "   → Sin tunnel, https://tuki.cl no apuntará aquí. Configura cloudflared en el servidor o usa http://tukitickets.duckdns.org"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -324,11 +402,11 @@ echo ""
 # Verificar endpoints
 echo "🔗 Probando endpoints..."
 
-# Backend health
-if curl -s http://localhost:8000/api/v1/health/ | grep -q "ok\|healthy\|status"; then
-    echo "   ✅ Backend API: http://localhost:8000 ✓"
+# Backend health (vía nginx = tráfico real)
+if curl -s http://localhost:80/healthz/ | grep -q "ok\|healthy\|status"; then
+    echo "   ✅ Backend API (vía nginx): https://tuki.cl/api/v1/ ✓"
 else
-    echo "   ⚠️ Backend API: respuesta inesperada (puede estar OK)"
+    echo "   ⚠️ Backend API: verificar manualmente"
 fi
 
 # Frontend
@@ -394,5 +472,8 @@ echo "   • Actualizar:        ./backtuki/deploy-dako.sh"
 echo ""
 echo "📌 Persistencia tras reinicio: ver docs/DAKO_PERSISTENCIA.md"
 echo "   (Docker al boot + opcional: ./backtuki/install-tuki-boot-service.sh)"
+echo ""
+echo "💡 Si el front no refleja cambios (toasts, logs, media): hard refresh en el navegador (Cmd+Shift+R)"
+echo "💡 Si las subidas de medios (fotos alojamientos/experiencias) fallan: docker logs tuki-backend --tail 200 (ver motivo 400) y reiniciar: docker-compose up -d tuki-backend"
 echo ""
 echo "═══════════════════════════════════════════════════════════════════════════════"

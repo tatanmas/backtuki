@@ -495,6 +495,53 @@ class OrganizerLogoUploadView(APIView):
             )
 
 
+class OrganizerFinancesView(APIView):
+    """
+    Enterprise organizer wallet/finances for the logged-in organizer.
+    balance = revenue - organizer_credits - payouts
+    """
+    permission_classes = [IsAuthenticated, IsOrganizer]
+
+    def get(self, request):
+        from apps.organizers.wallet_service import get_organizer_wallet
+
+        try:
+            organizer_user = request.user.organizer_roles.first()
+            if not organizer_user:
+                return Response(
+                    {"detail": "No organizer found for this user."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            organizer = organizer_user.organizer
+        except Exception as e:
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        wallet = get_organizer_wallet(organizer)
+        payouts = list(organizer.payouts.order_by('-paid_at').values(
+            'id', 'amount', 'paid_at', 'reference'
+        ))
+        for p in payouts:
+            p['id'] = str(p['id'])
+            p['paid_at'] = p['paid_at'].isoformat() if p.get('paid_at') else None
+
+        return Response({
+            'success': True,
+            'summary': {
+                'total_revenue': wallet['total_revenue'],
+                'organizer_credits': wallet['organizer_credits'],
+                'completed_payments': wallet['payouts_sum'],
+                'pending_payments': max(0, wallet['balance']),
+                'balance': wallet['balance'],
+                'by_type': wallet['by_type'],
+            },
+            'payments': payouts,
+            'breakdown': wallet.get('breakdown', {}),
+        })
+
+
 class DashboardStatsView(APIView):
     """
     🚀 ENTERPRISE: Get comprehensive dashboard statistics for the organizer.

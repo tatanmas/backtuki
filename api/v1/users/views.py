@@ -37,14 +37,14 @@ class UserReservationsView(APIView):
         try:
             user = request.user
             
-            # 🚀 ENTERPRISE: Obtener órdenes del usuario - tanto las vinculadas por user_id como por email
-            # Incluye event orders Y experience orders
+            # 🚀 ENTERPRISE: Obtener órdenes del usuario - event, experience y accommodation
             orders = Order.objects.filter(
                 Q(user=user) | Q(email__iexact=user.email),
                 status__in=['paid']
             ).select_related(
                 'event', 'event__location', 'experience_reservation',
-                'experience_reservation__experience', 'experience_reservation__instance'
+                'experience_reservation__experience', 'experience_reservation__instance',
+                'accommodation_reservation', 'accommodation_reservation__accommodation',
             ).prefetch_related('items__ticket_tier', 'items__tickets', 'event__images').order_by('-created_at')
             
             logger.info(f"[UserReservationsView] User: {user.email} (ID: {user.id}), orders: {orders.count()}")
@@ -54,7 +54,54 @@ class UserReservationsView(APIView):
                 try:
                     event = order.event
                     exp_res = getattr(order, 'experience_reservation', None)
-                    
+                    acc_res = getattr(order, 'accommodation_reservation', None)
+
+                    # Accommodation order (accommodation_reservation exists)
+                    if acc_res:
+                        acc = acc_res.accommodation
+                        event_image = None
+                        if acc and getattr(acc, 'images', None) and len(acc.images) > 0:
+                            img = acc.images[0]
+                            event_image = img if isinstance(img, str) else (img.get('url') if isinstance(img, dict) else None)
+                        reservation = {
+                            'id': str(acc_res.id),
+                            'orderId': order.order_number,
+                            'eventId': str(acc.id) if acc else str(acc_res.id),
+                            'eventTitle': acc.title if acc else 'Alojamiento',
+                            'eventImage': event_image,
+                            'eventDate': acc_res.check_in.strftime('%d %B %Y') if acc_res.check_in else '',
+                            'eventTime': '',
+                            'date': acc_res.check_in.isoformat() if acc_res.check_in else order.created_at.isoformat(),
+                            'location': getattr(acc, 'location_name', None) or getattr(acc, 'city', '') or getattr(acc, 'country', '') or 'Ubicación no especificada',
+                            'status': 'confirmed' if acc_res.status == 'paid' else acc_res.status,
+                            'totalAmount': float(order.total),
+                            'subtotal': float(order.subtotal),
+                            'serviceFee': float(order.service_fee),
+                            'discount': float(order.discount or 0),
+                            'currency': order.currency,
+                            'ticketCount': acc_res.guests,
+                            'tickets': [],
+                            'attendees': [{
+                                'name': f"{acc_res.first_name} {acc_res.last_name}".strip(),
+                                'email': acc_res.email,
+                                'ticketType': 'Alojamiento',
+                                'checkIn': f"Check-in: {acc_res.check_in}" if acc_res.check_in else '',
+                                'ticketNumber': acc_res.reservation_id,
+                            }],
+                            'purchaseDate': order.created_at.isoformat(),
+                            'type': 'accommodation',
+                            'paymentInfo': {'method': 'Transbank', 'provider': 'Webpay', 'status': 'Pagado'},
+                            'customerInfo': {
+                                'name': f"{acc_res.first_name} {acc_res.last_name}".strip(),
+                                'email': acc_res.email,
+                                'phone': acc_res.phone or '',
+                            },
+                            'checkIn': acc_res.check_in.isoformat() if acc_res.check_in else None,
+                            'checkOut': acc_res.check_out.isoformat() if acc_res.check_out else None,
+                        }
+                        reservations.append(reservation)
+                        continue
+
                     # Experience order (experience_reservation exists)
                     if exp_res:
                         experience = exp_res.experience

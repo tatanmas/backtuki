@@ -14,6 +14,61 @@ from django.db.models import Q, Count
 from django.core.files.storage import default_storage
 
 from apps.media.models import MediaAsset, MediaUsage
+
+
+def _unlink_asset_from_accommodations_and_destinations(asset_id):
+    """
+    Remove references to this media asset from accommodations and landing destinations
+    so that after hard-delete no stale IDs remain.
+    """
+    asset_id_str = str(asset_id)
+    from apps.accommodations.models import Accommodation
+    from apps.landing_destinations.models import LandingDestination
+
+    # Accommodations: find by gallery_media_ids (JSON contains)
+    acc_ids_by_ids = set(
+        Accommodation.objects.filter(
+            gallery_media_ids__contains=[asset_id_str], deleted_at__isnull=True
+        ).values_list("id", flat=True)
+    )
+    # Fallback: if JSON __contains didn't match (e.g. format), find by scanning gallery_items
+    if not acc_ids_by_ids:
+        for acc in Accommodation.objects.filter(
+            deleted_at__isnull=True
+        ).exclude(gallery_items=[]).exclude(gallery_items=None)[:2000]:
+            if not acc.gallery_items:
+                continue
+            if any(str(it.get("media_id")) == asset_id_str for it in acc.gallery_items):
+                acc_ids_by_ids.add(acc.id)
+
+    for acc in Accommodation.objects.filter(id__in=acc_ids_by_ids):
+        if acc.gallery_media_ids:
+            acc.gallery_media_ids = [mid for mid in acc.gallery_media_ids if str(mid) != asset_id_str]
+        if acc.gallery_items:
+            acc.gallery_items = [it for it in acc.gallery_items if str(it.get("media_id")) != asset_id_str]
+        acc.save(update_fields=["gallery_media_ids", "gallery_items"])
+        logger.info(
+            "MEDIA unlink: removed asset %s from accommodation %s (gallery now %s items)",
+            asset_id_str[:8],
+            acc.id,
+            len(acc.gallery_media_ids),
+        )
+
+    # Landing destinations: clear hero or remove from gallery
+    for dest in LandingDestination.objects.filter(
+        Q(hero_media_id=asset_id) | Q(gallery_media_ids__contains=[asset_id_str])
+    ):
+        updated = False
+        if dest.hero_media_id and str(dest.hero_media_id) == asset_id_str:
+            dest.hero_media_id = None
+            updated = True
+        if dest.gallery_media_ids:
+            new_ids = [mid for mid in dest.gallery_media_ids if str(mid) != asset_id_str]
+            if len(new_ids) != len(dest.gallery_media_ids):
+                dest.gallery_media_ids = new_ids
+                updated = True
+        if updated:
+            dest.save(update_fields=["hero_media_id", "gallery_media_ids"])
 from apps.media.serializers import (
     MediaAssetSerializer,
     MediaAssetCreateSerializer,
@@ -24,13 +79,16 @@ from apps.organizers.models import OrganizerUser
 logger = logging.getLogger(__name__)
 
 # Fallback filename when request has no name (e.g. pasted image)
+# AVIF no incluido: Pillow no lo soporta y provoca 400 al validar
 _ct_to_filename = {
     'image/jpeg': 'image.jpg',
     'image/png': 'image.png',
     'image/webp': 'image.webp',
     'image/gif': 'image.gif',
-    'image/avif': 'image.avif',
+    'image/heic': 'image.jpg',
+    'image/x-heic': 'image.jpg',
 }
+ALLOWED_EXTENSIONS = ('jpg', 'jpeg', 'png', 'webp', 'gif')
 
 
 class MediaAssetViewSet(viewsets.ModelViewSet):
@@ -171,23 +229,57 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
         return MediaAssetSerializer
 
     def create(self, request, *args, **kwargs):
-        """Log 400 causes: missing file or validation."""
+        """Log 400 causes: missing file or validation. Respuesta clara si no llega archivo."""
+        file_name = getattr(request.FILES.get('file'), 'name', None) if request.FILES else None
+        file_size = getattr(request.FILES.get('file'), 'size', None) if request.FILES else None
+        logger.info(
+            "MEDIA upload POST | content_type=%s has_files=%s file_name=%s file_size=%s",
+            (request.content_type or '')[:50],
+            bool(request.FILES),
+            file_name,
+            file_size,
+        )
         if request.content_type and 'multipart' not in request.content_type.lower():
             logger.warning(
                 "MEDIA upload 400: Content-Type is %s (expected multipart/form-data)",
                 request.content_type,
             )
+            return Response(
+                {"file": ["Use multipart/form-data y envíe un campo 'file' con la imagen."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if not request.FILES:
             logger.warning("MEDIA upload 400: request.FILES is empty (no file in request)")
-        elif 'file' not in request.FILES:
+            return Response(
+                {"file": ["No se recibió ningún archivo. Envíe el formulario con encoding multipart/form-data y un campo 'file'."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if 'file' not in request.FILES:
             logger.warning(
                 "MEDIA upload 400: 'file' not in FILES, keys=%s",
                 list(request.FILES.keys()),
             )
+            return Response(
+                {"file": ["Falta el campo 'file'. Envíe la imagen en un campo llamado 'file'."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        file_obj = request.FILES['file']
+        if file_obj.size == 0:
+            logger.warning("MEDIA upload 400: file size is 0, name=%s", getattr(file_obj, 'name', ''))
+            return Response(
+                {"file": ["El archivo está vacío (0 bytes). Use una imagen con contenido."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             return super().create(request, *args, **kwargs)
         except ValidationError as e:
-            logger.warning("MEDIA upload 400 validation: %s", e.detail)
+            detail_str = str(e.detail) if e.detail is not None else str(e)
+            logger.warning(
+                "MEDIA upload 400 validation | detail=%s | file name=%s size=%s",
+                detail_str,
+                getattr(request.FILES.get('file'), 'name', ''),
+                getattr(request.FILES.get('file'), 'size', '?'),
+            )
             raise
 
     def perform_create(self, serializer):
@@ -231,6 +323,12 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
         original_filename = _name
         content_type = _ct or 'image/jpeg'
         size_bytes = file_obj.size
+
+        # Asegurar que el nombre del archivo tenga extensión permitida (FileExtensionValidator del modelo)
+        ext = (file_obj.name or '').split('.')[-1].lower() if (file_obj.name or '').strip() else ''
+        if ext not in ALLOWED_EXTENSIONS:
+            safe_stored_name = original_filename if '.' in (original_filename or '') else _ct_to_filename.get(_ct, 'image.jpg')
+            file_obj.name = safe_stored_name
         
         # Compute SHA256 hash for deduplication
         file_obj.seek(0)
@@ -277,14 +375,24 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
             # Check usages
             active_usages = asset.usages.filter(deleted_at__isnull=True).count()
             if active_usages > 0:
+                logger.warning(
+                    "MEDIA hard delete blocked: asset %s has %s active usage(s)",
+                    asset.id,
+                    active_usages,
+                )
                 return Response(
                     {
-                        'error': f'Asset has {active_usages} active usage(s). '
-                                 'Soft delete recommended or unlink first.'
+                        'error': (
+                            f'No se puede eliminar: la imagen tiene {active_usages} uso(s) activo(s). '
+                            'Desvincula primero en eventos/experiencias o usa borrado suave.'
+                        )
                     },
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
+            # Unlink from accommodations and destinations so no stale references remain
+            _unlink_asset_from_accommodations_and_destinations(asset.id)
+
             # Delete file from storage
             try:
                 if asset.file:

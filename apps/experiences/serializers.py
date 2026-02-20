@@ -11,6 +11,7 @@ from .models import (
     Experience, TourLanguage, TourInstance, TourBooking, OrganizerCredit,
     ExperienceResource, ExperienceReservation, ExperienceDatePriceOverride,
     ExperienceCapacityHold, ExperienceResourceHold, ExperienceReview,
+    ExperienceImportedReview,
 )
 from apps.organizers.models import OrganizerUser
 from apps.events.models import Order
@@ -27,11 +28,31 @@ class ExperienceSerializer(serializers.ModelSerializer):
     
     organizer_name = serializers.CharField(source='organizer.name', read_only=True)
     country_name = serializers.SerializerMethodField()
-    
+    reviews_count = serializers.SerializerMethodField()
+    average_rating = serializers.SerializerMethodField()
+
     def get_country_name(self, obj):
         """Get country name, returning None if country is not set."""
         return obj.country.name if obj.country else None
-    
+
+    def get_reviews_count(self, obj):
+        """Total count of approved post-experience reviews + imported reviews. Requires annotated queryset."""
+        post = getattr(obj, 'post_review_count', None) or 0
+        imp = getattr(obj, 'imported_review_count', None) or 0
+        return post + imp
+
+    def get_average_rating(self, obj):
+        """Weighted average rating (1-5) from approved + imported reviews. Requires annotated queryset."""
+        post_sum = getattr(obj, 'post_review_sum', None)
+        post_count = getattr(obj, 'post_review_count', None) or 0
+        imp_sum = getattr(obj, 'imported_review_sum', None)
+        imp_count = getattr(obj, 'imported_review_count', None) or 0
+        total_count = post_count + imp_count
+        if total_count == 0:
+            return None
+        total_sum = (post_sum or 0) + (imp_sum or 0)
+        return round(total_sum / total_count, 1)
+
     class Meta:
         model = Experience
         fields = [
@@ -42,7 +63,8 @@ class ExperienceSerializer(serializers.ModelSerializer):
             'recurrence_pattern', 'location_name', 'location_address', 'location_latitude', 'location_longitude',
             'country', 'country_name', 'duration_minutes', 'max_participants', 'min_participants', 'included', 'not_included',
             'requirements', 'itinerary', 'images', 'categories', 'tags', 'views_count',
-            'is_active', 'deleted_at', 'created_at', 'updated_at'
+            'is_active', 'deleted_at', 'created_at', 'updated_at',
+            'reviews_count', 'average_rating',
         ]
         read_only_fields = ['id', 'slug', 'organizer', 'created_at', 'updated_at', 'views_count', 'deleted_at']
     
@@ -477,3 +499,12 @@ class ExperienceReviewPublicSerializer(serializers.ModelSerializer):
         model = ExperienceReview
         fields = ['id', 'rating', 'title', 'body', 'created_at']
         read_only_fields = ['id', 'rating', 'title', 'body', 'created_at']
+
+
+class ExperienceImportedReviewPublicSerializer(serializers.ModelSerializer):
+    """Public serializer for imported experience reviews (author_name, review_date)."""
+
+    class Meta:
+        model = ExperienceImportedReview
+        fields = ['id', 'author_name', 'rating', 'body', 'review_date', 'created_at']
+        read_only_fields = ['id', 'author_name', 'rating', 'body', 'review_date', 'created_at']

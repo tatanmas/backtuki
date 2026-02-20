@@ -451,6 +451,16 @@ class WhatsAppReservationRequest(TimeStampedModel, UUIDModel):
         related_name='whatsapp_requests',
         verbose_name=_('Linked Accommodation Reservation')
     )
+    # 🚀 ENTERPRISE: Platform flow for full audit trail (experience & accommodation WhatsApp)
+    flow = models.ForeignKey(
+        'core.PlatformFlow',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='whatsapp_reservation_requests',
+        verbose_name=_('Platform Flow'),
+        help_text=_('Platform flow tracking this WhatsApp reservation (all steps from request to payment)'),
+    )
 
     # Campos para tracking del flujo de pago
     payment_link = models.URLField(
@@ -744,6 +754,16 @@ class WhatsAppReservationCode(TimeStampedModel, UUIDModel):
         blank=True,
         related_name='reservation_code',
         verbose_name=_('Linked Reservation')
+    )
+    # 🚀 ENTERPRISE: Flow started when code was generated (so superadmin sees intent even if message never sent)
+    flow = models.ForeignKey(
+        'core.PlatformFlow',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='whatsapp_reservation_codes',
+        verbose_name=_('Platform Flow'),
+        help_text=_('Flow started at code generation; reused when WhatsApp message is received.')
     )
     expires_at = models.DateTimeField(
         db_index=True,

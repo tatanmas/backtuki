@@ -1,0 +1,5 @@
+# Blue-green backend upstream. Deploy script overwrites this with "a" or "b".
+# Default: tuki-backend-a (live).
+upstream tuki_backend_live {
+    server tuki-backend-a:8080;
+}

@@ -99,12 +99,29 @@ class MessageProcessor:
 
         parsed = MessageParser.parse_message(message.content)
         reservation_code = parsed.get("reservation_code")
+        erasmus_code = parsed.get("erasmus_code")
         logger.info(
-            "Message content_len=%s parsed_reservation_code=%s content_preview=%s",
+            "Message content_len=%s parsed_reservation_code=%s erasmus_code=%s content_preview=%s",
             len(message.content or ""),
             reservation_code,
+            erasmus_code,
             repr((message.content or "")[:100]),
         )
+
+        # Erasmus access code takes priority when detected
+        if erasmus_code:
+            try:
+                logger.info("[ErasmusAccess] Processing code: %s", erasmus_code)
+                from apps.erasmus.access_code_service import process_incoming_code
+                success = process_incoming_code(message, erasmus_code)
+                return {
+                    "status": "erasmus_access_processed" if success else "erasmus_access_invalid",
+                    "message_id": str(message.id),
+                    "erasmus_code": erasmus_code,
+                }
+            except Exception as e:
+                logger.exception("[ErasmusAccess] Error processing ERAS code %s: %s", erasmus_code, e)
+                return {"status": "error", "message_id": str(message.id)}
 
         if reservation_code:
             try:

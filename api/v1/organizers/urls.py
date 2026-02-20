@@ -5,6 +5,7 @@ from .views import (
     CurrentOrganizerView,
     OrganizerLogoUploadView,
     DashboardStatsView,
+    OrganizerFinancesView,
 )
 
 urlpatterns = [
@@ -16,4 +17,5 @@ urlpatterns = [
     path('organizers/current/', CurrentOrganizerView.as_view(), name='current_organizer'),
     path('organizers/current/upload-logo/', OrganizerLogoUploadView.as_view(), name='upload_organizer_logo'),
     path('organizers/dashboard-stats/', DashboardStatsView.as_view(), name='organizer_dashboard_stats'),
+    path('organizers/finances/', OrganizerFinancesView.as_view(), name='organizer_finances'),
 ] 

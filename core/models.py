@@ -250,6 +250,20 @@ class PlatformFlowEvent(BaseModel):
         ('ERASMUS_STEP_COMPLETED', 'Erasmus Step Completed'),
         ('ERASMUS_FORM_SUBMITTED', 'Erasmus Form Submitted'),
         ('ERASMUS_FLOW_ABANDONED', 'Erasmus Flow Abandoned'),
+        # WhatsApp reservation flow (experience & accommodation)
+        ('WHATSAPP_REQUEST_RECEIVED', 'WhatsApp Request Received'),
+        ('OPERATOR_NOTIFIED', 'Operator Notified'),
+        ('AVAILABILITY_CONFIRMED', 'Availability Confirmed'),
+        ('PAYMENT_LINK_SENT', 'Payment Link Sent'),
+        ('WHATSAPP_RESERVATION_REJECTED', 'WhatsApp Reservation Rejected'),
+        # Messages sent to customer (comprador) - full audit
+        ('CUSTOMER_MESSAGE_WAITING_SENT', 'Customer Message: Waiting (verificando disponibilidad)'),
+        ('CUSTOMER_MESSAGE_AVAILABILITY_SENT', 'Customer Message: Availability confirmed'),
+        ('CUSTOMER_MESSAGE_PAYMENT_LINK_SENT', 'Customer Message: Payment link'),
+        ('CUSTOMER_MESSAGE_CONFIRM_FREE_SENT', 'Customer Message: Confirm free (responde SI)'),
+        ('CUSTOMER_MESSAGE_CONFIRMATION_SENT', 'Customer Message: Reservation confirmed'),
+        ('CUSTOMER_MESSAGE_REJECTION_SENT', 'Customer Message: Rejection'),
+        ('CUSTOMER_MESSAGE_PAYMENT_SUCCESS_SENT', 'Customer Message: Payment success / comprobante'),
     ]
 
     SOURCE_CHOICES = [

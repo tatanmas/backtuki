@@ -194,6 +194,21 @@ Ver el detalle de tu reserva: {magic_link}"""
     service.send_message(customer_phone, message)
     logger.info(f"Sent payment success to customer {customer_phone}")
 
+    if getattr(order, 'flow_id', None):
+        try:
+            from core.flow_logger import FlowLogger
+            flow = FlowLogger.from_flow_id(order.flow_id)
+            if flow:
+                flow.log_event(
+                    'CUSTOMER_MESSAGE_PAYMENT_SUCCESS_SENT',
+                    source='api',
+                    status='success',
+                    message="Message sent to customer: payment success / comprobante",
+                    metadata={'order_number': order.order_number},
+                )
+        except Exception as e:
+            logger.warning("FlowLogger CUSTOMER_MESSAGE_PAYMENT_SUCCESS_SENT: %s", e)
+
     if receipt_base64:
         try:
             service.send_media(
@@ -236,4 +251,19 @@ Ver el detalle de tu reserva: {magic_link}"""
     service = WhatsAppWebService()
     service.send_message(customer_phone, message)
     logger.info(f"Sent accommodation payment success to customer {customer_phone}")
+
+    if getattr(order, 'flow_id', None):
+        try:
+            from core.flow_logger import FlowLogger
+            flow = FlowLogger.from_flow_id(order.flow_id)
+            if flow:
+                flow.log_event(
+                    'CUSTOMER_MESSAGE_PAYMENT_SUCCESS_SENT',
+                    source='api',
+                    status='success',
+                    message="Message sent to customer: payment success (accommodation)",
+                    metadata={'order_number': order.order_number},
+                )
+        except Exception as e:
+            logger.warning("FlowLogger CUSTOMER_MESSAGE_PAYMENT_SUCCESS_SENT: %s", e)
     return True

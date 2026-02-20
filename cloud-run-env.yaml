@@ -18,10 +18,10 @@ CORS_ALLOWED_ORIGINS: "https://tuki.live,https://www.tuki.live,https://api.tuki.
 DJANGO_SUPERUSER_USERNAME: "admin"
 DJANGO_SUPERUSER_EMAIL: "admin@tuki.cl"
 DJANGO_SUPERUSER_PASSWORD: "TukiAdmin2025!"
-# Email configuration
-EMAIL_HOST: "mail.tuki.cl"
-EMAIL_PORT: "465"
-EMAIL_USE_SSL: "true"
+# Email: desde Cloud Run usamos Mailu en Dako (tukitickets.duckdns.org:587, sin TLS - Mailu notls)
+EMAIL_HOST: "tukitickets.duckdns.org"
+EMAIL_PORT: "587"
+EMAIL_USE_SSL: "false"
 EMAIL_USE_TLS: "false"
 EMAIL_HOST_USER: "noreply@tuki.cl"
 EMAIL_HOST_PASSWORD: "-W7)HsC<Hsfk"

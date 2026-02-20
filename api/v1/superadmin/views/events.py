@@ -9,11 +9,30 @@ from rest_framework.response import Response
 from decimal import Decimal
 import logging
 
-from apps.events.models import Event
+from apps.events.models import Event, TicketTier
+from api.v1.events.serializers import EventDetailSerializer
 
 from ..permissions import IsSuperUser
 
 logger = logging.getLogger(__name__)
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperUser])
+def get_event_detail(request, event_id):
+    """
+    Get full event detail for superadmin (same shape as organizer GET /events/:id/).
+    Allows superadmin to view any event regardless of organizer.
+    """
+    try:
+        event = Event.objects.filter(deleted_at__isnull=True).get(id=event_id)
+    except Event.DoesNotExist:
+        return Response(
+            {'detail': 'Event not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    serializer = EventDetailSerializer(event, context={'request': request})
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 @api_view(['PATCH'])
@@ -99,3 +118,71 @@ def update_event_service_fee(request, event_id):
             'success': False,
             'message': f'Error updating event service fee: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['PATCH'])
+@permission_classes([IsSuperUser])
+def update_ticket_tier_service_fee(request, event_id, tier_id):
+    """
+    Update service_fee_rate for a specific ticket tier (superadmin only).
+    Body: { "service_fee_rate": number | null } (0–1 e.g. 0.15 = 15%; null = use inheritance).
+    """
+    try:
+        event = Event.objects.filter(deleted_at__isnull=True).get(id=event_id)
+    except Event.DoesNotExist:
+        return Response(
+            {'success': False, 'message': 'Event not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    try:
+        tier = TicketTier.objects.get(id=tier_id, event=event)
+    except TicketTier.DoesNotExist:
+        return Response(
+            {'success': False, 'message': 'Ticket tier not found for this event'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    fee_rate = request.data.get('service_fee_rate')
+
+    if fee_rate is None:
+        tier.service_fee_rate = None
+        tier.save()
+        effective = tier.get_service_fee_rate()
+        logger.info(f"✅ [SuperAdmin] Removed tier service fee for tier {tier_id}, effective {effective}")
+        return Response({
+            'success': True,
+            'message': 'Tier service fee removed; will use event/organizer/platform default',
+            'ticket_tier': {
+                'id': str(tier.id),
+                'name': tier.name,
+                'service_fee_rate': None,
+                'effective_service_fee_rate': float(effective),
+            }
+        }, status=status.HTTP_200_OK)
+
+    try:
+        fee_rate_decimal = Decimal(str(fee_rate))
+        if fee_rate_decimal < 0 or fee_rate_decimal > 1:
+            return Response({
+                'success': False,
+                'message': 'service_fee_rate must be between 0 and 1 (0% to 100%)',
+            }, status=status.HTTP_400_BAD_REQUEST)
+    except (ValueError, TypeError):
+        return Response({
+            'success': False,
+            'message': 'Invalid service_fee_rate',
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    tier.service_fee_rate = fee_rate_decimal
+    tier.save()
+    logger.info(f"✅ [SuperAdmin] Updated tier service fee for tier {tier_id}: {fee_rate_decimal}")
+    return Response({
+        'success': True,
+        'message': 'Tier service fee updated',
+        'ticket_tier': {
+            'id': str(tier.id),
+            'name': tier.name,
+            'service_fee_rate': float(fee_rate_decimal),
+            'effective_service_fee_rate': float(fee_rate_decimal),
+        }
+    }, status=status.HTTP_200_OK)

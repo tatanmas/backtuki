@@ -70,9 +70,10 @@ services:
       - USE_GCS_IN_DEV=False
       - PORT=8080
       # Email configuration
-      - EMAIL_HOST=mail.tuki.cl
-      - EMAIL_PORT=465
-      - EMAIL_USE_SSL=true
+      - EMAIL_HOST=tukitickets.duckdns.org
+      - EMAIL_PORT=587
+      - EMAIL_USE_SSL=false
+      - EMAIL_USE_TLS=false
       - EMAIL_HOST_USER=noreply@tuki.cl
       - EMAIL_HOST_PASSWORD=-W7)HsC<Hsfk
       - DEFAULT_FROM_EMAIL=Tuki <noreply@tuki.cl>
@@ -118,9 +119,10 @@ services:
       - CELERY_RESULT_BACKEND=redis://tuki-redis:6379/0
       - SECRET_KEY=tuki-super-secret-key-enterprise-2025-production
       # Email configuration
-      - EMAIL_HOST=mail.tuki.cl
-      - EMAIL_PORT=465
-      - EMAIL_USE_SSL=true
+      - EMAIL_HOST=tukitickets.duckdns.org
+      - EMAIL_PORT=587
+      - EMAIL_USE_SSL=false
+      - EMAIL_USE_TLS=false
       - EMAIL_HOST_USER=noreply@tuki.cl
       - EMAIL_HOST_PASSWORD=-W7)HsC<Hsfk
       - DEFAULT_FROM_EMAIL=Tuki <noreply@tuki.cl>

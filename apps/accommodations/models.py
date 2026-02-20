@@ -8,6 +8,46 @@ from core.models import BaseModel
 from apps.organizers.models import Organizer
 
 
+class RentalHub(BaseModel):
+    """
+    Central de arrendamiento: landing de un complejo (ej. Arenas de Playa Blanca).
+    Agrupa accommodations por slug para la página pública.
+    """
+    slug = models.SlugField(_("slug"), max_length=255, unique=True, db_index=True)
+    name = models.CharField(_("name"), max_length=255)
+    short_description = models.CharField(_("short description"), max_length=500, blank=True)
+    description = models.TextField(_("description"), blank=True)
+    hero_image = models.URLField(_("hero image URL"), max_length=500, blank=True)
+    hero_media_id = models.UUIDField(
+        _("hero image from media library"),
+        null=True,
+        blank=True,
+        help_text=_("MediaAsset UUID for hero image (superadmin library)"),
+    )
+    gallery = models.JSONField(
+        _("gallery image URLs"),
+        default=list,
+        help_text=_("List of image URLs for the hub gallery"),
+    )
+    gallery_media_ids = models.JSONField(
+        _("gallery media asset IDs"),
+        default=list,
+        blank=True,
+        help_text=_("List of MediaAsset UUIDs for the hub gallery (superadmin library)"),
+    )
+    meta_title = models.CharField(_("meta title (SEO)"), max_length=255, blank=True)
+    meta_description = models.CharField(_("meta description (SEO)"), max_length=500, blank=True)
+    is_active = models.BooleanField(_("active"), default=True, db_index=True)
+
+    class Meta:
+        verbose_name = _("Rental hub")
+        verbose_name_plural = _("Rental hubs")
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
 class Accommodation(BaseModel):
     """Alojamiento: cabaña, casa, departamento, etc. Con reseñas y amenities."""
 
@@ -115,9 +155,9 @@ class Accommodation(BaseModel):
         default=list,
         blank=True,
         help_text=_(
-            "List of {media_id, room_category, sort_order}. "
-            "Order of display; room_category from ROOM_CATEGORIES or null. "
-            "When saving, gallery_media_ids is synced from this."
+            "List of {media_id, room_category, sort_order, is_principal}. "
+            "sort_order = global order in gallery; is_principal = image for cards/listings. "
+            "room_category from ROOM_CATEGORIES or null. gallery_media_ids synced on save."
         ),
     )
 
@@ -133,6 +173,54 @@ class Accommodation(BaseModel):
     review_count = models.PositiveIntegerField(_("review count"), default=0)
 
     deleted_at = models.DateTimeField(_("deleted at"), null=True, blank=True, db_index=True)
+
+    # Rental hub / central de arrendamiento (ej. Playa Blanca)
+    rental_hub = models.ForeignKey(
+        RentalHub,
+        on_delete=models.SET_NULL,
+        related_name="accommodations",
+        verbose_name=_("rental hub"),
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    # Por central: Playa Blanca usa A1, A2, B, C; otras centrales pueden usar otros códigos (Estudio, 1D, etc.)
+    unit_type = models.CharField(
+        _("unit type"),
+        max_length=30,
+        blank=True,
+        db_index=True,
+        help_text=_("Código de tipo de unidad según la central (ej. A1, A2, B, C en Playa Blanca; Estudio, 1D en otra)."),
+    )
+    tower = models.CharField(
+        _("tower"),
+        max_length=30,
+        blank=True,
+        db_index=True,
+        help_text=_("Torre o bloque (ej. A, B). Depende de la central."),
+    )
+    floor = models.PositiveIntegerField(
+        _("floor"),
+        null=True,
+        blank=True,
+        help_text=_("Piso"),
+    )
+    unit_number = models.CharField(
+        _("unit number"),
+        max_length=20,
+        blank=True,
+        db_index=True,
+        help_text=_("Número de departamento (ej. 101, 803)"),
+    )
+    square_meters = models.DecimalField(
+        _("square meters"),
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+        help_text=_("Metraje total en m²"),
+    )
 
     class Meta:
         verbose_name = _("Accommodation")
@@ -237,6 +325,17 @@ class AccommodationReservation(BaseModel):
 
     paid_at = models.DateTimeField(_("paid at"), null=True, blank=True)
 
+    # 🚀 ENTERPRISE: Platform flow for audit trail (WhatsApp reservation → order → payment)
+    flow = models.ForeignKey(
+        "core.PlatformFlow",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="accommodation_reservations",
+        verbose_name=_("platform flow"),
+        help_text=_("Platform flow tracking this reservation (for traceability)"),
+    )
+
     class Meta:
         verbose_name = _("Accommodation reservation")
         verbose_name_plural = _("Accommodation reservations")
@@ -249,3 +348,29 @@ class AccommodationReservation(BaseModel):
 
     def __str__(self):
         return f"{self.reservation_id} - {self.accommodation.title} ({self.status})"
+
+
+class AccommodationBlockedDate(models.Model):
+    """
+    Fecha bloqueada para un alojamiento (no disponible para reserva).
+    Usado por centrales de arrendamiento para marcar fechas manualmente.
+    """
+    accommodation = models.ForeignKey(
+        Accommodation,
+        on_delete=models.CASCADE,
+        related_name="blocked_dates",
+        verbose_name=_("accommodation"),
+    )
+    date = models.DateField(_("date"), db_index=True)
+
+    class Meta:
+        verbose_name = _("Accommodation blocked date")
+        verbose_name_plural = _("Accommodation blocked dates")
+        unique_together = [("accommodation", "date")]
+        ordering = ["accommodation", "date"]
+        indexes = [
+            models.Index(fields=["accommodation", "date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.accommodation.title} - {self.date}"

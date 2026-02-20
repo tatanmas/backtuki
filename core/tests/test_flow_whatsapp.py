@@ -49,7 +49,11 @@ class WhatsAppAccommodationFlowTests(TestCase):
         self.assertEqual(flow.flow_type, "accommodation_booking")
         self.assertEqual(flow.accommodation_id, self.accommodation.id)
         self.assertEqual(flow.metadata.get("source"), "whatsapp")
-        self.assertIn("reservation_id", flow.metadata)
+        # reservation_id in flow.metadata (legacy) or whatsapp_reservation_id when flow started earlier
+        self.assertTrue(
+            flow.metadata.get("reservation_id") or flow.metadata.get("whatsapp_reservation_id"),
+            msg="flow metadata should have reservation_id or whatsapp_reservation_id",
+        )
 
         events = list(flow.events.values_list("step", flat=True))
         self.assertIn("RESERVATION_CREATED", events)

@@ -27,6 +27,18 @@ COUNTRIES = [
     {"code": "OTHER", "label": "Otro"},
 ]
 
+# Languages for "idiomas que hablas" (multi-select)
+LANGUAGES = [
+    {"code": "es", "label": "Español"},
+    {"code": "en", "label": "English"},
+    {"code": "pt", "label": "Português"},
+    {"code": "de", "label": "Deutsch"},
+    {"code": "it", "label": "Italiano"},
+    {"code": "fr", "label": "Français"},
+    {"code": "nl", "label": "Nederlands"},
+    {"code": "other", "label": "Otro"},
+]
+
 DESTINATIONS_BY_COUNTRY = {
     "chile": [
         {"slug": "san-pedro-atacama", "label": "San Pedro de Atacama"},
@@ -131,9 +143,10 @@ INTERESTS_BY_CATEGORY = [
 
 
 def get_erasmus_options():
-    """Return destinations, interests, and countries for the registration form."""
+    """Return destinations, interests, countries, and languages for the registration form."""
     return {
         "countries": COUNTRIES,
         "destinations": DESTINATIONS_BY_COUNTRY,
         "interests": INTERESTS_BY_CATEGORY,
+        "languages": LANGUAGES,
     }

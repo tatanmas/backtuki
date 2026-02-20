@@ -76,6 +76,7 @@ urlpatterns = [
     path('', include('api.v1.events.urls')),  # ✅ NUEVO: Incluir URLs de eventos (incluye endpoints públicos)
     path('', include('api.v1.experiences.urls')),  # 🚀 ENTERPRISE: Experiences/Tours endpoints
     path('accommodations/', include('api.v1.accommodations.urls')),  # 🚀 Alojamientos (public list/detail)
+    path('rental-hubs/', include('api.v1.rental_hubs.urls')),  # 🚀 Centrales de arrendamiento (Playa Blanca, etc.)
     path('student-centers/', include('api.v1.student_centers.urls')),  # 🚀 ENTERPRISE: Student Centers endpoints
     path('creators/', include('api.v1.creators.urls')),  # 🚀 ENTERPRISE: TUKI Creators (influencers)
     path('erasmus/', include('api.v1.erasmus.urls')),  # 🚀 ENTERPRISE: Erasmus registration (public)

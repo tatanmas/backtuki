@@ -156,22 +156,30 @@ class MediaAssetCreateSerializer(serializers.ModelSerializer):
         """Validate file size and type. Accept by extension or by image/* Content-Type."""
         max_size = MediaAsset.MAX_FILE_SIZE_MB * 1024 * 1024
         if value.size > max_size:
-            raise serializers.ValidationError(
-                f"File size exceeds {MediaAsset.MAX_FILE_SIZE_MB}MB limit"
-            )
+            raise serializers.ValidationError({
+                "file": [f"File size exceeds {MediaAsset.MAX_FILE_SIZE_MB}MB limit"]
+            })
         if value.size <= 0:
-            raise serializers.ValidationError("File is empty")
+            raise serializers.ValidationError({"file": ["El archivo está vacío (0 bytes)."]})
 
-        allowed_extensions = ('jpg', 'jpeg', 'png', 'webp', 'gif', 'avif')
+        allowed_extensions = ('jpg', 'jpeg', 'png', 'webp', 'gif')
         name = getattr(value, 'name', '') or ''
         ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
         content_type = (value.content_type or '').strip().lower()
 
+        # AVIF no soportado (Pillow no lo abre; provoca 400)
+        if ext == 'avif' or content_type == 'image/avif':
+            raise serializers.ValidationError({
+                "file": ["AVIF no está soportado. Use PNG, JPG, WEBP o GIF."]
+            })
         # Accept if extension is allowed (browsers often send application/octet-stream)
         if ext in allowed_extensions:
             return value
         # Accept if Content-Type is in our list
         if content_type and content_type in MediaAsset.ALLOWED_CONTENT_TYPES:
+            return value
+        # Aceptar otros image/* (HEIC → se convierte a jpg en perform_create)
+        if content_type and content_type.startswith('image/'):
             return value
 
         logger.warning(
@@ -180,10 +188,12 @@ class MediaAssetCreateSerializer(serializers.ModelSerializer):
             content_type or '(none)',
             value.size,
         )
-        raise serializers.ValidationError(
-            f"File type not allowed (got {content_type or 'unknown'}, extension .{ext or 'none'}). "
-            f"Allowed: {', '.join(allowed_extensions)}"
-        )
+        raise serializers.ValidationError({
+            "file": [
+                f"File type not allowed (got {content_type or 'unknown'}, extension .{ext or 'none'}). "
+                f"Allowed: {', '.join(allowed_extensions)}"
+            ]
+        })
     
     def validate(self, attrs):
         """Validate scope/organizer consistency."""
@@ -256,5 +266,9 @@ class MediaUsageSerializer(serializers.ModelSerializer):
                 return obj.content_object.title
             elif hasattr(obj.content_object, 'name'):
                 return obj.content_object.name
+            elif hasattr(obj.content_object, 'slot_key'):
+                return obj.content_object.slot_key
+            elif hasattr(obj.content_object, 'slide_id'):
+                return obj.content_object.slide_id
         return None
 

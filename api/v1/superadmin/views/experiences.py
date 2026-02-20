@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from django.db import transaction
 import logging
 
-from apps.experiences.models import Experience
+from apps.experiences.models import Experience, ExperienceImportedReview
 from apps.experiences.utils import generate_tour_instances_from_pattern
 from apps.organizers.models import Organizer
 
@@ -135,6 +135,44 @@ def create_experience_from_json(request):
                                 f"⚠️ [JSON_EXPERIENCE_CREATE] Error creating date price override: {e}"
                             )
                             continue
+
+            # Create imported reviews (from experience_data, not from serializer validated_data)
+            reviews_data = experience_data.get('reviews') or []
+            reviews_created = 0
+            if isinstance(reviews_data, list) and len(reviews_data) > 0:
+                from datetime import datetime as dt
+                for item in reviews_data[:100]:
+                    if not isinstance(item, dict):
+                        continue
+                    author_name = (item.get('author_name') or item.get('author') or '').strip()
+                    if not author_name:
+                        continue
+                    try:
+                        rating = int(item.get('rating', 5))
+                        rating = max(1, min(5, rating))
+                    except (TypeError, ValueError):
+                        rating = 5
+                    body = (item.get('body') or item.get('text') or '').strip()
+                    review_date = None
+                    if item.get('review_date'):
+                        try:
+                            review_date = dt.strptime(str(item['review_date'])[:10], '%Y-%m-%d').date()
+                        except (ValueError, TypeError):
+                            pass
+                    source = (item.get('source') or '')[:50]
+                    ExperienceImportedReview.objects.create(
+                        experience=experience,
+                        author_name=author_name[:255],
+                        rating=rating,
+                        body=body,
+                        review_date=review_date,
+                        source=source,
+                    )
+                    reviews_created += 1
+                if reviews_created:
+                    logger.info(
+                        f"✅ [JSON_EXPERIENCE_CREATE] Created {reviews_created} imported review(s) for '{experience.title}'"
+                    )
             
             # Serialize response
             from apps.experiences.serializers import ExperienceSerializer
@@ -143,11 +181,12 @@ def create_experience_from_json(request):
             response_data = response_serializer.data
             response_data['instances_created'] = instances_created
             response_data['overrides_created'] = overrides_created
-            
+            response_data['reviews_created'] = reviews_created
+
             logger.info(
                 f"✅ [JSON_EXPERIENCE_CREATE] Experience '{experience.title}' created from JSON "
                 f"(ID: {experience.id}, Organizer: {organizer.name}, "
-                f"Instances: {instances_created}, Overrides: {overrides_created})"
+                f"Instances: {instances_created}, Overrides: {overrides_created}, Reviews: {reviews_created})"
             )
             
             return Response(response_data, status=status.HTTP_201_CREATED)

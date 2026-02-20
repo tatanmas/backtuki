@@ -1049,6 +1049,36 @@ class ExperienceReview(BaseModel):
         return f"Review {self.rating}★ for {self.experience.title}"
 
 
+class ExperienceImportedReview(BaseModel):
+    """
+    Imported review for an experience (from Google, GetYourGuide, etc.).
+    Not linked to a reservation; created via JSON upload or bulk import.
+    """
+    experience = models.ForeignKey(
+        Experience,
+        on_delete=models.CASCADE,
+        related_name='imported_reviews',
+        verbose_name=_("experience"),
+    )
+    author_name = models.CharField(_("author name"), max_length=255)
+    rating = models.PositiveSmallIntegerField(
+        _("rating"),
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text=_("1-5 stars"),
+    )
+    body = models.TextField(_("body"), blank=True)
+    review_date = models.DateField(_("review date"), null=True, blank=True)
+    source = models.CharField(_("source"), max_length=50, blank=True)
+
+    class Meta:
+        verbose_name = _("imported experience review")
+        verbose_name_plural = _("imported experience reviews")
+        ordering = ['-review_date', '-created_at']
+
+    def __str__(self):
+        return f"{self.author_name} – {self.experience.title} ({self.rating}★)"
+
+
 class ExperienceCapacityHold(BaseModel):
     """
     Hold on capacity for a tour instance (prevents overbooking).

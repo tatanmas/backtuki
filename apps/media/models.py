@@ -67,12 +67,12 @@ class MediaAsset(BaseModel):
         ('global', _('Global')),
     )
     
+    # AVIF no incluido: Pillow no lo soporta
     ALLOWED_CONTENT_TYPES = [
         'image/jpeg',
         'image/png',
         'image/webp',
         'image/gif',
-        'image/avif',
     ]
     
     MAX_FILE_SIZE_MB = 10
@@ -109,7 +109,7 @@ class MediaAsset(BaseModel):
         upload_to=get_media_upload_path,
         validators=[
             FileExtensionValidator(
-                allowed_extensions=['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif']
+                allowed_extensions=['jpg', 'jpeg', 'png', 'webp', 'gif']
             )
         ]
     )

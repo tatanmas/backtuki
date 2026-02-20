@@ -3,16 +3,44 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from apps.landing_destinations.views import LandingDestinationViewSet
+from .views.rental_hubs import RentalHubViewSet
 from .views import (
     SuperAdminUserViewSet,
     CountryViewSet,
+    platform_status,
     SuperAdminAccommodationListView,
     SuperAdminAccommodationDetailView,
     SuperAdminAccommodationGalleryUpdateView,
+    create_accommodation_from_json,
+    schema_for_entity,
+    create_destination_from_json,
     ErasmusLeadsView,
+    ErasmusLeadsExportView,
+    ErasmusLeadDetailView,
+    ErasmusDashboardView,
+    create_erasmus_leads_from_json,
+    create_erasmus_timeline_from_json,
+    create_erasmus_activity_from_json,
+    ErasmusActivityListView,
+    ErasmusActivityDetailView,
+    ErasmusActivityInstanceListCreateView,
+    ErasmusActivityInstanceDetailView,
+    erasmus_activity_instances_bulk_from_json,
     ErasmusTrackingLinkViewSet,
     ErasmusExtraFieldViewSet,
     ErasmusDestinationGuideViewSet,
+    ErasmusLocalPartnerViewSet,
+    ErasmusWhatsAppGroupViewSet,
+    erasmus_whatsapp_groups_bulk_from_json,
+    erasmus_slides_list,
+    erasmus_slides_assign,
+    erasmus_slides_create,
+    erasmus_slides_delete,
+    erasmus_registro_background_list,
+    erasmus_registro_background_create,
+    erasmus_registro_background_delete,
+    erasmus_registro_background_assign,
+    erasmus_registro_background_reorder,
     superadmin_stats, 
     sales_analytics, 
     organizer_sales, 
@@ -21,6 +49,8 @@ from .views import (
     update_organizer_modules,
     update_organizer_service_fee,
     update_event_service_fee,
+    get_event_detail,
+    update_ticket_tier_service_fee,
     # 🚀 ENTERPRISE: Platform Flow Monitoring
     ticket_delivery_funnel,
     ticket_delivery_issues,
@@ -34,6 +64,11 @@ from .views import (
     # 🚀 ENTERPRISE: Revenue Migration
     revenue_migration_status,
     migrate_revenue_data,
+    # Finances
+    pending_payouts,
+    create_payout,
+    export_payouts,
+    bank_options,
     # 🚀 ENTERPRISE: JSON Experience Creation
     create_experience_from_json,
     update_experience_commission,
@@ -72,9 +107,13 @@ router = DefaultRouter()
 router.register(r'users', SuperAdminUserViewSet, basename='superadmin-users')
 router.register(r'countries', CountryViewSet, basename='country')
 router.register(r'destinations', LandingDestinationViewSet, basename='superadmin-destinations')
+router.register(r'rental-hubs', RentalHubViewSet, basename='superadmin-rental-hubs')
 
 urlpatterns = [
+    # Rutas específicas ANTES del router para que no sean capturadas por destinations/<pk>/
+    path('destinations/create-from-json/', create_destination_from_json, name='create-destination-from-json'),
     path('', include(router.urls)),
+    path('platform-status/', platform_status, name='superadmin-platform-status'),
     path('stats/', superadmin_stats, name='superadmin-stats'),
     path('sales-analytics/', sales_analytics, name='sales-analytics'),
     path('organizer-sales/', organizer_sales, name='organizer-sales'),
@@ -82,6 +121,8 @@ urlpatterns = [
     path('organizers/<str:organizer_id>/template/', update_organizer_template, name='update-organizer-template'),
     path('organizers/<str:organizer_id>/modules/', update_organizer_modules, name='update-organizer-modules'),
     path('organizers/<str:organizer_id>/service-fee/', update_organizer_service_fee, name='update-organizer-service-fee'),
+    path('events/<str:event_id>/ticket-tiers/<str:tier_id>/service-fee/', update_ticket_tier_service_fee, name='update-ticket-tier-service-fee'),
+    path('events/<str:event_id>/', get_event_detail, name='superadmin-event-detail'),
     path('events/<str:event_id>/service-fee/', update_event_service_fee, name='update-event-service-fee'),
     
     # 🚀 ENTERPRISE: Platform Flow Monitoring Endpoints
@@ -99,7 +140,10 @@ urlpatterns = [
     # 🚀 ENTERPRISE: Revenue Migration Endpoints
     path('revenue-migration/status/', revenue_migration_status, name='revenue-migration-status'),
     path('revenue-migration/migrate/', migrate_revenue_data, name='migrate-revenue-data'),
-    
+    path('pending-payouts/', pending_payouts, name='pending-payouts'),
+    path('pending-payouts/export/', export_payouts, name='export-payouts'),
+    path('payouts/', create_payout, name='create-payout'),
+    path('bank-options/', bank_options, name='bank-options'),
     # 🚀 ENTERPRISE: WhatsApp Integration Endpoints
     path('whatsapp/status/', whatsapp_status, name='whatsapp-status'),
     path('whatsapp/disconnect/', whatsapp_disconnect, name='whatsapp-disconnect'),
@@ -125,8 +169,10 @@ urlpatterns = [
     path('whatsapp/operators/<str:operator_id>/', whatsapp_operator_detail, name='whatsapp-operator-detail'),
     path('whatsapp/operators/<str:operator_id>/default-group/', whatsapp_operator_default_group, name='whatsapp-operator-default-group'),
     
-    # 🚀 ENTERPRISE: JSON Experience Creation
+    # 🚀 ENTERPRISE: JSON upload (schema + create-from-json)
+    path('schema/<str:entity>/', schema_for_entity, name='superadmin-schema'),
     path('experiences/create-from-json/', create_experience_from_json, name='create-experience-from-json'),
+    path('accommodations/create-from-json/', create_accommodation_from_json, name='create-accommodation-from-json'),
     path('experiences/<uuid:experience_id>/commission/', update_experience_commission, name='update-experience-commission'),
     path('creators-landing-slots/', creators_landing_slots_list, name='creators-landing-slots-list'),
     path('creators-landing-slots/assign/', creators_landing_slots_assign, name='creators-landing-slots-assign'),
@@ -135,13 +181,40 @@ urlpatterns = [
     path('accommodations/', SuperAdminAccommodationListView.as_view(), name='superadmin-accommodations-list'),
     path('accommodations/<uuid:accommodation_id>/', SuperAdminAccommodationDetailView.as_view(), name='superadmin-accommodations-detail'),
     path('accommodations/<uuid:accommodation_id>/gallery/', SuperAdminAccommodationGalleryUpdateView.as_view(), name='superadmin-accommodations-gallery'),
-    # Erasmus: leads (list + export ?format=csv), tracking links, extra form fields
+    # Erasmus: leads (list + export ?format=csv), detail (GET/PATCH), create-from-json
     path('erasmus/leads/', ErasmusLeadsView.as_view(), name='superadmin-erasmus-leads'),
+    path('erasmus/leads/export/', ErasmusLeadsExportView.as_view(), name='superadmin-erasmus-leads-export'),
+    path('erasmus/leads/create-from-json/', create_erasmus_leads_from_json, name='superadmin-erasmus-leads-create-from-json'),
+    path('erasmus/leads/<str:lead_id>/', ErasmusLeadDetailView.as_view(), name='superadmin-erasmus-lead-detail'),
+    path('erasmus/timeline/create-from-json/', create_erasmus_timeline_from_json, name='superadmin-erasmus-timeline-create-from-json'),
+    path('erasmus/activities/', ErasmusActivityListView.as_view(), name='superadmin-erasmus-activities-list'),
+    path('erasmus/activities/create-from-json/', create_erasmus_activity_from_json, name='superadmin-erasmus-activities-create-from-json'),
+    path('erasmus/activities/<uuid:activity_id>/', ErasmusActivityDetailView.as_view(), name='superadmin-erasmus-activity-detail'),
+    path('erasmus/activities/<uuid:activity_id>/instances/', ErasmusActivityInstanceListCreateView.as_view(), name='superadmin-erasmus-activity-instances-list'),
+    path('erasmus/activities/<uuid:activity_id>/instances/bulk-from-json/', erasmus_activity_instances_bulk_from_json, name='superadmin-erasmus-activity-instances-bulk-from-json'),
+    path('erasmus/activities/<uuid:activity_id>/instances/<uuid:instance_id>/', ErasmusActivityInstanceDetailView.as_view(), name='superadmin-erasmus-activity-instance-detail'),
+    path('erasmus/dashboard/', ErasmusDashboardView.as_view(), name='superadmin-erasmus-dashboard'),
     path('erasmus/tracking-links/', ErasmusTrackingLinkViewSet.as_view({'get': 'list', 'post': 'create'}), name='superadmin-erasmus-tracking-links'),
     path('erasmus/tracking-links/<int:pk>/', ErasmusTrackingLinkViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='superadmin-erasmus-tracking-link-detail'),
     path('erasmus/extra-fields/', ErasmusExtraFieldViewSet.as_view({'get': 'list', 'post': 'create'}), name='superadmin-erasmus-extra-fields'),
     path('erasmus/extra-fields/<int:pk>/', ErasmusExtraFieldViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='superadmin-erasmus-extra-field-detail'),
     path('erasmus/destination-guides/', ErasmusDestinationGuideViewSet.as_view({'get': 'list', 'post': 'create'}), name='superadmin-erasmus-destination-guides'),
     path('erasmus/destination-guides/<int:pk>/', ErasmusDestinationGuideViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='superadmin-erasmus-destination-guide-detail'),
+    path('erasmus/local-partners/', ErasmusLocalPartnerViewSet.as_view({'get': 'list', 'post': 'create'}), name='superadmin-erasmus-local-partners'),
+    path('erasmus/local-partners/<int:pk>/', ErasmusLocalPartnerViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='superadmin-erasmus-local-partner-detail'),
+    path('erasmus/whatsapp-groups/', ErasmusWhatsAppGroupViewSet.as_view({'get': 'list', 'post': 'create'}), name='superadmin-erasmus-whatsapp-groups'),
+    path('erasmus/whatsapp-groups/bulk-from-json/', erasmus_whatsapp_groups_bulk_from_json, name='superadmin-erasmus-whatsapp-groups-bulk-from-json'),
+    path('erasmus/whatsapp-groups/<int:pk>/', ErasmusWhatsAppGroupViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='superadmin-erasmus-whatsapp-group-detail'),
+    path('erasmus-slides/', erasmus_slides_list, name='superadmin-erasmus-slides-list'),
+    path('erasmus-slides/assign/', erasmus_slides_assign, name='superadmin-erasmus-slides-assign'),
+    path('erasmus-slides/create/', erasmus_slides_create, name='superadmin-erasmus-slides-create'),
+    path('erasmus-slides/delete/', erasmus_slides_delete, name='superadmin-erasmus-slides-delete'),
+    path('erasmus-slides/<str:slide_id>/', erasmus_slides_delete, name='superadmin-erasmus-slides-delete-by-id'),
+    # Fondo del formulario de registro Erasmus
+    path('erasmus-registro-background/', erasmus_registro_background_list, name='superadmin-erasmus-registro-background-list'),
+    path('erasmus-registro-background/create/', erasmus_registro_background_create, name='superadmin-erasmus-registro-background-create'),
+    path('erasmus-registro-background/reorder/', erasmus_registro_background_reorder, name='superadmin-erasmus-registro-background-reorder'),
+    path('erasmus-registro-background/assign/', erasmus_registro_background_assign, name='superadmin-erasmus-registro-background-assign'),
+    path('erasmus-registro-background/<uuid:pk>/', erasmus_registro_background_delete, name='superadmin-erasmus-registro-background-delete'),
 ]
 

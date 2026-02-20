@@ -82,12 +82,8 @@ class ReservationCodeProcessor:
             )
             code_obj.linked_reservation = reservation
             code_obj.save()
-            reservation.status = "operator_notified"
-            reservation.save(update_fields=["status"])
-            try:
-                GroupNotificationService.send_reservation_notification(reservation)
-            except Exception as e:
-                logger.error("Error sending accommodation reservation to group: %s", e)
+            ReservationHandler.ensure_flow_and_log_request(reservation)
+            ReservationHandler.mark_operator_notified(reservation)
             ReservationCodeProcessor._send_waiting_to_customer(message, reservation)
             return reservation
 
@@ -98,6 +94,7 @@ class ReservationCodeProcessor:
             operator=operator,
             experience=None,
             accommodation=accommodation,
+            existing_flow=code_obj.flow if code_obj.flow_id else None,
         )
         code_obj.linked_reservation = reservation
         code_obj.save()
@@ -148,12 +145,8 @@ class ReservationCodeProcessor:
             )
             code_obj.linked_reservation = reservation
             code_obj.save()
-            reservation.status = "operator_notified"
-            reservation.save(update_fields=["status"])
-            try:
-                GroupNotificationService.send_reservation_notification(reservation)
-            except Exception as e:
-                logger.error("Error sending reservation to group: %s", e)
+            ReservationHandler.ensure_flow_and_log_request(reservation)
+            ReservationHandler.mark_operator_notified(reservation)
             ReservationCodeProcessor._send_waiting_to_customer(message, reservation)
             return reservation
 
@@ -166,6 +159,7 @@ class ReservationCodeProcessor:
             operator=operator,
             experience=experience,
             accommodation=None,
+            existing_flow=code_obj.flow if code_obj.flow_id else None,
         )
         code_obj.linked_reservation = reservation
         code_obj.save()
@@ -176,11 +170,26 @@ class ReservationCodeProcessor:
 
     @staticmethod
     def _send_waiting_to_customer(message: WhatsAppMessage, reservation: WhatsAppReservationRequest) -> None:
-        """Send waiting message to customer."""
+        """Send waiting message to customer and log in flow."""
         try:
             phone = WhatsAppWebService.clean_phone_number(message.phone)
             msg = GroupNotificationService.format_waiting_message(reservation)
             WhatsAppWebService().send_message(phone, msg)
             logger.info("Sent waiting message to customer %s", phone)
+            # 🚀 ENTERPRISE: Register message to buyer in flow
+            if reservation.flow_id:
+                try:
+                    from core.flow_logger import FlowLogger
+                    flow = FlowLogger.from_flow_id(reservation.flow_id)
+                    if flow:
+                        flow.log_event(
+                            'CUSTOMER_MESSAGE_WAITING_SENT',
+                            source='api',
+                            status='success',
+                            message="Message sent to customer: waiting (verificando disponibilidad)",
+                            metadata={'whatsapp_reservation_id': str(reservation.id)},
+                        )
+                except Exception as e:
+                    logger.warning("FlowLogger CUSTOMER_MESSAGE_WAITING_SENT: %s", e)
         except Exception as e:
             logger.error("Error sending waiting message: %s", e)

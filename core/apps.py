@@ -12,3 +12,7 @@ class CoreConfig(AppConfig):
     name = 'core'
     verbose_name = 'Core'
 
+    def ready(self):
+        from core.uptime import set_start_time
+        set_start_time()
+

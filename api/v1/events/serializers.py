@@ -126,9 +126,11 @@ class TicketTierSerializer(serializers.ModelSerializer):
             # 🎯 RAFFLE: Raffle field
             'is_raffle',
             # 🚀 ENTERPRISE: Add enterprise fields
-            'tickets_sold', 'tickets_on_hold', 'real_available', 'availability_summary'
+            'tickets_sold', 'tickets_on_hold', 'real_available', 'availability_summary',
+            # Superadmin: tier-level service fee (read-only here; superadmin PATCHes via dedicated endpoint)
+            'service_fee_rate',
         ]
-        read_only_fields = ['id', 'available', 'tickets_sold', 'tickets_on_hold', 'real_available']
+        read_only_fields = ['id', 'available', 'tickets_sold', 'tickets_on_hold', 'real_available', 'service_fee_rate']
 
     def get_price(self, obj) -> Dict[str, Union[float, str, List[Dict[str, Union[str, float]]]]]:
         """Return price information."""

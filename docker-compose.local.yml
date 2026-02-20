@@ -64,6 +64,14 @@ services:
       - WOOCOMMERCE_SYNC_RETRY_DELAY=${WOOCOMMERCE_SYNC_RETRY_DELAY}
       # WhatsApp Service
       - WHATSAPP_SERVICE_URL=http://whatsapp-service:3001
+      # Email (Mailu en Dako desde Mac: tukitickets.duckdns.org:587, sin TLS - Mailu tiene TLS_FLAVOR=notls)
+      - EMAIL_HOST=tukitickets.duckdns.org
+      - EMAIL_PORT=587
+      - EMAIL_USE_SSL=false
+      - EMAIL_USE_TLS=false
+      - EMAIL_HOST_USER=noreply@tuki.cl
+      - EMAIL_HOST_PASSWORD=-W7)HsC<Hsfk
+      - DEFAULT_FROM_EMAIL=Tuki <noreply@tuki.cl>
       # 🚀 ENTERPRISE: Transbank WebPay Plus
       # Local: SANDBOX=true + credenciales integración (transbankdevelopers.cl)
       # Producción (GCP/Dako): usar credenciales reales en cloud-run-env / docker-compose.dako
@@ -111,6 +119,14 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - SECRET_KEY=local-dev-secret-key
+      # Email (Mailu en Dako desde Mac, sin TLS)
+      - EMAIL_HOST=tukitickets.duckdns.org
+      - EMAIL_PORT=587
+      - EMAIL_USE_SSL=false
+      - EMAIL_USE_TLS=false
+      - EMAIL_HOST_USER=noreply@tuki.cl
+      - EMAIL_HOST_PASSWORD=-W7)HsC<Hsfk
+      - DEFAULT_FROM_EMAIL=Tuki <noreply@tuki.cl>
       # 🚀 ENTERPRISE: WooCommerce Sync Configuration
       - WOOCOMMERCE_SSH_HOST=${WOOCOMMERCE_SSH_HOST}
       - WOOCOMMERCE_SSH_PORT=${WOOCOMMERCE_SSH_PORT}

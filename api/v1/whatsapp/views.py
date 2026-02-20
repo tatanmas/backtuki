@@ -226,6 +226,8 @@ def generate_reservation_code(request):
         except Exception as e:
             logger.exception("Error generating accommodation reservation code: %s", e)
             return Response({'error': 'Internal server error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # 🚀 ENTERPRISE: Start flow at code generation so superadmin sees intent even if message never sent
+        ReservationHandler.start_flow_for_code(code_obj)
         return Response({
             'code': code_obj.code,
             'expires_at': code_obj.expires_at.isoformat(),
@@ -246,6 +248,8 @@ def generate_reservation_code(request):
         logger.exception("Error generating reservation code: %s", e)
         return Response({'error': 'Internal server error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    # 🚀 ENTERPRISE: Start flow at code generation so superadmin sees intent even if message never sent
+    ReservationHandler.start_flow_for_code(code_obj)
     return Response({
         'code': code_obj.code,
         'expires_at': code_obj.expires_at.isoformat(),
@@ -508,6 +512,7 @@ def create_order_for_accommodation(request):
             taxes=0,
             currency=acc_res.currency or 'CLP',
             status='pending',
+            flow=acc_res.flow,  # 🚀 ENTERPRISE: link flow so payment processor logs steps
         )
     logger.info("Created accommodation order %s for reservation %s", order.order_number, acc_res.reservation_id)
     return Response({

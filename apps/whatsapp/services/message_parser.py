@@ -202,9 +202,42 @@ class MessageParser:
         return {
             'tour_code': cls.extract_tour_code(message),
             'reservation_code': cls.extract_reservation_code(message),
+            'erasmus_code': cls.extract_erasmus_code(message),
             'passengers': cls.extract_passengers(message),
             'date': cls.extract_date(message),
             'is_reservation': cls.is_reservation_message(message),
             'original_message': message
         }
+
+    @classmethod
+    def extract_erasmus_code(cls, message: str) -> Optional[str]:
+        """
+        Extract an Erasmus access verification code (ERAS-XXXXXX format).
+        These codes are generated when a student clicks "Acceder" on the gracias page
+        and then sent to Tuki's WhatsApp to receive their magic link.
+        """
+        # Primary: ERAS-XXXXXX (exactly 6 alphanumeric chars after ERAS-)
+        match = re.search(r'\bERAS-([A-F0-9]{6})\b', message, re.IGNORECASE)
+        if match:
+            code = match.group(0).upper()
+            logger.info("[ErasmusAccess] Extracted Erasmus code: %s", code)
+            return code
+        # Fallback: any ERAS-XXX pattern present in DB
+        return cls._find_erasmus_code_in_db(message)
+
+    @classmethod
+    def _find_erasmus_code_in_db(cls, message: str) -> Optional[str]:
+        """Fallback: scan message for any ERAS code that exists in DB."""
+        try:
+            from apps.erasmus.models import ErasmusMagicLink
+            for match in re.finditer(r'\bERAS-[A-Z0-9]{4,10}\b', message, re.IGNORECASE):
+                code = match.group(0).upper()
+                if ErasmusMagicLink.objects.filter(
+                    verification_code=code,
+                    status=ErasmusMagicLink.STATUS_PENDING,
+                ).exists():
+                    return code
+        except Exception as exc:
+            logger.warning("[ErasmusAccess] DB lookup failed: %s", exc)
+        return None
 
