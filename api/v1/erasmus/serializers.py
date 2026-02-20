@@ -40,7 +40,7 @@ class ErasmusRegisterSerializer(serializers.Serializer):
     birth_date = serializers.DateField()
     country = serializers.CharField(max_length=100, required=False, allow_blank=True)
     city = serializers.CharField(max_length=150, required=False, allow_blank=True)
-    email = serializers.EmailField(required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
     phone_country_code = serializers.CharField(max_length=10)
     phone_number = serializers.CharField(max_length=20)
     instagram = serializers.CharField(max_length=100, required=False, allow_blank=True)
@@ -50,8 +50,8 @@ class ErasmusRegisterSerializer(serializers.Serializer):
     university = serializers.CharField(max_length=255, required=False, allow_blank=True)
     degree = serializers.CharField(max_length=255, required=False, allow_blank=True)
 
-    arrival_date = serializers.DateField()
-    departure_date = serializers.DateField()
+    arrival_date = serializers.DateField(required=False, allow_null=True)
+    departure_date = serializers.DateField(required=False, allow_null=True)
 
     has_accommodation_in_chile = serializers.BooleanField(required=False, default=False)
     wants_rumi4students_contact = serializers.BooleanField(required=False, default=False)
@@ -65,6 +65,9 @@ class ErasmusRegisterSerializer(serializers.Serializer):
     utm_medium = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
     utm_campaign = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
 
+    # Idioma con el que vieron el formulario (selector arriba). Para enviar mensaje de bienvenida en su idioma.
+    form_locale = serializers.CharField(max_length=10, required=False, allow_blank=True, default="es")
+
     extra_data = serializers.JSONField(required=False, default=dict)
 
     # Consent (T&C Especiales Registro Erasmus)
@@ -74,10 +77,23 @@ class ErasmusRegisterSerializer(serializers.Serializer):
     consent_whatsapp = serializers.BooleanField(required=False, default=False)
     consent_share_providers = serializers.BooleanField(required=False, default=False)
 
+    # Community directory
+    languages_spoken = serializers.ListField(
+        child=serializers.CharField(max_length=20), required=False, default=list
+    )
+    opt_in_community = serializers.BooleanField(required=False, default=True)
+    community_bio = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+    community_show_dates = serializers.BooleanField(required=False, default=True)
+    community_show_age = serializers.BooleanField(required=False, default=True)
+    community_show_whatsapp = serializers.BooleanField(required=False, default=False)
+
     def validate_email(self, value):
-        if value and isinstance(value, str):
-            value = value.strip()
-        return value or None
+        """Email is optional; if provided, validate format. Magic-login supports leads without email."""
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        value = value.strip() if isinstance(value, str) else value
+        # Use parent EmailField validation for format when present
+        return value
 
     def validate_phone_number(self, value):
         country_code = self.initial_data.get("phone_country_code") or ""
@@ -103,7 +119,27 @@ class ErasmusRegisterSerializer(serializers.Serializer):
                 raise serializers.ValidationError({"university": "Indica la universidad donde estudiarás."})
             if not (attrs.get("degree") or "").strip():
                 raise serializers.ValidationError({"degree": "Indica la carrera o programa."})
+        if attrs.get("opt_in_community"):
+            instagram = (attrs.get("instagram") or "").strip().lstrip("@")
+            if not instagram:
+                raise serializers.ValidationError({"instagram": "Si quieres aparecer en la comunidad, indica tu Instagram."})
         return attrs
+
+    # Quiz de perfil (paso 6): claves fijas que se guardan en extra_data sin ErasmusExtraField
+    QUIZ_EXTRA_KEYS = {
+        "quiz_accommodation",
+        "quiz_saturday",
+        "quiz_physical",
+        "quiz_social",
+        "quiz_travel_style",
+        "quiz_avoid",
+    }
+    # Housing (Rumi): cuando wants_rumi4students_contact, el front envía esto en extra_data
+    HOUSING_EXTRA_KEYS = {
+        "accommodation_help_where",
+        "accommodation_help_budget_monthly",
+        "accommodation_help_types",
+    }
 
     def validate_extra_data(self, value):
         if not isinstance(value, dict):
@@ -112,13 +148,14 @@ class ErasmusRegisterSerializer(serializers.Serializer):
             f.field_key: f
             for f in ErasmusExtraField.objects.filter(is_active=True)
         }
-        allowed_keys = set(extra_fields.keys())
+        allowed_keys = set(extra_fields.keys()) | self.QUIZ_EXTRA_KEYS | self.HOUSING_EXTRA_KEYS
         unknown = set(value.keys()) - allowed_keys
         if unknown:
             value = {k: v for k, v in value.items() if k in allowed_keys}
         return value
 
     def create(self, validated_data):
+        import secrets
         from django.contrib.auth import get_user_model
         User = get_user_model()
 
@@ -126,6 +163,15 @@ class ErasmusRegisterSerializer(serializers.Serializer):
         source_slug = validated_data.pop("source_slug", None) or None
         if source_slug == "":
             source_slug = None
+        form_locale = (validated_data.pop("form_locale", None) or "").strip().lower() or "es"
+        if form_locale not in ("es", "en", "pt", "de", "it", "fr"):
+            form_locale = "es"
+        languages_spoken = validated_data.pop("languages_spoken", []) or []
+        opt_in_community = validated_data.pop("opt_in_community", True)
+        community_bio = (validated_data.pop("community_bio", None) or "").strip()[:2000]
+        community_show_dates = validated_data.pop("community_show_dates", True)
+        community_show_age = validated_data.pop("community_show_age", True)
+        community_show_whatsapp = validated_data.pop("community_show_whatsapp", False)
 
         consent = {
             "accept_tc_erasmus": validated_data.pop("accept_tc_erasmus", False),
@@ -134,10 +180,22 @@ class ErasmusRegisterSerializer(serializers.Serializer):
             "consent_whatsapp": validated_data.pop("consent_whatsapp", False),
             "consent_share_providers": validated_data.pop("consent_share_providers", False),
         }
+        community_profile_token = secrets.token_urlsafe(32)
+        # Instagram: guardar siempre sin @
+        if "instagram" in validated_data and validated_data["instagram"]:
+            validated_data["instagram"] = (validated_data["instagram"] or "").strip().lstrip("@")[:100]
         lead = ErasmusLead.objects.create(
             **validated_data,
             source_slug=source_slug,
+            form_locale=form_locale,
             extra_data=extra_data,
+            languages_spoken=languages_spoken,
+            opt_in_community=opt_in_community,
+            community_bio=community_bio,
+            community_show_dates=community_show_dates,
+            community_show_age=community_show_age,
+            community_show_whatsapp=community_show_whatsapp,
+            community_profile_token=community_profile_token,
             **consent,
         )
 
@@ -176,7 +234,11 @@ class ErasmusRegisterSerializer(serializers.Serializer):
             from core.phone_utils import normalize_phone_e164
             phone_full = f"{validated_data.get('phone_country_code', '')}{validated_data.get('phone_number', '')}"
             normalized_phone = normalize_phone_e164(phone_full) if phone_full else ""
-            if not User.objects.filter(email__iexact=email).exists():
+            existing = User.objects.filter(email__iexact=email).first()
+            if existing:
+                lead.user = existing
+                lead.save(update_fields=["user"])
+            else:
                 try:
                     user = User.create_guest_user(
                         email=email,

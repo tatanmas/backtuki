@@ -9,7 +9,7 @@ from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.db.models import Q, F, Sum
+from django.db.models import Q, F, Sum, Count
 from django.db import transaction
 from django.utils import timezone
 from django.contrib.auth import get_user_model
@@ -17,7 +17,8 @@ from django.contrib.auth import get_user_model
 from apps.experiences.models import (
     Experience, TourLanguage, TourInstance, TourBooking, OrganizerCredit,
     ExperienceResource, ExperienceReservation, ExperienceDatePriceOverride,
-    ExperienceCapacityHold, ExperienceResourceHold, ExperienceReview
+    ExperienceCapacityHold, ExperienceResourceHold, ExperienceReview,
+    ExperienceImportedReview,
 )
 from apps.experiences.serializers import (
     ExperienceSerializer,
@@ -30,6 +31,7 @@ from apps.experiences.serializers import (
     ExperienceDatePriceOverrideSerializer,
     ExperienceReservationSerializer,
     ExperienceReviewPublicSerializer,
+    ExperienceImportedReviewPublicSerializer,
 )
 from apps.organizers.models import OrganizerUser
 from core.permissions import HasExperienceModule, IsSuperAdmin
@@ -221,6 +223,15 @@ class ExperienceViewSet(viewsets.ModelViewSet):
             }
             return ExperienceErrorHandler.handle_exception(e, context)
     
+    def _is_superuser_or_superadmin(self):
+        """Allow Super Admin panel to act on any experience."""
+        user = self.request.user
+        if not user.is_authenticated:
+            return False
+        if user.is_superuser:
+            return True
+        return IsSuperAdmin().has_permission(self.request, self)
+
     @action(detail=True, methods=['post'], url_path='soft-delete')
     def soft_delete(self, request, pk=None):
         """
@@ -229,13 +240,14 @@ class ExperienceViewSet(viewsets.ModelViewSet):
         """
         experience = self.get_object()
         
-        # Verify ownership
-        organizer = self.get_organizer()
-        if not organizer or experience.organizer != organizer:
-            return Response(
-                {"error": "You don't have permission to delete this experience"},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # Verify ownership (or superuser/superadmin bypass)
+        if not self._is_superuser_or_superadmin():
+            organizer = self.get_organizer()
+            if not organizer or experience.organizer != organizer:
+                return Response(
+                    {"error": "You don't have permission to delete this experience"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
         
         if experience.deleted_at:
             return Response(
@@ -247,7 +259,8 @@ class ExperienceViewSet(viewsets.ModelViewSet):
         experience.is_active = False  # Also deactivate when deleting
         experience.save()
         
-        logger.info(f"Experience {experience.id} soft-deleted by organizer {organizer.id}")
+        by_whom = "superadmin" if self._is_superuser_or_superadmin() else f"organizer {self.get_organizer().id}"
+        logger.info(f"Experience {experience.id} soft-deleted by {by_whom}")
         
         return Response({
             "message": "Experience deleted successfully",
@@ -263,13 +276,13 @@ class ExperienceViewSet(viewsets.ModelViewSet):
         """
         experience = self.get_object()
         
-        # Verify ownership
-        organizer = self.get_organizer()
-        if not organizer or experience.organizer != organizer:
-            return Response(
-                {"error": "You don't have permission to restore this experience"},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        if not self._is_superuser_or_superadmin():
+            organizer = self.get_organizer()
+            if not organizer or experience.organizer != organizer:
+                return Response(
+                    {"error": "You don't have permission to restore this experience"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
         
         if not experience.deleted_at:
             return Response(
@@ -281,7 +294,8 @@ class ExperienceViewSet(viewsets.ModelViewSet):
         # Note: We don't automatically set is_active=True, organizer must activate separately
         experience.save()
         
-        logger.info(f"Experience {experience.id} restored by organizer {organizer.id}")
+        by_whom = "superadmin" if self._is_superuser_or_superadmin() else f"organizer {self.get_organizer().id}"
+        logger.info(f"Experience {experience.id} restored by {by_whom}")
         
         return Response({
             "message": "Experience restored successfully",
@@ -297,13 +311,13 @@ class ExperienceViewSet(viewsets.ModelViewSet):
         """
         experience = self.get_object()
         
-        # Verify ownership
-        organizer = self.get_organizer()
-        if not organizer or experience.organizer != organizer:
-            return Response(
-                {"error": "You don't have permission to modify this experience"},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        if not self._is_superuser_or_superadmin():
+            organizer = self.get_organizer()
+            if not organizer or experience.organizer != organizer:
+                return Response(
+                    {"error": "You don't have permission to modify this experience"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
         
         if experience.deleted_at:
             return Response(
@@ -315,7 +329,8 @@ class ExperienceViewSet(viewsets.ModelViewSet):
         experience.save()
         
         action_text = "activated" if experience.is_active else "deactivated"
-        logger.info(f"Experience {experience.id} {action_text} by organizer {organizer.id}")
+        by_whom = "superadmin" if self._is_superuser_or_superadmin() else f"organizer {self.get_organizer().id}"
+        logger.info(f"Experience {experience.id} {action_text} by {by_whom}")
         
         return Response({
             "message": f"Experience {action_text} successfully",
@@ -349,9 +364,9 @@ class ExperienceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Verify organizer permission
-        organizer = self.get_organizer()
-        if not organizer or experience.organizer != organizer:
+        is_super = self._is_superuser_or_superadmin()
+        organizer = self.get_organizer() if not is_super else None
+        if not is_super and (not organizer or experience.organizer != organizer):
             return Response(
                 {'detail': 'Permission denied'},
                 status=status.HTTP_403_FORBIDDEN
@@ -363,14 +378,14 @@ class ExperienceViewSet(viewsets.ModelViewSet):
                 id__in=asset_ids,
                 deleted_at__isnull=True
             )
-            
-            # Verify organizer owns all assets
-            for asset in assets:
-                if asset.scope == 'organizer' and asset.organizer != organizer:
-                    return Response(
-                        {'detail': f'You do not own asset {asset.id}'},
-                        status=status.HTTP_403_FORBIDDEN
-                    )
+            # Superuser can use any asset (global or any organizer); otherwise verify ownership
+            if not is_super and organizer:
+                for asset in assets:
+                    if asset.scope == 'organizer' and asset.organizer != organizer:
+                        return Response(
+                            {'detail': f'You do not own asset {asset.id}'},
+                            status=status.HTTP_403_FORBIDDEN
+                        )
             
             if assets.count() != len(asset_ids):
                 return Response(
@@ -439,13 +454,13 @@ class ExperienceViewSet(viewsets.ModelViewSet):
         
         experience = self.get_object()
         
-        # Verify organizer permission
-        organizer = self.get_organizer()
-        if not organizer or experience.organizer != organizer:
-            return Response(
-                {'detail': 'Permission denied'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        if not self._is_superuser_or_superadmin():
+            organizer = self.get_organizer()
+            if not organizer or experience.organizer != organizer:
+                return Response(
+                    {'detail': 'Permission denied'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
         
         # Clear images
         experience.images = []
@@ -728,7 +743,15 @@ class PublicExperienceListView(APIView):
                 Q(description__icontains=search) |
                 Q(short_description__icontains=search)
             )
-        
+
+        # Annotate review counts and sums for public list (approved + imported reviews)
+        queryset = queryset.annotate(
+            post_review_count=Count('reviews', filter=Q(reviews__status='approved'), distinct=True),
+            post_review_sum=Sum('reviews__rating', filter=Q(reviews__status='approved')),
+            imported_review_count=Count('imported_reviews', distinct=True),
+            imported_review_sum=Sum('imported_reviews__rating'),
+        )
+
         serializer = ExperienceSerializer(queryset, many=True)
         return Response(serializer.data)
 
@@ -786,7 +809,15 @@ class PublicExperienceDetailView(APIView):
         experience.views_count = F('views_count') + 1
         experience.save(update_fields=['views_count'])
         experience.refresh_from_db()
-        
+
+        # Annotate review stats for response (same as public list)
+        experience = Experience.objects.filter(pk=experience.pk).annotate(
+            post_review_count=Count('reviews', filter=Q(reviews__status='approved'), distinct=True),
+            post_review_sum=Sum('reviews__rating', filter=Q(reviews__status='approved')),
+            imported_review_count=Count('imported_reviews', distinct=True),
+            imported_review_sum=Sum('imported_reviews__rating'),
+        ).first()
+
         serializer = ExperienceSerializer(experience)
         return Response(serializer.data)
 
@@ -866,12 +897,14 @@ class PublicExperienceInstancesView(APIView):
 class PublicExperienceReviewsView(APIView):
     """
     Public API to get approved reviews for an experience (paginated).
+    Returns both post-experience reviews (ExperienceReview) and imported reviews
+    (ExperienceImportedReview) in a single list, sorted by date (newest first).
     Returns 200 with empty results if no reviews - never 404 for valid experience.
     """
     permission_classes = [permissions.AllowAny]
 
     def get(self, request, experience_id):
-        """List approved reviews with pagination."""
+        """List approved + imported reviews with pagination."""
         allow_checkout = _allow_checkout_by_codigo(request)
         filters = {'id': experience_id, 'deleted_at__isnull': True}
         if not allow_checkout:
@@ -884,21 +917,54 @@ class PublicExperienceReviewsView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        queryset = ExperienceReview.objects.filter(
+        # Post-experience reviews (approved only)
+        post_reviews = ExperienceReview.objects.filter(
             experience=experience,
             status='approved'
         ).order_by('-created_at')
+        post_data = ExperienceReviewPublicSerializer(post_reviews, many=True).data
+        for d in post_data:
+            d['_sort_date'] = d.get('created_at')
+            if 'author_name' not in d:
+                d['author_name'] = None
+            if 'review_date' not in d:
+                d['review_date'] = None
+
+        # Imported reviews (Google, GetYourGuide, etc.)
+        imported_reviews = ExperienceImportedReview.objects.filter(
+            experience=experience
+        ).order_by('-review_date', '-created_at')
+        imported_data = ExperienceImportedReviewPublicSerializer(imported_reviews, many=True).data
+        for d in imported_data:
+            d['_sort_date'] = d.get('review_date') or d['created_at']
+            if 'title' not in d:
+                d['title'] = None
+
+        # Unify and sort by date (newest first). Normalize so date-only (YYYY-MM-DD) and
+        # datetime (YYYY-MM-DDTHH:MM:SS...) sort correctly; otherwise lexicographic sort
+        # would put same-day date strings before datetime strings.
+        def _review_sort_key(s):
+            if not s or not isinstance(s, str):
+                return ''
+            s = s.strip()
+            if len(s) == 10 and s[4] == '-' and s[7] == '-':
+                s = s + 'T23:59:59.999999Z'
+            return s
+
+        combined = list(post_data) + list(imported_data)
+        combined.sort(key=lambda x: _review_sort_key(x.get('_sort_date')), reverse=True)
+        for d in combined:
+            d.pop('_sort_date', None)
 
         # Pagination
         page_size = min(int(request.query_params.get('page_size', 20)), 50)
         page = max(int(request.query_params.get('page', 1)), 1)
         offset = (page - 1) * page_size
-        total = queryset.count()
-        results = queryset[offset:offset + page_size]
+        total = len(combined)
+        results = combined[offset:offset + page_size]
 
-        serializer = ExperienceReviewPublicSerializer(results, many=True)
         return Response({
-            'results': serializer.data,
+            'results': results,
             'count': total,
             'page': page,
             'page_size': page_size,

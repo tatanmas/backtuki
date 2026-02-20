@@ -43,54 +43,78 @@ class OTPLoginSerializer(serializers.Serializer):
 
 class UserProfileSerializer(serializers.ModelSerializer):
     """Serializer for user profile."""
-    
+
     full_name = serializers.SerializerMethodField()
     is_profile_complete = serializers.ReadOnlyField()
     has_password = serializers.ReadOnlyField()
+    is_erasmus = serializers.SerializerMethodField()
+    locale = serializers.SerializerMethodField()
     password = serializers.CharField(write_only=True, required=False, min_length=6)
-    
+
     class Meta:
         model = User
         fields = [
             'id', 'email', 'username', 'first_name', 'last_name',
             'phone_number', 'full_name', 'is_organizer', 'is_validator',
-            'is_guest', 'is_superuser', 'is_staff', 'is_profile_complete', 'has_password',
+            'is_guest', 'is_erasmus', 'locale', 'is_superuser', 'is_staff', 'is_profile_complete', 'has_password',
             'date_joined', 'last_login', 'profile_completed_at', 'password'
         ]
         read_only_fields = [
             'id', 'email', 'username', 'date_joined', 'last_login',
-            'is_organizer', 'is_validator', 'is_guest', 'is_superuser', 'is_staff', 'profile_completed_at'
+            'is_organizer', 'is_validator', 'is_guest', 'is_erasmus', 'locale', 'is_superuser', 'is_staff', 'profile_completed_at'
         ]
-    
+
     def get_full_name(self, obj):
         return obj.get_full_name()
-    
+
+    def get_is_erasmus(self, obj):
+        """True if user has at least one linked Erasmus lead (secciones adicionales en perfil)."""
+        if getattr(obj, '_is_erasmus', None) is not None:
+            return obj._is_erasmus
+        return obj.erasmus_leads.exists()
+
+    def get_locale(self, obj):
+        """Preferred UI locale. From Erasmus lead form_locale if user is Erasmus; otherwise default 'es'."""
+        if getattr(obj, '_locale', None) is not None:
+            return obj._locale
+        lead = obj.erasmus_leads.order_by('-created_at').first()
+        if lead and getattr(lead, 'form_locale', None):
+            loc = (lead.form_locale or '').strip().lower()
+            if loc in ('es', 'en', 'pt', 'de', 'it', 'fr'):
+                return loc
+        return 'es'
+
     def update(self, instance, validated_data):
         """Actualizar perfil del usuario"""
-        # Si se proporciona una contraseña, hashearla
+        # Si se proporciona una contraseña, hashearla y persistirla de inmediato.
+        # (Si no se guarda aquí, al llamar mark_profile_complete() o save(update_fields=...)
+        # la contraseña no se incluye y nunca se persiste → login falla.)
         password = validated_data.pop('password', None)
         if password:
             instance.set_password(password)
             instance.last_password_change = timezone.now()
-        
-        # Actualizar otros campos
+            instance.save(update_fields=['password', 'last_password_change'])
+
+        # Actualizar otros campos en memoria
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-        
+
         # 🚀 ENTERPRISE: Marcar perfil como completo si se proporcionaron first_name y last_name
+        set_profile_completed = False
         if validated_data.get('first_name') and validated_data.get('last_name'):
             if instance.is_guest:
-                print(f"🎯 [UserProfileSerializer] Marking profile complete for user {instance.email}")
                 instance.mark_profile_complete()
-            else:
-                # Si no es guest pero no tiene profile_completed_at, marcarlo también
-                if not instance.profile_completed_at:
-                    print(f"🎯 [UserProfileSerializer] Setting profile_completed_at for user {instance.email}")
-                    instance.profile_completed_at = timezone.now()
-                    instance.save(update_fields=['profile_completed_at'])
-        else:
-            instance.save()
-        
+            elif not instance.profile_completed_at:
+                instance.profile_completed_at = timezone.now()
+                set_profile_completed = True
+
+        # Persistir todos los campos actualizados (evita perder phone_number u otros al usar update_fields parcial)
+        update_fields = list(validated_data.keys())
+        if set_profile_completed:
+            update_fields.append('profile_completed_at')
+        if update_fields:
+            instance.save(update_fields=update_fields)
+
         return instance
 
 
