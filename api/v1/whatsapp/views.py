@@ -287,9 +287,10 @@ def reservation_by_code(request):
 
     try:
         code_obj = WhatsAppReservationCode.objects.select_related(
-            'experience', 'accommodation',
+            'experience', 'accommodation', 'car',
             'linked_reservation', 'linked_reservation__linked_experience_reservation',
             'linked_reservation__linked_accommodation_reservation',
+            'linked_reservation__linked_car_rental_reservation',
             'linked_reservation__whatsapp_message'
         ).get(code=code)
     except WhatsAppReservationCode.DoesNotExist:
@@ -329,8 +330,10 @@ def reservation_by_code(request):
 
     experience = code_obj.experience
     accommodation = code_obj.accommodation
+    car = getattr(code_obj, 'car', None)
     experience_data = None
     accommodation_data = None
+    car_data = None
     if experience:
         experience_data = {
             'id': str(experience.id),
@@ -347,11 +350,21 @@ def reservation_by_code(request):
             'price': float(accommodation.price) if accommodation.price and isinstance(accommodation.price, Decimal) else (float(accommodation.price) if accommodation.price else 0),
             'currency': getattr(accommodation, 'currency', 'CLP'),
         }
+    if car:
+        car_data = {
+            'id': str(car.id),
+            'title': car.title,
+            'slug': car.slug,
+            'price_per_day': float(car.price_per_day) if car.price_per_day and isinstance(car.price_per_day, Decimal) else (float(car.price_per_day) if car.price_per_day else 0),
+            'currency': getattr(car, 'currency', 'CLP'),
+        }
 
     exp_res = getattr(reservation, 'linked_experience_reservation', None)
     acc_res = getattr(reservation, 'linked_accommodation_reservation', None)
+    car_res = getattr(reservation, 'linked_car_rental_reservation', None)
     experience_reservation_id = str(exp_res.reservation_id) if exp_res else None
     accommodation_reservation_id = str(acc_res.reservation_id) if acc_res else None
+    car_rental_reservation_id = str(car_res.reservation_id) if car_res else None
 
     # Customer: merge checkout_data.customer with WhatsApp phone from sender
     from core.phone_utils import normalize_phone_e164, format_phone_display
@@ -390,9 +403,11 @@ def reservation_by_code(request):
     currency = (
         pricing.get('currency')
         or (getattr(experience, 'currency', 'CLP') if experience else None)
-        or (getattr(accommodation, 'currency', 'CLP') if accommodation else 'CLP')
+        or (getattr(accommodation, 'currency', 'CLP') if accommodation else None)
+        or (getattr(car, 'currency', 'CLP') if car else 'CLP')
     )
 
+    product_type = 'car_rental' if car else ('accommodation' if accommodation else 'experience')
     response_data = {
         'code': code_obj.code,
         'status': reservation.status,
@@ -401,6 +416,8 @@ def reservation_by_code(request):
         'experience_reservation_id': experience_reservation_id,
         'accommodation': accommodation_data,
         'accommodation_reservation_id': accommodation_reservation_id,
+        'car': car_data,
+        'car_rental_reservation_id': car_rental_reservation_id,
         'participants': {
             'adults': participants.get('adults', 0),
             'children': participants.get('children', 0),
@@ -410,6 +427,10 @@ def reservation_by_code(request):
         'time': checkout_data.get('time'),
         'check_in': checkout_data.get('check_in'),
         'check_out': checkout_data.get('check_out'),
+        'pickup_date': checkout_data.get('pickup_date'),
+        'return_date': checkout_data.get('return_date'),
+        'pickup_time': checkout_data.get('pickup_time'),
+        'return_time': checkout_data.get('return_time'),
         'guests': checkout_data.get('guests'),
         'pricing': pricing,
         'total': total,
@@ -418,7 +439,7 @@ def reservation_by_code(request):
         'payment_link': reservation.payment_link,
         'payment_link_sent_at': reservation.payment_link_sent_at.isoformat() if reservation.payment_link_sent_at else None,
         'allow_payment': reservation.payment_received_at is None,
-        'product_type': 'accommodation' if accommodation else 'experience',
+        'product_type': product_type,
     }
 
     return Response(response_data, status=status.HTTP_200_OK)
@@ -522,4 +543,103 @@ def create_order_for_accommodation(request):
         'currency': order.currency,
     }, status=status.HTTP_201_CREATED)
 
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def create_order_for_car_rental(request):
+    """
+    Create an Order for car rental checkout (WhatsApp flow).
+    Body: { "codigo": "..." }. Validates code and reservation; creates Order with
+    order_kind='car_rental' linked to CarReservation. Returns order id for payment init.
+    """
+    from apps.events.models import Order
+    from apps.car_rental.models import CarReservation
+
+    codigo = (request.data.get('codigo') or request.data.get('code') or '').strip()
+    if not codigo:
+        return Response(
+            {'error': 'El parámetro codigo es obligatorio.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        code_obj = WhatsAppReservationCode.objects.select_related(
+            'linked_reservation', 'linked_reservation__linked_car_rental_reservation'
+        ).get(code=codigo)
+    except WhatsAppReservationCode.DoesNotExist:
+        return Response(
+            {'error': 'El código indicado no existe o no pertenece a esta instancia.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if code_obj.status == 'expired' or code_obj.is_expired():
+        return Response(
+            {'error': 'El código de reserva ha expirado.'},
+            status=status.HTTP_410_GONE
+        )
+
+    reservation = code_obj.linked_reservation
+    if not reservation:
+        return Response(
+            {'error': 'La solicitud aún no ha sido vinculada a una reserva.'},
+            status=status.HTTP_409_CONFLICT
+        )
+    if reservation.status not in ('availability_confirmed', 'confirmed'):
+        return Response(
+            {'error': 'La reserva todavía no está lista para el pago.', 'status': reservation.status},
+            status=status.HTTP_409_CONFLICT
+        )
+
+    car_res = getattr(reservation, 'linked_car_rental_reservation', None)
+    if not car_res:
+        return Response(
+            {'error': 'No hay reserva de auto vinculada.'},
+            status=status.HTTP_409_CONFLICT
+        )
+    if car_res.status != 'pending':
+        return Response(
+            {'error': f'La reserva ya no está pendiente de pago (estado: {car_res.status}).'},
+            status=status.HTTP_409_CONFLICT
+        )
+
+    existing = Order.objects.filter(
+        order_kind='car_rental',
+        car_rental_reservation=car_res,
+        status='pending'
+    ).first()
+    if existing:
+        return Response({
+            'order_id': str(existing.id),
+            'order_number': existing.order_number,
+            'total': float(existing.total),
+            'currency': existing.currency,
+        }, status=status.HTTP_200_OK)
+
+    with transaction.atomic():
+        order = Order.objects.create(
+            order_kind='car_rental',
+            car_rental_reservation=car_res,
+            accommodation_reservation=None,
+            experience_reservation=None,
+            event=None,
+            email=car_res.email,
+            first_name=car_res.first_name,
+            last_name=car_res.last_name,
+            phone=car_res.phone or '',
+            total=car_res.total,
+            subtotal=car_res.total,
+            service_fee=0,
+            discount=0,
+            taxes=0,
+            currency=car_res.currency or 'CLP',
+            status='pending',
+            flow=car_res.flow,
+        )
+    logger.info("Created car_rental order %s for reservation %s", order.order_number, car_res.reservation_id)
+    return Response({
+        'order_id': str(order.id),
+        'order_number': order.order_number,
+        'total': float(order.total),
+        'currency': order.currency,
+    }, status=status.HTTP_201_CREATED)
 

@@ -10,6 +10,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.exceptions import ValidationError
+
+from api.v1.pagination import LargePageSizePagination
 from django.db.models import Q, Count
 from django.core.files.storage import default_storage
 
@@ -101,12 +103,14 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
     - Usage tracking
     - Soft delete with usage validation
     - Superadmin cross-organizer access
+    - Large page_size for pickers (page_size query param, max 5000)
     """
     
     queryset = MediaAsset.objects.all()
     serializer_class = MediaAssetSerializer
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
+    pagination_class = LargePageSizePagination
     
     def get_organizer(self):
         """Get organizer associated with current user."""

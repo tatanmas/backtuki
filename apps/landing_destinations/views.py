@@ -132,13 +132,15 @@ def _build_destination_media_urls_from_request(dest, request):
 
 
 class LandingDestinationViewSet(viewsets.ModelViewSet):
-    """Superadmin CRUD for landing destinations. Superuser only."""
+    """Superadmin CRUD for landing destinations. Superuser only.
+    List returns all destinations (no pagination) so admin can see and manage the full list."""
 
     queryset = LandingDestination.objects.all()
     serializer_class = LandingDestinationSerializer
     permission_classes = [permissions.IsAdminUser]
     lookup_field = "id"
     lookup_url_kwarg = "id"
+    pagination_class = None  # Return all destinations in list (superadmin needs full list)
 
     def get_serializer_class(self):
         if self.action == "list":
@@ -185,6 +187,33 @@ def _event_to_card(ev, request=None):
     }
 
 
+def _car_to_card(car, request=None):
+    """Map Car (car_rental) to frontend card shape for destination section / featured."""
+    image = ""
+    if getattr(car, "gallery_media_ids", None):
+        from apps.media.models import MediaAsset
+        first_id = car.gallery_media_ids[0] if car.gallery_media_ids else None
+        if first_id:
+            asset = MediaAsset.objects.filter(id=first_id, deleted_at__isnull=True).first()
+            if asset and getattr(asset, "file", None) and asset.file:
+                url = asset.file.url
+                image = request.build_absolute_uri(url) if request and url.startswith("/") else _normalize_media_url(url)
+    if not image and getattr(car, "images", None) and len(car.images) > 0:
+        raw = car.images[0]
+        image = _normalize_media_url(raw if isinstance(raw, str) else raw.get("url", ""))
+    company_name = car.company.name if car.company else ""
+    return {
+        "id": str(car.id),
+        "title": car.title,
+        "slug": car.slug,
+        "image": image,
+        "price": float(car.price_per_day) if car.price_per_day is not None else 0,
+        "price_per_day": float(car.price_per_day) if car.price_per_day is not None else 0,
+        "company_name": company_name,
+        "location": {"name": company_name, "address": ""},
+    }
+
+
 def _build_featured(dest, request=None):
     """Build featured payload { type, id, ...card } from destination featured_type/featured_id."""
     if not dest.featured_type or not dest.featured_id:
@@ -206,8 +235,32 @@ def _build_featured(dest, request=None):
                 card = _event_to_card(ev, request=request)
                 return {"type": "event", "id": str(uid), **card}
         elif dest.featured_type == "accommodation":
-            # No Accommodation model yet; return minimal placeholder or None
-            return None
+            from apps.accommodations.models import Accommodation
+            from apps.accommodations.serializers import _accommodation_to_public_dict
+            acc = Accommodation.objects.filter(
+                id=uid, status="published", deleted_at__isnull=True
+            ).first()
+            if acc:
+                d = _accommodation_to_public_dict(acc, request=request)
+                imgs = d.get("images") or []
+                return {
+                    "type": "accommodation",
+                    "id": str(uid),
+                    "title": d["title"],
+                    "image": imgs[0] if imgs else "",
+                    "price": d["price"],
+                    "rating": d.get("rating"),
+                    "reviews": d.get("reviews"),
+                    "location": d.get("location"),
+                }
+        elif dest.featured_type == "car_rental":
+            from apps.car_rental.models import Car
+            car = Car.objects.filter(
+                id=uid, status="published", deleted_at__isnull=True
+            ).select_related("company").first()
+            if car:
+                card = _car_to_card(car, request=request)
+                return {"type": "car_rental", "id": str(uid), **card}
     except Exception as e:
         logger.warning("Failed to build featured for destination %s: %s", dest.slug, e)
     return None
@@ -292,6 +345,26 @@ class PublicDestinationBySlugView(APIView):
             except Exception as e:
                 logger.warning("Failed to load accommodations for destination %s: %s", dest.slug, e)
 
+        car_rentals = []
+        car_ids = getattr(dest, "car_rental_ids", None) or []
+        if car_ids:
+            try:
+                from apps.car_rental.models import Car
+
+                qs = Car.objects.filter(
+                    id__in=[str(cid) for cid in car_ids],
+                    status="published",
+                    deleted_at__isnull=True,
+                ).select_related("company")
+                car_map = {str(c.id): c for c in qs}
+                for cid in car_ids:
+                    cid_str = str(cid).strip()
+                    car = car_map.get(cid_str)
+                    if car:
+                        car_rentals.append(_car_to_card(car, request=request))
+            except Exception as e:
+                logger.warning("Failed to load car rentals for destination %s: %s", dest.slug, e)
+
         featured = _build_featured(dest, request=request)
 
         travel_guides = dest.travel_guides or []
@@ -312,6 +385,7 @@ class PublicDestinationBySlugView(APIView):
             "travelGuides": travel_guides,
             "transportation": transportation,
             "accommodations": accommodations,
+            "car_rentals": car_rentals,
             "experiences": experiences,
             "events": events,
             "featured": featured,

@@ -13,6 +13,7 @@ from apps.whatsapp.services.reservation_handler import ReservationHandler
 from apps.whatsapp.services.group_notification_service import GroupNotificationService
 from apps.whatsapp.services.accommodation_operator_service import AccommodationOperatorService
 from apps.whatsapp.services.experience_operator_service import ExperienceOperatorService
+from apps.whatsapp.services.car_operator_service import CarOperatorService
 from apps.whatsapp.services.whatsapp_client import WhatsAppWebService
 from apps.whatsapp.services.message_parser import MessageParser
 from apps.experiences.models import Experience
@@ -50,6 +51,8 @@ class ReservationCodeProcessor:
 
         if code_obj.accommodation:
             return ReservationCodeProcessor._process_accommodation(message, code_obj)
+        if getattr(code_obj, 'car', None):
+            return ReservationCodeProcessor._process_car_rental(message, code_obj)
         return ReservationCodeProcessor._process_experience(message, code_obj)
 
     @staticmethod
@@ -94,6 +97,62 @@ class ReservationCodeProcessor:
             operator=operator,
             experience=None,
             accommodation=accommodation,
+            existing_flow=code_obj.flow if code_obj.flow_id else None,
+        )
+        code_obj.linked_reservation = reservation
+        code_obj.save()
+        ReservationHandler.mark_operator_notified(reservation)
+        ReservationCodeProcessor._send_waiting_to_customer(message, reservation)
+        return reservation
+
+    @staticmethod
+    def _process_car_rental(message: WhatsAppMessage, code_obj: WhatsAppReservationCode) -> Optional[WhatsAppReservationRequest]:
+        """Handle car_rental reservation code."""
+        car = code_obj.car
+        if not car:
+            logger.warning("No car for code %s.", code_obj.code)
+            return None
+
+        group_info = CarOperatorService.get_car_whatsapp_group(car)
+        if not group_info:
+            logger.warning("No WhatsApp group for car %s.", car.title)
+            operator = None
+        else:
+            operator = group_info.get("operator")
+            if not operator and message.chat:
+                operator = getattr(message.chat, "assigned_operator", None)
+            if not operator:
+                binding = car.operator_bindings.filter(is_active=True).first()
+                operator = binding.tour_operator if binding else None
+
+        passengers = 1  # not used for car; keep for API
+        if not operator:
+            reservation = WhatsAppReservationRequest.objects.create(
+                whatsapp_message=message,
+                tour_code=code_obj.code,
+                passengers=passengers,
+                operator=None,
+                experience=None,
+                accommodation=None,
+                car=car,
+                status="received",
+                timeout_at=None,
+            )
+            code_obj.linked_reservation = reservation
+            code_obj.save()
+            ReservationHandler.ensure_flow_and_log_request(reservation)
+            ReservationHandler.mark_operator_notified(reservation)
+            ReservationCodeProcessor._send_waiting_to_customer(message, reservation)
+            return reservation
+
+        reservation = ReservationHandler.create_reservation(
+            message=message,
+            tour_code=code_obj.code,
+            passengers=passengers,
+            operator=operator,
+            experience=None,
+            accommodation=None,
+            car=car,
             existing_flow=code_obj.flow if code_obj.flow_id else None,
         )
         code_obj.linked_reservation = reservation

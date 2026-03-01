@@ -36,6 +36,7 @@ from apps.experiences.serializers import (
 from apps.organizers.models import OrganizerUser
 from core.permissions import HasExperienceModule, IsSuperAdmin
 from .error_handlers import ExperienceErrorHandler
+from api.v1.pagination import LargePageSizePagination
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class ExperienceViewSet(viewsets.ModelViewSet):
     queryset = Experience.objects.all()
     serializer_class = ExperienceSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = LargePageSizePagination  # Allows page_size param (e.g. 5000) for admin pickers
     
     def get_permissions(self):
         """

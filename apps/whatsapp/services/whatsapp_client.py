@@ -2,6 +2,7 @@
 import os
 import requests
 import logging
+from typing import Optional, Tuple
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,8 @@ class WhatsAppWebService:
             except socket.gaierror:
                 # Not in Docker network, use localhost
                 self.base_url = 'http://localhost:3001'
-        self.timeout = 10
+        # Configurable timeout; default 25s so Chromium/Puppeteer has time to respond in production
+        self.timeout = getattr(settings, 'WHATSAPP_SERVICE_TIMEOUT', 25)
     
     @staticmethod
     def clean_phone_number(phone: str) -> str:
@@ -139,17 +141,50 @@ class WhatsAppWebService:
             return {'isReady': False, 'error': str(e)}
     
     def get_qr_code(self) -> str:
-        """Get current QR code."""
+        """Get current QR code. Returns None if service has no QR (e.g. waiting after disconnect)."""
         try:
             url = f"{self.base_url}/api/qr"
             response = requests.get(url, timeout=self.timeout)
-            response.raise_for_status()
-            data = response.json()
+            # Service returns 200 with qr: null when no QR (no longer 404)
+            data = response.json() if response.ok else {}
+            if not response.ok:
+                logger.warning(f"get_qr_code: service returned {response.status_code}")
+                return None
             return data.get('qr')
         except requests.exceptions.RequestException as e:
             logger.error(f"Error getting QR code: {e}")
             return None
-    
+
+    def request_new_qr(self) -> Tuple[bool, Optional[str]]:
+        """
+        Ask the WhatsApp service to re-initialize and emit a new QR (e.g. after disconnect).
+        Returns (success, error_message). error_message is set when service returns 404 (endpoint not found)
+        or 503 (e.g. profile locked) with a user-facing message.
+        """
+        try:
+            url = f"{self.base_url}/api/request-new-qr"
+            response = requests.post(url, timeout=self.timeout)
+            if response.status_code == 404:
+                logger.warning(
+                    "WhatsApp service returned 404 for POST /api/request-new-qr. "
+                    "Reconstruye el contenedor: docker compose build whatsapp-service && docker compose up -d whatsapp-service"
+                )
+                return False, "El servicio WhatsApp no tiene la ruta request-new-qr. Reinicia el contenedor whatsapp-service."
+            if response.status_code in (500, 503):
+                try:
+                    body = response.json()
+                    err = body.get("message") or body.get("error") or response.text or response.reason
+                    if isinstance(err, str) and err.strip():
+                        return False, err.strip()
+                except Exception:
+                    pass
+                return False, response.reason or "El servicio WhatsApp no pudo generar un nuevo QR."
+            response.raise_for_status()
+            return True, None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error requesting new QR: {e}")
+            return False, str(e)
+
     def disconnect(self) -> bool:
         """Disconnect WhatsApp session."""
         try:
@@ -213,4 +248,20 @@ class WhatsAppWebService:
         except requests.exceptions.RequestException as e:
             logger.error(f"Error getting chat messages for {chat_id}: {e}")
             return {'messages': [], 'total': 0}
+
+    def check_saved_contacts(self, participant_ids: list) -> dict:
+        """
+        Check which participant IDs are saved contacts (in phone address book).
+        Returns dict mapping participant_id -> bool (True if saved contact).
+        """
+        if not participant_ids:
+            return {}
+        try:
+            url = f"{self.base_url}/api/check-saved-contacts"
+            response = requests.post(url, json={'ids': participant_ids}, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Error checking saved contacts: {e}")
+            return {pid: False for pid in participant_ids}
 

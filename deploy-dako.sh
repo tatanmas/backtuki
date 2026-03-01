@@ -8,11 +8,12 @@
 #
 # Opciones:
 #   --skip-git-pull   Omitir git pull (útil cuando el código llegó por rsync)
-#   --no-cache        Reconstruir imágenes sin caché (requerido si cambiaste requirements.txt, Dockerfile, etc.)
+#   --no-cache        Reconstruir imágenes sin caché; además recrea WhatsApp (habrá que escanear QR de nuevo)
 #   --force-recreate-frontend  Recrear contenedor nginx (breve caída; solo si cambiaste montajes o config nginx)
 #
-# Por defecto: build con caché (menos RAM/tiempo). Blue-green: downtime cercano a 0.
-# Durante el switch hay ~1 min con dos backends en RAM; luego se para el viejo.
+# Por defecto: build con caché (menos RAM/tiempo). WhatsApp no se recrea → la sesión se mantiene entre deploys.
+# Usa --no-cache solo si cambiaste requirements/Dockerfile o si necesitas refrescar el servicio WhatsApp (QR).
+# Blue-green: downtime cercano a 0. Durante el switch hay ~1 min con dos backends en RAM; luego se para el viejo.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set -e
@@ -227,7 +228,9 @@ done
 echo "   ✅ Redis listo"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASO 5: Backend blue-green (cero downtime; dos backends solo durante el switch)
+# PASO 5: Backend blue-green (cero downtime)
+# Principio: la página NUNCA se cae. Se levanta el backend nuevo (idle), se espera
+# a que esté healthy, y SOLO ENTONCES se redirige el tráfico y se para el viejo.
 # ═══════════════════════════════════════════════════════════════════════════════
 echo ""
 echo "🐍 Paso 5: Backend blue-green (sin cortar tráfico)..."
@@ -250,6 +253,15 @@ echo "   📌 APP_VERSION=$APP_VERSION"
 # Asegurar que el live actual está arriba (por si es el primer deploy con este script)
 docker-compose up -d "tuki-backend-${CURRENT_LIVE}" 2>/dev/null || true
 
+# Open Graph: el backend necesita el index.html de producción para inyectar meta (WhatsApp, etc.)
+if [ -f "$TUKI_DIR/tuki-experiencias/dist/index.html" ]; then
+    mkdir -p "$TUKI_DIR/backtuki/static"
+    cp "$TUKI_DIR/tuki-experiencias/dist/index.html" "$TUKI_DIR/backtuki/static/frontend_index.html"
+    echo "   ✅ index.html de producción copiado a backtuki/static/frontend_index.html (OG preview)"
+else
+    echo "   ⚠️ No existe tuki-experiencias/dist/index.html; OG preview usará index por defecto (puede fallar en rutas compartibles)"
+fi
+
 # Construir imagen (compartida por a y b)
 docker-compose build $BUILD_NO_CACHE tuki-backend-a tuki-backend-b
 
@@ -260,21 +272,22 @@ else
     docker-compose up -d tuki-backend-a
 fi
 
-echo "   ⏳ Esperando health del nuevo backend (máx 90s; durante esto hay dos backends en RAM)..."
+echo "   ⏳ Esperando health del nuevo backend (máx 90s); el tráfico sigue yendo al viejo hasta que esto termine..."
 for i in $(seq 1 45); do
     if docker inspect --format='{{.State.Health.Status}}' "tuki-backend-${IDLE}" 2>/dev/null | grep -q healthy; then
         echo "   ✅ tuki-backend-${IDLE} healthy"
         break
     fi
     if [ "$i" -eq 45 ]; then
-        echo "   ❌ Timeout: tuki-backend-${IDLE} no pasó healthcheck"
+        echo "   ❌ Timeout: tuki-backend-${IDLE} no pasó healthcheck (no se redirige tráfico; página sigue en el viejo)"
         docker logs "tuki-backend-${IDLE}" --tail 30
         exit 1
     fi
     sleep 2
 done
 
-# Cambiar tráfico al nuevo y parar el viejo (ventana con dos backends termina aquí)
+# Solo cuando el nuevo está healthy: redirigir tráfico y después parar el viejo (cero downtime)
+echo "   🔀 Redirigiendo tráfico al nuevo backend (ya está healthy)..."
 echo "upstream tuki_backend_live { server tuki-backend-${IDLE}:8080; }" > backend_upstream.conf
 docker exec tuki-frontend nginx -s reload 2>/dev/null || true
 echo "   ✅ Nginx apuntando a tuki-backend-${IDLE}"
@@ -286,11 +299,24 @@ LIVE_CONTAINER="tuki-backend-${IDLE}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PASO 6: Migraciones y setup (en el backend que quedó en vivo)
+# Asegurar que el contenedor esté arriba y reintentar exec (evita fallo "service is not running").
 # ═══════════════════════════════════════════════════════════════════════════════
+[ "$LIVE_CONTAINER" = "tuki-backend-b" ] && COMPOSE_PROFILE="--profile bluegreen" || COMPOSE_PROFILE=""
+
 echo ""
 echo "🗄️ Paso 6: Ejecutando migraciones (en $LIVE_CONTAINER)..."
 
-docker-compose exec -T "$LIVE_CONTAINER" python manage.py migrate --noinput
+# Asegurar backend arriba y dar 2 intentos (evita fallo si el contenedor reinició justo después del swap)
+docker-compose $COMPOSE_PROFILE up -d "$LIVE_CONTAINER"
+sleep 3
+_run_exec() {
+    docker-compose exec -T "$LIVE_CONTAINER" "$@"
+}
+if ! _run_exec python manage.py migrate --noinput 2>/dev/null; then
+    echo "   ⏳ Reintentando migrate (contenedor puede estar arrancando)..."
+    sleep 5
+    _run_exec python manage.py migrate --noinput
+fi
 echo "   ✅ Migraciones completadas"
 
 echo ""
@@ -334,11 +360,21 @@ echo "   ✅ Celery corriendo"
 # ═══════════════════════════════════════════════════════════════════════════════
 # PASO 10: Construir y levantar WhatsApp Service
 # ═══════════════════════════════════════════════════════════════════════════════
+# Por defecto: build con caché y up sin --force-recreate → la sesión de WhatsApp
+# se mantiene entre deploys. Si pasas --no-cache, se hace rebuild + force-recreate
+# y tendrás que escanear el QR de nuevo en Superadmin.
 echo ""
-echo "📱 Paso 10: Construyendo y levantando WhatsApp Service..."
+echo "📱 Paso 10: WhatsApp Service..."
 
-docker-compose build tuki-whatsapp-service
-docker-compose up -d tuki-whatsapp-service
+if [ -n "$BUILD_NO_CACHE" ]; then
+    echo "   🔄 Rebuild sin caché y recrear contenedor (puede requerir escanear QR de nuevo)"
+    docker-compose build --no-cache tuki-whatsapp-service
+    docker-compose up -d --force-recreate tuki-whatsapp-service
+else
+    echo "   📦 Build con caché, sin recrear contenedor (sesión WhatsApp se mantiene)"
+    docker-compose build tuki-whatsapp-service
+    docker-compose up -d tuki-whatsapp-service
+fi
 
 echo "   ⏳ Esperando WhatsApp Service..."
 sleep 10

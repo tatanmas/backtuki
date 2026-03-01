@@ -13,4 +13,5 @@ urlpatterns = [
     path('generate-reservation-code/', views.generate_reservation_code, name='generate-reservation-code'),
     path('reservation-by-code/', views.reservation_by_code, name='reservation-by-code'),
     path('create-order-accommodation/', views.create_order_for_accommodation, name='create-order-accommodation'),
+    path('create-order-car-rental/', views.create_order_for_car_rental, name='create-order-car-rental'),
 ]

@@ -62,9 +62,10 @@ class ContextBuilder:
         operator = reservation.operator
         context['contacto'] = (operator.contact_name or operator.name) if operator else 'Operador'
         
-        # Product info (experience or accommodation)
+        # Product info (experience, accommodation or car_rental)
         exp = reservation.experience
         acc = getattr(reservation, 'accommodation', None)
+        car = getattr(reservation, 'car', None)
         if exp:
             context['experiencia'] = exp.title
             context['punto_encuentro'] = exp.location_name or 'Por confirmar'
@@ -73,6 +74,10 @@ class ContextBuilder:
             context['experiencia'] = acc.title
             context['punto_encuentro'] = (acc.location_name or acc.location_address or 'Por confirmar')[:200]
             context['instrucciones'] = (acc.short_description or '')[:200]
+        elif car:
+            context['experiencia'] = car.title
+            context['punto_encuentro'] = (getattr(car.company, 'name', '') or 'Por confirmar')[:200]
+            context['instrucciones'] = (car.short_description or '')[:200]
         else:
             context['experiencia'] = 'Reserva'
             context['punto_encuentro'] = 'Por confirmar'
@@ -92,6 +97,10 @@ class ContextBuilder:
         else:
             context['check_in'] = ''
             context['check_out'] = ''
+        context['pickup_date'] = checkout.get('pickup_date', '')
+        context['return_date'] = checkout.get('return_date', '')
+        context['pickup_time'] = checkout.get('pickup_time', '')
+        context['return_time'] = checkout.get('return_time', '')
         context['guests'] = checkout.get('guests', 1)
         
         # Participants

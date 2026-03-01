@@ -50,12 +50,18 @@ class LandingDestination(BaseModel):
         default=list,
         help_text=_("List of accommodation UUIDs (for when accommodations app is populated)"),
     )
+    car_rental_ids = models.JSONField(
+        _("car rental IDs"),
+        default=list,
+        help_text=_("List of car UUIDs (Car model from car_rental app) to show on destination page"),
+    )
 
-    # Featured block: experience, event, or accommodation
+    # Featured block: experience, event, accommodation, or car_rental
     FEATURED_TYPE_CHOICES = [
         ("experience", _("Experience")),
         ("event", _("Event")),
         ("accommodation", _("Accommodation")),
+        ("car_rental", _("Car rental")),
     ]
     featured_type = models.CharField(
         _("featured type"),

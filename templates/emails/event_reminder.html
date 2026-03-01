@@ -17,7 +17,7 @@
         📅 {{ event.start_date|date:"l, j \d\e F \d\e Y \a \l\a\s H:i" }}
     </p>
     <p class="event-location">
-        📍 {{ event.location.name }}{% if event.location.address %} - {{ event.location.address }}{% endif %}
+        📍 {% if event.location %}{{ event.location.name }}{% if event.location.address %} - {{ event.location.address }}{% endif %}{% else %}Por confirmar{% endif %}
     </p>
 </div>
 
@@ -61,10 +61,10 @@
 
 <div style="text-align: center; margin: 24px 0 0 0;">
     <p style="font-size: 14px; color: #6b7280; margin: 0;">
-        ¿Necesitas direcciones? 
+        ¿Necesitas direcciones?{% if event.location and event.location.address %}
         <a href="https://maps.google.com/?q={{ event.location.address|urlencode }}" style="color: #268078; text-decoration: none;">
             Ver en Google Maps
-        </a>
+        </a>{% endif %}
     </p>
 </div>
 

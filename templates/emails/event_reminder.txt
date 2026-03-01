@@ -6,7 +6,7 @@ Te enviamos este recordatorio para que no te pierdas esta increíble experiencia
 
 DETALLES DEL EVENTO:
 📅 Fecha: {{ event.start_date|date:"l, j \d\e F \d\e Y \a \l\a\s H:i" }}
-📍 Ubicación: {{ event.location.name }}{% if event.location.address %} - {{ event.location.address }}{% endif %}
+📍 Ubicación: {% if event.location %}{{ event.location.name }}{% if event.location.address %} - {{ event.location.address }}{% endif %}{% else %}Por confirmar{% endif %}
 
 TU TICKET:
 🎫 Número: {{ ticket.ticket_number }}
@@ -23,8 +23,8 @@ LISTA DE VERIFICACIÓN:
 
 Ver mi ticket: https://tuki.live/tickets/{{ ticket.ticket_number }}
 
-¿Necesitas direcciones?
-Google Maps: https://maps.google.com/?q={{ event.location.address|urlencode }}
+¿Necesitas direcciones?{% if event.location and event.location.address %}
+Google Maps: https://maps.google.com/?q={{ event.location.address|urlencode }}{% endif %}
 
 ¡Nos vemos mañana!
 

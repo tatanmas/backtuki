@@ -6,12 +6,31 @@ const { createLogger } = require('../utils/logger');
 
 const logger = createLogger('MessageHandler');
 
+// Deduplicate POSTs: same message can fire both "message" and "message_create" (one POST per id per window)
+const DEDUPE_WINDOW_MS = 8000;
+const recentMessageIds = new Map();
+
+function shouldSkipDuplicate(msgId) {
+    const now = Date.now();
+    for (const [id, ts] of recentMessageIds.entries()) {
+        if (now - ts > DEDUPE_WINDOW_MS) recentMessageIds.delete(id);
+    }
+    if (recentMessageIds.has(msgId)) return true;
+    recentMessageIds.set(msgId, now);
+    return false;
+}
+
 /**
  * Handle incoming WhatsApp messages
  */
 async function handleMessage(message, client) {
     const msgId = message.id?._serialized || message.id?.id || String(message.id);
     logger.info(`[handleMessage] INVOKED msgId=${msgId} fromMe=${message.fromMe} type=${message.type}`);
+
+    if (shouldSkipDuplicate(msgId)) {
+        logger.debug(`[handleMessage] Skipping duplicate msgId=${msgId}`);
+        return;
+    }
 
     try {
     // IMPORTANTE: Capturar TODOS los mensajes, incluyendo los propios (fromMe)

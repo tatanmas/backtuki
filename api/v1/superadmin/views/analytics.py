@@ -93,6 +93,13 @@ def sales_analytics(request):
         # Calcular cargos pagados (sumatoria de service_fee)
         total_service_fees = paid_orders.aggregate(total=Sum('service_fee'))['total'] or 0
         
+        # Ingresos por actividades Erasmus (pagos manuales desde lista invitados)
+        from apps.erasmus.models import ErasmusActivityInscriptionPayment
+        erasmus_payments = ErasmusActivityInscriptionPayment.objects.aggregate(total=Sum('amount'))
+        erasmus_sales = float(erasmus_payments['total'] or 0)
+        order_sales = float(total_sales)
+        total_sales = order_sales + erasmus_sales
+        
         # Número de órdenes pagadas
         paid_orders_count = paid_orders.count()
         
@@ -102,9 +109,11 @@ def sales_analytics(request):
             average_order_value = average_order_value / paid_orders_count
         
         # Ventas por tipo de producto
-        # Por ahora solo eventos están habilitados
-        event_sales = total_sales  # TODO: filtrar por tipo cuando se agreguen experiencias y alojamientos
+        event_sales = order_sales
         event_fees = total_service_fees
+        total_product_sales = order_sales + erasmus_sales
+        event_pct = (event_sales / total_product_sales * 100) if total_product_sales > 0 else 0.0
+        erasmus_pct = (erasmus_sales / total_product_sales * 100) if total_product_sales > 0 else 0.0
         
         # Top 5 eventos por ventas
         top_events = []
@@ -147,7 +156,7 @@ def sales_analytics(request):
                     'events': {
                         'sales': float(event_sales),
                         'fees': float(event_fees),
-                        'percentage': 100.0  # Por ahora 100% es eventos
+                        'percentage': round(event_pct, 2)
                     },
                     'experiences': {
                         'sales': 0.0,
@@ -158,6 +167,11 @@ def sales_analytics(request):
                         'sales': 0.0,
                         'fees': 0.0,
                         'percentage': 0.0
+                    },
+                    'erasmus_activities': {
+                        'sales': float(erasmus_sales),
+                        'fees': 0.0,
+                        'percentage': round(erasmus_pct, 2)
                     }
                 },
                 # Top eventos

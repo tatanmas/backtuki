@@ -1,9 +1,15 @@
 """Models for Erasmus registration and tracking."""
 
+import calendar
+from datetime import date
+
 from django.db import models
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
+from django.core.validators import MinValueValidator, MaxValueValidator
+
 from core.models import TimeStampedModel, BaseModel
 
 
@@ -57,6 +63,13 @@ class ErasmusLead(TimeStampedModel):
 
     arrival_date = models.DateField(_("arrival date"), null=True, blank=True)
     departure_date = models.DateField(_("departure date"), null=True, blank=True)
+
+    budget_stay = models.CharField(
+        _("budget during stay"),
+        max_length=200,
+        blank=True,
+        help_text=_("Presupuesto aproximado durante el intercambio (estancia, paseos, etc.)"),
+    )
 
     has_accommodation_in_chile = models.BooleanField(
         _("has accommodation in Chile"),
@@ -436,8 +449,29 @@ class ErasmusWhatsAppGroup(TimeStampedModel):
     Name + link per group. Managed from superadmin (Erasmus > Grupos WhatsApp).
     """
 
+    CATEGORY_UNIVERSITY = "university"
+    CATEGORY_TUKI = "tuki"
+    CATEGORY_CHOICES = [
+        (CATEGORY_UNIVERSITY, _("University groups")),
+        (CATEGORY_TUKI, _("Tuki groups")),
+    ]
+
     name = models.CharField(_("name"), max_length=255, help_text=_("Display name of the group"))
     link = models.URLField(_("link"), max_length=500, help_text=_("WhatsApp group invite URL (e.g. https://chat.whatsapp.com/...)"))
+    image_url = models.URLField(
+        _("image URL"),
+        max_length=500,
+        blank=True,
+        help_text=_("Optional: image to show for the group (e.g. group photo)."),
+    )
+    category = models.CharField(
+        _("category"),
+        max_length=20,
+        choices=CATEGORY_CHOICES,
+        default=CATEGORY_TUKI,
+        db_index=True,
+        help_text=_("University groups vs Tuki groups for display sections."),
+    )
     order = models.PositiveIntegerField(_("order"), default=0, db_index=True)
     is_active = models.BooleanField(_("active"), default=True, db_index=True)
 
@@ -448,6 +482,94 @@ class ErasmusWhatsAppGroup(TimeStampedModel):
 
     def __str__(self):
         return f"{self.name}"
+
+
+class ErasmusPartnerNotificationConfig(TimeStampedModel):
+    """
+    Config for sending Erasmus event notifications to a WhatsApp group (e.g. Rumi housing).
+    One row per notification type (slug). Scalable for future activity-inscription notifications.
+    """
+
+    slug = models.SlugField(
+        _("slug"),
+        max_length=80,
+        unique=True,
+        db_index=True,
+        help_text=_("Identifier for this notification type (e.g. rumi_housing)"),
+    )
+    name = models.CharField(
+        _("name"),
+        max_length=255,
+        help_text=_("Display name (e.g. Rumi – Housing)"),
+    )
+    whatsapp_chat = models.ForeignKey(
+        "whatsapp.WhatsAppChat",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        verbose_name=_("WhatsApp group"),
+        help_text=_("Group to receive notifications; must be type=group."),
+    )
+    is_active = models.BooleanField(
+        _("active"),
+        default=True,
+        db_index=True,
+        help_text=_("If disabled, no notifications are sent."),
+    )
+    description = models.TextField(
+        _("description"),
+        blank=True,
+        help_text=_("Optional: what events trigger this notification."),
+    )
+
+    class Meta:
+        verbose_name = _("Erasmus partner notification config")
+        verbose_name_plural = _("Erasmus partner notification configs")
+        ordering = ["slug"]
+
+    def __str__(self):
+        return f"{self.name} ({self.slug})"
+
+
+class ErasmusActivityNotificationConfig(TimeStampedModel):
+    """
+    When a lead expresses interest in an Erasmus activity (any instance), send a WhatsApp
+    notification to this group. One row per (activity, group). Message includes new person + total inscribed for that instance.
+    """
+
+    activity = models.ForeignKey(
+        "ErasmusActivity",
+        on_delete=models.CASCADE,
+        related_name="notification_configs",
+        verbose_name=_("Erasmus activity"),
+    )
+    whatsapp_chat = models.ForeignKey(
+        "whatsapp.WhatsAppChat",
+        on_delete=models.CASCADE,
+        related_name="+",
+        verbose_name=_("WhatsApp group"),
+        help_text=_("Group to receive notifications; must be type=group."),
+    )
+    is_active = models.BooleanField(
+        _("active"),
+        default=True,
+        db_index=True,
+    )
+
+    class Meta:
+        verbose_name = _("Erasmus activity notification config")
+        verbose_name_plural = _("Erasmus activity notification configs")
+        ordering = ["activity__display_order", "activity__title_es"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["activity", "whatsapp_chat"],
+                name="erasmus_activity_notif_config_activity_chat_unique",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.activity.title_es} → {self.whatsapp_chat.name}"
 
 
 class ErasmusExtraField(models.Model):
@@ -659,6 +781,19 @@ class ErasmusActivity(BaseModel):
     )
     display_order = models.PositiveIntegerField(_("display order"), default=0, db_index=True)
     is_active = models.BooleanField(_("active"), default=True, db_index=True)
+    DETAIL_LAYOUT_DEFAULT = "default"
+    DETAIL_LAYOUT_TWO_COLUMN = "two_column"
+    DETAIL_LAYOUT_CHOICES = [
+        (DETAIL_LAYOUT_DEFAULT, _("Default (single column, gallery on top)")),
+        (DETAIL_LAYOUT_TWO_COLUMN, _("Two columns (photos on one side, info on the other)")),
+    ]
+    detail_layout = models.CharField(
+        _("detail page layout"),
+        max_length=20,
+        choices=DETAIL_LAYOUT_CHOICES,
+        default=DETAIL_LAYOUT_DEFAULT,
+        help_text=_("Template for the activity detail page on desktop."),
+    )
     experience = models.ForeignKey(
         "experiences.Experience",
         on_delete=models.SET_NULL,
@@ -667,6 +802,22 @@ class ErasmusActivity(BaseModel):
         blank=True,
         verbose_name=_("experience"),
         help_text=_("Optional link to a bookable experience"),
+    )
+    # Actividad de pago: si True, los inscritos pueden ser marcados como pagados (desde lista invitados).
+    is_paid = models.BooleanField(
+        _("paid activity"),
+        default=False,
+        db_index=True,
+        help_text=_("If set, inscriptions can be marked as paid from the inscritos view; revenue is tracked."),
+    )
+    # Precio sugerido por inscripción (opcional; se puede sobrescribir al marcar como pagado).
+    price = models.DecimalField(
+        _("price"),
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_("Suggested price per inscription (e.g. for prefilling when marking as paid)."),
     )
 
     class Meta:
@@ -738,6 +889,49 @@ class ErasmusActivityInstance(BaseModel):
     )
     display_order = models.PositiveIntegerField(_("display order"), default=0)
     is_active = models.BooleanField(_("active"), default=True, db_index=True)
+    # Cupos: null = ilimitado. Si no null, no se aceptan más inscripciones cuando inscritos >= capacity.
+    capacity = models.PositiveIntegerField(
+        _("capacity"),
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=_("Max participants; leave empty for unlimited."),
+    )
+    # Control inventario: si True, no se aceptan más inscripciones aunque haya cupo.
+    is_agotado = models.BooleanField(
+        _("sold out"),
+        default=False,
+        db_index=True,
+        help_text=_("If set, no new sign-ups are accepted."),
+    )
+    # Instrucciones que se muestran en la página de detalle de esta instancia.
+    instructions_es = models.TextField(
+        _("instructions Spanish"),
+        blank=True,
+        help_text=_("Instructions shown in activity details (Spanish)."),
+    )
+    instructions_en = models.TextField(
+        _("instructions English"),
+        blank=True,
+        help_text=_("Instructions shown in activity details (English)."),
+    )
+    # Mensaje que se envía por WhatsApp al lead tras inscribirse en esta instancia.
+    whatsapp_message_es = models.TextField(
+        _("WhatsApp message Spanish"),
+        blank=True,
+        help_text=_("Message sent by WhatsApp to the lead after they register (Spanish)."),
+    )
+    whatsapp_message_en = models.TextField(
+        _("WhatsApp message English"),
+        blank=True,
+        help_text=_("Message sent by WhatsApp to the lead after they register (English)."),
+    )
+    # Número extra que se suma a los inscritos reales para mostrar (tracción / prueba social).
+    interested_count_boost = models.PositiveIntegerField(
+        _("interested count boost"),
+        default=0,
+        help_text=_("Extra number added to real inscritos count for display (social proof)."),
+    )
 
     class Meta:
         verbose_name = _("Erasmus activity instance")
@@ -760,6 +954,21 @@ class ErasmusActivityInstance(BaseModel):
         if self.scheduled_month is not None and (self.scheduled_month < 1 or self.scheduled_month > 12):
             raise ValidationError(_("scheduled_month must be between 1 and 12."))
 
+    @property
+    def is_past(self):
+        """True if this instance date is in the past (no more sign-ups)."""
+        today = timezone.now().date()
+        if self.scheduled_date is not None:
+            return self.scheduled_date < today
+        if self.scheduled_year is not None and self.scheduled_month is not None:
+            try:
+                _, last_day = calendar.monthrange(self.scheduled_year, self.scheduled_month)
+                end_of_month = date(self.scheduled_year, self.scheduled_month, last_day)
+                return end_of_month < today
+            except (ValueError, TypeError):
+                pass
+        return False
+
     def __str__(self):
         if self.scheduled_date:
             return f"{self.activity.title_es} - {self.scheduled_date}"
@@ -767,3 +976,226 @@ class ErasmusActivityInstance(BaseModel):
             f"{self.scheduled_month or '?'}/{self.scheduled_year or '?'}" if self.scheduled_month else "sin fecha"
         )
         return f"{self.activity.title_es} - {label}"
+
+
+class ErasmusActivityPublicLink(models.Model):
+    """
+    Public links for an Erasmus activity: one to view inscritos (list), one to edit (full UI).
+    Tokens in URL; no login. links_enabled toggles both links on/off.
+    """
+
+    activity = models.OneToOneField(
+        ErasmusActivity,
+        on_delete=models.CASCADE,
+        related_name="public_link",
+        verbose_name=_("activity"),
+    )
+    view_token = models.CharField(
+        _("view token"),
+        max_length=64,
+        unique=True,
+        db_index=True,
+        help_text=_("Token for public view link (list of inscritos)."),
+    )
+    edit_token = models.CharField(
+        _("edit token"),
+        max_length=64,
+        unique=True,
+        db_index=True,
+        help_text=_("Token for public edit link (same UI as superadmin, no auth)."),
+    )
+    review_token = models.CharField(
+        _("review token"),
+        max_length=64,
+        unique=True,
+        db_index=True,
+        null=True,
+        blank=True,
+        help_text=_("Token for public review link (students leave a review for an instance)."),
+    )
+    links_enabled = models.BooleanField(
+        _("links enabled"),
+        default=True,
+        db_index=True,
+        help_text=_("When False, both public links return disabled/404."),
+    )
+    review_link_enabled = models.BooleanField(
+        _("review link enabled"),
+        default=True,
+        db_index=True,
+        help_text=_("When False, the review link returns disabled/404 (stops new reviews)."),
+    )
+
+    class Meta:
+        verbose_name = _("Erasmus activity public link")
+        verbose_name_plural = _("Erasmus activity public links")
+
+    def __str__(self):
+        return f"{self.activity.title_es} (view/edit/review)"
+
+
+# Formas de pago al marcar inscripción como pagada (manual o pago en línea).
+PAYMENT_METHOD_CHOICES = [
+    ("platform", _("Pago en línea (plataforma)")),
+    ("efectivo", _("Efectivo")),
+    ("transferencia", _("Transferencia")),
+    ("tarjeta", _("Tarjeta")),
+    ("mercadopago", _("Mercado Pago")),
+    ("paypal", _("PayPal")),
+    ("other", _("Otro")),
+]
+
+
+class ErasmusActivityInscriptionPayment(TimeStampedModel):
+    """
+    Pago registrado manualmente para una inscripción en una instancia de actividad Erasmus.
+    Quien tiene el link de invitados puede marcar como pagado; se selecciona forma de pago.
+    Estos ingresos se contabilizan en el revenue de Tuki (superadmin sales analytics).
+    """
+    lead = models.ForeignKey(
+        ErasmusLead,
+        on_delete=models.CASCADE,
+        related_name="activity_inscription_payments",
+        verbose_name=_("lead"),
+    )
+    instance = models.ForeignKey(
+        ErasmusActivityInstance,
+        on_delete=models.CASCADE,
+        related_name="inscription_payments",
+        verbose_name=_("activity instance"),
+    )
+    amount = models.DecimalField(
+        _("amount"),
+        max_digits=12,
+        decimal_places=2,
+        help_text=_("Amount paid for this inscription."),
+    )
+    payment_method = models.CharField(
+        _("payment method"),
+        max_length=32,
+        choices=PAYMENT_METHOD_CHOICES,
+        default="efectivo",
+    )
+    paid_at = models.DateTimeField(
+        _("paid at"),
+        default=timezone.now,
+        help_text=_("When the payment was recorded."),
+    )
+
+    class Meta:
+        verbose_name = _("Erasmus activity inscription payment")
+        verbose_name_plural = _("Erasmus activity inscription payments")
+        ordering = ["-paid_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["lead", "instance"],
+                name="erasmus_inscription_payment_unique_lead_instance",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["instance"]),
+        ]
+
+    def __str__(self):
+        return f"{self.lead} – {self.instance} – {self.amount} ({self.payment_method})"
+
+
+class ErasmusActivityPaymentLink(models.Model):
+    """
+    Link de pago para una inscripción en actividad Erasmus (pago en línea).
+    Order (order_kind=erasmus_activity) se vincula aquí; al confirmar pago se crea
+    ErasmusActivityInscriptionPayment con payment_method='platform'.
+    """
+    lead = models.ForeignKey(
+        ErasmusLead,
+        on_delete=models.CASCADE,
+        related_name="activity_payment_links",
+        verbose_name=_("lead"),
+    )
+    instance = models.ForeignKey(
+        ErasmusActivityInstance,
+        on_delete=models.CASCADE,
+        related_name="payment_links",
+        verbose_name=_("activity instance"),
+    )
+    amount = models.DecimalField(
+        _("amount"),
+        max_digits=12,
+        decimal_places=2,
+        help_text=_("Amount to pay for this inscription."),
+    )
+    currency = models.CharField(_("currency"), max_length=3, default="CLP")
+    token = models.CharField(
+        _("token"),
+        max_length=64,
+        unique=True,
+        db_index=True,
+        help_text=_("URL-safe token for the payment link."),
+    )
+    expires_at = models.DateTimeField(_("expires at"), null=True, blank=True)
+    created_at = models.DateTimeField(_("created at"), auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = _("Erasmus activity payment link")
+        verbose_name_plural = _("Erasmus activity payment links")
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["instance"])]
+
+    def __str__(self):
+        return f"{self.lead} – {self.instance} – {self.amount}"
+
+
+class ErasmusActivityReview(TimeStampedModel):
+    """
+    Review left by a student for a specific instance of an Erasmus activity.
+    Created via the public review link (review_token). Always tied to an instance (fecha).
+    Displayed on the activity detail page and in superadmin per instance.
+    """
+
+    instance = models.ForeignKey(
+        ErasmusActivityInstance,
+        on_delete=models.CASCADE,
+        related_name="reviews",
+        verbose_name=_("instance"),
+        help_text=_("The activity instance (date) this review is for."),
+    )
+    author_name = models.CharField(
+        _("author name"),
+        max_length=255,
+        help_text=_("Name shown with the review (e.g. from Erasmus profile or form)."),
+    )
+    author_origin = models.CharField(
+        _("author origin"),
+        max_length=255,
+        blank=True,
+        help_text=_("Where they are from (e.g. country/city)."),
+    )
+    rating = models.PositiveSmallIntegerField(
+        _("rating"),
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text=_("1-5 stars satisfaction."),
+    )
+    body = models.TextField(
+        _("body"),
+        help_text=_("Review text / comment."),
+    )
+    lead = models.ForeignKey(
+        ErasmusLead,
+        on_delete=models.SET_NULL,
+        related_name="activity_reviews",
+        verbose_name=_("lead"),
+        null=True,
+        blank=True,
+        help_text=_("Optional link to Erasmus lead if identified (e.g. from magic link)."),
+    )
+
+    class Meta:
+        verbose_name = _("Erasmus activity review")
+        verbose_name_plural = _("Erasmus activity reviews")
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["instance"]),
+        ]
+
+    def __str__(self):
+        return f"{self.author_name} – {self.rating}★ for {self.instance}"

@@ -48,6 +48,72 @@ class RentalHub(BaseModel):
         return self.name
 
 
+class Hotel(BaseModel):
+    """
+    Hotel: landing con hero y galería; agrupa habitaciones (Accommodations).
+    Ubicación y amenidades a nivel hotel para herencia por habitación.
+    """
+    slug = models.SlugField(_("slug"), max_length=255, unique=True, db_index=True)
+    name = models.CharField(_("name"), max_length=255)
+    short_description = models.CharField(_("short description"), max_length=500, blank=True)
+    description = models.TextField(_("description"), blank=True)
+    hero_media_id = models.UUIDField(
+        _("hero image from media library"),
+        null=True,
+        blank=True,
+        help_text=_("MediaAsset UUID for hero image (superadmin library)"),
+    )
+    gallery_media_ids = models.JSONField(
+        _("gallery media asset IDs"),
+        default=list,
+        blank=True,
+        help_text=_("List of MediaAsset UUIDs for the hotel gallery (superadmin library)"),
+    )
+    meta_title = models.CharField(_("meta title (SEO)"), max_length=255, blank=True)
+    meta_description = models.CharField(_("meta description (SEO)"), max_length=500, blank=True)
+    is_active = models.BooleanField(_("active"), default=True, db_index=True)
+    # Location and amenities for inheritance by rooms
+    location_name = models.CharField(_("location name"), max_length=255, blank=True)
+    location_address = models.TextField(_("address"), blank=True)
+    city = models.CharField(_("city / region"), max_length=255, blank=True)
+    country = models.CharField(_("country"), max_length=255, default="Chile")
+    latitude = models.DecimalField(
+        _("latitude"),
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
+    longitude = models.DecimalField(
+        _("longitude"),
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
+    amenities = models.JSONField(
+        _("amenities"),
+        default=list,
+        blank=True,
+        help_text=_("List of amenity strings; rooms can inherit these."),
+    )
+    external_id = models.CharField(
+        _("external ID for channel manager"),
+        max_length=255,
+        blank=True,
+        db_index=True,
+        help_text=_("Optional mapping for channel manager integration."),
+    )
+
+    class Meta:
+        verbose_name = _("Hotel")
+        verbose_name_plural = _("Hotels")
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
 class Accommodation(BaseModel):
     """Alojamiento: cabaña, casa, departamento, etc. Con reseñas y amenities."""
 
@@ -220,6 +286,41 @@ class Accommodation(BaseModel):
         blank=True,
         validators=[MinValueValidator(0)],
         help_text=_("Metraje total en m²"),
+    )
+
+    # Hotel / habitación
+    hotel = models.ForeignKey(
+        Hotel,
+        on_delete=models.SET_NULL,
+        related_name="rooms",
+        verbose_name=_("hotel"),
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    inherit_location_from_hotel = models.BooleanField(
+        _("inherit location from hotel"),
+        default=True,
+        help_text=_("When True, public API uses hotel location when room has no own location."),
+    )
+    inherit_amenities_from_hotel = models.BooleanField(
+        _("inherit amenities from hotel"),
+        default=True,
+        help_text=_("When True, public API merges hotel amenities with room amenities."),
+    )
+    room_type_code = models.CharField(
+        _("room type code for channel manager"),
+        max_length=30,
+        blank=True,
+        db_index=True,
+        help_text=_("e.g. STD, DBL, SUITE for future channel manager integration."),
+    )
+    external_id = models.CharField(
+        _("external ID for channel manager"),
+        max_length=255,
+        blank=True,
+        db_index=True,
+        help_text=_("Optional mapping for channel manager / PMS room or rate ID."),
     )
 
     class Meta:

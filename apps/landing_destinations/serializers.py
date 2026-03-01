@@ -31,6 +31,7 @@ class LandingDestinationSerializer(serializers.ModelSerializer):
             "travel_guides",
             "transportation",
             "accommodation_ids",
+            "car_rental_ids",
             "experience_ids",
             "event_ids",
             "featured_type",

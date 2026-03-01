@@ -46,6 +46,8 @@ def notify_operator_payment_received(payment) -> bool:
             return _notify_operator_experience_payment(payment)
         if order_kind == 'accommodation':
             return _notify_operator_accommodation_payment(payment)
+        if order_kind == 'car_rental':
+            return _notify_operator_car_rental_payment(payment)
         return False
     except Exception as e:
         logger.exception(f"Error notifying operator of payment: {e}")
@@ -146,6 +148,45 @@ N° Reserva: {acc_res.reservation_id}"""
     return False
 
 
+def _notify_operator_car_rental_payment(payment) -> bool:
+    from apps.whatsapp.services.car_operator_service import CarOperatorService
+
+    order = payment.order
+    car_res = order.car_rental_reservation
+    if not car_res:
+        return False
+
+    name = f"{car_res.first_name or ''} {car_res.last_name or ''}".strip() or 'Cliente'
+    pickup = f"{car_res.pickup_date.strftime('%d/%m/%Y') if car_res.pickup_date else 'N/A'} {car_res.pickup_time or ''}".strip()
+    return_d = f"{car_res.return_date.strftime('%d/%m/%Y') if car_res.return_date else 'N/A'} {car_res.return_time or ''}".strip()
+
+    message = f"""✅ Pago recibido - Reserva auto confirmada
+
+Cliente: {name}
+Auto: {car_res.car.title}
+Retiro: {pickup}
+Devolución: {return_d}
+N° Reserva: {car_res.reservation_id}"""
+
+    group_info = CarOperatorService.get_car_whatsapp_group(car_res.car)
+    service = WhatsAppWebService()
+
+    if group_info and group_info.get('chat_id'):
+        service.send_message('', message, group_id=group_info['chat_id'])
+        logger.info(f"Sent car_rental payment notification to group for {car_res.reservation_id}")
+        return True
+    wa_req = WhatsAppReservationRequest.objects.filter(
+        linked_car_rental_reservation=car_res
+    ).select_related('operator').first()
+    if wa_req and wa_req.operator:
+        phone = wa_req.operator.whatsapp_number or wa_req.operator.contact_phone
+        if phone:
+            service.send_message(phone, message)
+            logger.info(f"Sent car_rental payment notification to operator for {car_res.reservation_id}")
+            return True
+    return False
+
+
 def notify_customer_payment_success(payment, receipt_base64: str | None = None) -> bool:
     """
     Send WhatsApp to customer: thanks, success, optional receipt (experience only), magic link.
@@ -159,6 +200,8 @@ def notify_customer_payment_success(payment, receipt_base64: str | None = None) 
             return _notify_customer_experience_payment(payment, receipt_base64)
         if order_kind == 'accommodation':
             return _notify_customer_accommodation_payment(payment)
+        if order_kind == 'car_rental':
+            return _notify_customer_car_rental_payment(payment)
         return False
     except Exception as e:
         logger.exception(f"Error notifying customer of payment: {e}")
@@ -262,6 +305,52 @@ Ver el detalle de tu reserva: {magic_link}"""
                     source='api',
                     status='success',
                     message="Message sent to customer: payment success (accommodation)",
+                    metadata={'order_number': order.order_number},
+                )
+        except Exception as e:
+            logger.warning("FlowLogger CUSTOMER_MESSAGE_PAYMENT_SUCCESS_SENT: %s", e)
+    return True
+
+
+def _notify_customer_car_rental_payment(payment) -> bool:
+    order = payment.order
+    car_res = order.car_rental_reservation
+    if not car_res:
+        return False
+
+    phone_raw = car_res.phone or getattr(order, 'phone', '') or ''
+    if not phone_raw:
+        wa_req = WhatsAppReservationRequest.objects.filter(
+            linked_car_rental_reservation=car_res
+        ).select_related('whatsapp_message').first()
+        if wa_req and wa_req.whatsapp_message:
+            phone_raw = getattr(wa_req.whatsapp_message, 'phone', '') or ''
+    if not phone_raw:
+        logger.warning("No customer phone for car_rental payment success notification")
+        return False
+
+    customer_phone = WhatsAppWebService.clean_phone_number(phone_raw)
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080').rstrip('/')
+    magic_link = f"{frontend_url}/reservation/{order.order_number}?token={order.access_token}"
+
+    message = f"""¡Gracias por tu reserva! El pago fue realizado con éxito.
+
+Ver el detalle de tu reserva: {magic_link}"""
+
+    service = WhatsAppWebService()
+    service.send_message(customer_phone, message)
+    logger.info(f"Sent car_rental payment success to customer {customer_phone}")
+
+    if getattr(order, 'flow_id', None):
+        try:
+            from core.flow_logger import FlowLogger
+            flow = FlowLogger.from_flow_id(order.flow_id)
+            if flow:
+                flow.log_event(
+                    'CUSTOMER_MESSAGE_PAYMENT_SUCCESS_SENT',
+                    source='api',
+                    status='success',
+                    message="Message sent to customer: payment success (car_rental)",
                     metadata={'order_number': order.order_number},
                 )
         except Exception as e:

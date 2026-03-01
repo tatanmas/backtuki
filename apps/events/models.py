@@ -992,6 +992,8 @@ class Order(BaseModel):
         ('event', _('Event Order')),
         ('experience', _('Experience Order')),
         ('accommodation', _('Accommodation Order')),
+        ('car_rental', _('Car Rental Order')),
+        ('erasmus_activity', _('Erasmus Activity Order')),
     )
     
     order_number = models.CharField(
@@ -1044,6 +1046,26 @@ class Order(BaseModel):
         null=True,
         blank=True,
         help_text=_("Linked accommodation reservation for accommodation orders. Null otherwise."),
+    )
+    # 🚀 ENTERPRISE: link to CarReservation for car_rental orders.
+    car_rental_reservation = models.ForeignKey(
+        'car_rental.CarReservation',
+        on_delete=models.PROTECT,
+        related_name='orders',
+        verbose_name=_("car rental reservation"),
+        null=True,
+        blank=True,
+        help_text=_("Linked car rental reservation for car_rental orders. Null otherwise."),
+    )
+    # 🚀 Erasmus: link to payment link for erasmus_activity orders (inscription pays via platform).
+    erasmus_activity_payment_link = models.OneToOneField(
+        'erasmus.ErasmusActivityPaymentLink',
+        on_delete=models.SET_NULL,
+        related_name='order',
+        verbose_name=_("Erasmus activity payment link"),
+        null=True,
+        blank=True,
+        help_text=_("Linked payment link for erasmus_activity orders. Null otherwise."),
     )
     status = models.CharField(
         _("status"),
@@ -1207,6 +1229,9 @@ class Order(BaseModel):
                 self.event = event_from_items
         elif self.order_kind == 'experience' and self.experience_reservation is None:
             # For now we don't auto-populate; this will be set explicitly by the experiences flow.
+            pass
+        elif self.order_kind == 'car_rental' and self.car_rental_reservation is None:
+            # Set explicitly by the car rental WhatsApp/payment flow.
             pass
 
         super().save(*args, **kwargs)

@@ -1,7 +1,8 @@
 """
 Tests for public accommodations API: list, detail, photo_tour in detail.
 
-Enterprise: published only, 404 for draft/slug not found, photo_tour present when categorized.
+List: published only. Detail: published or draft (draft = unlisted, accessible by direct link).
+404 for slug/id not found; photo_tour present when categorized.
 """
 import io
 from decimal import Decimal
@@ -92,7 +93,8 @@ class PublicAccommodationDetailTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["id"], str(self.acc.id))
 
-    def test_detail_404_draft(self):
+    def test_detail_accessible_when_draft_unlisted(self):
+        """Draft accommodations are not in the list but are accessible by direct link (unlisted)."""
         Accommodation.objects.create(
             title="Draft Only",
             slug="draft-only",
@@ -103,7 +105,9 @@ class PublicAccommodationDetailTests(APITestCase):
             currency="CLP",
         )
         response = self.client.get(BASE + "/draft-only/")
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["title"], "Draft Only")
+        self.assertEqual(response.data["slug"], "draft-only")
 
     def test_detail_404_invalid_slug(self):
         response = self.client.get(BASE + "/nonexistent-slug-12345/")

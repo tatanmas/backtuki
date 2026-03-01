@@ -19,13 +19,14 @@ router.get('/api/status', (req, res) => {
 
 /**
  * GET /api/qr
- * Get current QR code
+ * Get current QR code. Returns 200 with qr: null when no QR (e.g. after disconnect, waiting for client to emit).
  */
 router.get('/api/qr', (req, res) => {
     if (config.currentQR) {
         res.json({ qr: config.currentQR });
     } else {
-        res.status(404).json({ qr: null, error: 'No QR code available' });
+        // 200 + qr: null so backends don't treat as "endpoint not found"; frontend can keep polling
+        res.status(200).json({ qr: null, message: 'No QR yet (waiting for client to generate)' });
     }
 });
 
@@ -85,6 +86,57 @@ router.get('/api/qr-page', async (req, res) => {
         `);
     } catch (error) {
         res.status(500).send(`Error generating QR: ${error.message}`);
+    }
+});
+
+/**
+ * POST /api/request-new-qr
+ * Ask for a new QR. If the browser is already running (client already initialized), we cannot
+ * call initialize() again (Puppeteer would try to launch a second browser with same userDataDir).
+ * In that case we return success and rely on the library's automatic QR refresh (~20s).
+ */
+function isProfileLockedError(error) {
+    const msg = error && error.message ? String(error.message) : '';
+    const full = (error && error.toString && error.toString()) || msg;
+    return (
+        msg.includes('profile') && (msg.includes('in use') || msg.includes('locked')) ||
+        msg.includes('Singleton') ||
+        msg.includes('Code: 21') ||
+        full.includes('another Chromium process')
+    );
+}
+
+router.post('/api/request-new-qr', async (req, res) => {
+    console.log('[API /api/request-new-qr] Requesting new QR...');
+    try {
+        if (!config.client) {
+            return res.status(400).json({ success: false, error: 'No client instance' });
+        }
+        // Do NOT clear currentQR here: if initialize() throws "already running", we'd leave the user with no QR.
+        await config.client.initialize();
+        config.setCurrentQR(null); // clear so UI shows loading until next qr event
+        return res.json({ success: true, message: 'Client re-initializing; new QR will be available shortly via GET /api/qr' });
+    } catch (error) {
+        const msg = error && error.message ? String(error.message) : '';
+        if (msg.includes('already running') || msg.includes('userDataDir')) {
+            console.log('[API /api/request-new-qr] Browser already running; QR refreshes automatically.');
+            // Keep current QR so GET /api/qr still returns it; user is not stuck with "no hay QR disponible"
+            return res.status(200).json({
+                success: true,
+                message: 'El código QR se renueva solo cada ~20 s. Sigue visible abajo. Para vincular otra cuenta, usa «Reiniciar sesión».'
+            });
+        }
+        if (isProfileLockedError(error)) {
+            const userMessage = 'El perfil de Chromium está bloqueado (otro proceso o reinicio previo). Reinicia el contenedor del servicio WhatsApp: docker compose restart whatsapp-service';
+            console.warn('[API /api/request-new-qr] Profile locked:', error.message);
+            return res.status(503).json({
+                success: false,
+                error: 'profile_locked',
+                message: userMessage
+            });
+        }
+        console.error('[API /api/request-new-qr] Error:', error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 

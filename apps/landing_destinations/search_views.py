@@ -66,21 +66,31 @@ class PublicSearchView(APIView):
             except Exception:
                 pass
 
-        # Experiences
+        # Experiences: título, descripción, ubicación, país (ej. "copacabana" en título o location_name)
         if type_filter in ("", "experiences"):
             try:
                 from apps.experiences.models import Experience
+                exp_q = (
+                    Q(title__icontains=q)
+                    | Q(description__icontains=q)
+                    | Q(short_description__icontains=q)
+                    | Q(location_name__icontains=q)
+                )
+                try:
+                    exp_q |= Q(country__name__icontains=q)
+                except Exception:
+                    pass
                 exps = Experience.objects.filter(
                     status="published",
                     is_active=True,
                     deleted_at__isnull=True,
-                ).filter(
-                    Q(title__icontains=q) | Q(description__icontains=q) | Q(short_description__icontains=q)
-                )[:10]
+                ).filter(exp_q)[:10]
                 exp_list = []
                 for ex in exps:
                     images = getattr(ex, "images", None) or []
                     img = images[0] if images else ""
+                    if img:
+                        img = _normalize_media_url(img)
                     exp_list.append({
                         "id": str(ex.id),
                         "title": ex.title,
@@ -93,8 +103,37 @@ class PublicSearchView(APIView):
             except Exception:
                 pass
 
-        # Accommodations (no model yet)
-        if type_filter == "accommodations":
-            result["accommodations"] = []
+        # Accommodations: título, descripción, ciudad, ubicación, país
+        if type_filter in ("", "accommodations"):
+            try:
+                from apps.accommodations.models import Accommodation
+                from apps.accommodations.serializers import _accommodation_to_public_dict
+                accs = Accommodation.objects.filter(
+                    status="published",
+                    deleted_at__isnull=True,
+                ).filter(
+                    Q(title__icontains=q)
+                    | Q(description__icontains=q)
+                    | Q(short_description__icontains=q)
+                    | Q(location_name__icontains=q)
+                    | Q(city__icontains=q)
+                    | Q(country__icontains=q)
+                )[:10]
+                acc_list = []
+                for acc in accs:
+                    data = _accommodation_to_public_dict(acc, request=request)
+                    images = data.get("images") or []
+                    img = images[0] if images and isinstance(images[0], str) else ""
+                    acc_list.append({
+                        "id": data.get("id", str(acc.id)),
+                        "title": data.get("title", acc.title),
+                        "slug": getattr(acc, "slug", None) or str(acc.id),
+                        "image": img,
+                        "price": float(data.get("price") or 0),
+                        "description": (data.get("short_description") or data.get("description") or "")[:200],
+                    })
+                result["accommodations"] = acc_list
+            except Exception:
+                pass
 
         return Response(result)

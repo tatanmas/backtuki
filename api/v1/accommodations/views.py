@@ -10,6 +10,7 @@ from apps.accommodations.models import Accommodation
 from apps.accommodations.serializers import (
     PublicAccommodationListSerializer,
     PublicAccommodationDetailSerializer,
+    resolve_room_public_payload,
 )
 
 
@@ -49,12 +50,18 @@ class PublicAccommodationDetailView(APIView):
     """
     GET /api/v1/accommodations/public/<slug_or_id>/
     Detalle por slug o UUID. Incluye reviews (reviewsList).
+    Los alojamientos en borrador (draft) no aparecen en el listado público pero
+    son accesibles por enlace directo (comportamiento "no listado").
     """
 
     permission_classes = [permissions.AllowAny]
 
     def get(self, request, slug_or_id):
-        qs = Accommodation.objects.filter(status="published", deleted_at__isnull=True)
+        # Listado: solo published. Detalle: published o draft (unlisted = accesible por link).
+        qs = Accommodation.objects.filter(
+            status__in=("published", "draft"),
+            deleted_at__isnull=True,
+        )
         acc = None
         try:
             acc = qs.get(slug=slug_or_id)
@@ -69,5 +76,25 @@ class PublicAccommodationDetailView(APIView):
                 {"error": "Alojamiento no encontrado"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        # When room belongs to a hotel, apply inheritance (location, amenities) in public payload
+        if acc.hotel_id:
+            data = resolve_room_public_payload(acc, request, include_photo_tour=True)
+            reviews_qs = acc.reviews.all()[:50]
+            data["reviewsList"] = [
+                {
+                    "id": r.id,
+                    "author_name": r.author_name,
+                    "author_location": r.author_location or "",
+                    "rating": r.rating,
+                    "text": r.text,
+                    "review_date": r.review_date.isoformat() if r.review_date else None,
+                    "stay_type": r.stay_type or "",
+                    "host_reply": r.host_reply or "",
+                }
+                for r in reviews_qs
+            ]
+            data["short_description"] = acc.short_description or ""
+            data["not_amenities"] = list(acc.not_amenities or [])
+            return Response(data)
         serializer = PublicAccommodationDetailSerializer(acc, context={"request": request})
         return Response(serializer.data)

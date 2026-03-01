@@ -127,7 +127,7 @@ class CreatorMeView(APIView):
         if not creator:
             return Response(
                 {'error': 'No creator profile for this user.', 'has_profile': False},
-                status=status.HTTP_404_NOT_FOUND
+                status=status.HTTP_200_OK,
             )
         serializer = CreatorProfileMeSerializer(creator)
         return Response({**serializer.data, 'has_profile': True})

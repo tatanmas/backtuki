@@ -6,6 +6,7 @@ from django.utils import timezone
 
 from apps.experiences.models import Experience
 from apps.accommodations.models import Accommodation
+from apps.car_rental.models import Car
 from apps.whatsapp.models import WhatsAppReservationCode
 
 
@@ -111,6 +112,55 @@ class ReservationCodeGenerator:
             code=code,
             experience=None,
             accommodation=accommodation,
+            checkout_data=checkout_data,
+            status="pending",
+            expires_at=expires_at,
+        )
+        return code_obj
+
+    @staticmethod
+    def generate_code_for_car(car_id, checkout_data):
+        """
+        Generate a unique reservation code for a car (car_rental).
+
+        Args:
+            car_id: UUID of the Car
+            checkout_data: Dict with pickup_date, return_date, pickup_time, return_time, pricing, customer, etc.
+
+        Returns:
+            WhatsAppReservationCode instance (car set, experience and accommodation null)
+        """
+        try:
+            car = Car.objects.get(id=car_id)
+        except Car.DoesNotExist:
+            raise ValueError(f"Car {car_id} not found")
+
+        slug_prefix = (car.slug[:6] if car.slug else "CAR").upper()
+        date_str = datetime.now().strftime("%Y%m%d")
+        unique_id = secrets.token_urlsafe(16)
+        hash_input = f"{car_id}-{unique_id}-{timezone.now().isoformat()}"
+        hash_suffix = hashlib.sha256(hash_input.encode()).hexdigest()[:8].upper()
+        code = f"RES-{slug_prefix}-{date_str}-{hash_suffix}"
+
+        max_retries = 10
+        retries = 0
+        while WhatsAppReservationCode.objects.filter(code=code).exists() and retries < max_retries:
+            unique_id = secrets.token_urlsafe(16)
+            hash_input = f"{car_id}-{unique_id}-{timezone.now().isoformat()}"
+            hash_suffix = hashlib.sha256(hash_input.encode()).hexdigest()[:8].upper()
+            code = f"RES-{slug_prefix}-{date_str}-{hash_suffix}"
+            retries += 1
+
+        if retries >= max_retries:
+            raise ValueError("Could not generate unique code after multiple attempts")
+
+        expires_at = timezone.now() + timedelta(hours=ReservationCodeGenerator.DEFAULT_EXPIRY_HOURS)
+
+        code_obj = WhatsAppReservationCode.objects.create(
+            code=code,
+            experience=None,
+            accommodation=None,
+            car=car,
             checkout_data=checkout_data,
             status="pending",
             expires_at=expires_at,

@@ -3,6 +3,8 @@ from .models import (
     ErasmusLead,
     ErasmusTrackingLink,
     ErasmusWhatsAppGroup,
+    ErasmusPartnerNotificationConfig,
+    ErasmusActivityNotificationConfig,
     ErasmusExtraField,
     ErasmusDestinationGuide,
     ErasmusLocalPartner,
@@ -12,6 +14,8 @@ from .models import (
     ErasmusTimelineItem,
     ErasmusActivity,
     ErasmusActivityInstance,
+    ErasmusActivityPublicLink,
+    ErasmusActivityReview,
 )
 
 
@@ -45,6 +49,21 @@ class ErasmusWhatsAppGroupAdmin(admin.ModelAdmin):
     list_editable = ("order", "is_active")
     search_fields = ("name",)
     ordering = ("order", "id")
+
+
+@admin.register(ErasmusPartnerNotificationConfig)
+class ErasmusPartnerNotificationConfigAdmin(admin.ModelAdmin):
+    list_display = ("slug", "name", "whatsapp_chat", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("slug", "name")
+    raw_id_fields = ("whatsapp_chat",)
+
+
+@admin.register(ErasmusActivityNotificationConfig)
+class ErasmusActivityNotificationConfigAdmin(admin.ModelAdmin):
+    list_display = ("activity", "whatsapp_chat", "is_active")
+    list_filter = ("is_active", "activity")
+    raw_id_fields = ("activity", "whatsapp_chat")
 
 
 @admin.register(ErasmusSlideConfig)
@@ -113,3 +132,20 @@ class ErasmusActivityInstanceAdmin(admin.ModelAdmin):
     list_display = ("activity", "scheduled_date", "scheduled_month", "scheduled_year", "scheduled_label_es", "display_order", "is_active")
     list_filter = ("is_active", "activity")
     search_fields = ("scheduled_label_es", "scheduled_label_en")
+
+
+@admin.register(ErasmusActivityPublicLink)
+class ErasmusActivityPublicLinkAdmin(admin.ModelAdmin):
+    list_display = ("activity", "view_token", "edit_token", "review_token", "links_enabled", "review_link_enabled")
+    list_filter = ("links_enabled",)
+    search_fields = ("activity__title_es", "view_token", "edit_token", "review_token")
+    raw_id_fields = ("activity",)
+
+
+@admin.register(ErasmusActivityReview)
+class ErasmusActivityReviewAdmin(admin.ModelAdmin):
+    list_display = ("id", "instance", "author_name", "author_origin", "rating", "created_at")
+    list_filter = ("rating", "instance__activity")
+    search_fields = ("author_name", "author_origin", "body")
+    readonly_fields = ("created_at", "updated_at")
+    raw_id_fields = ("instance", "lead")

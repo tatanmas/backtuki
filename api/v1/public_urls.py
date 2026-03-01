@@ -8,6 +8,7 @@ from apps.landing_destinations.views import (
     PublicDestinationListView,
     PublicDestinationWeatherTimeView,
 )
+from apps.landing_destinations.search_views import PublicSearchView
 
 # Import public viewsets
 from api.v1.auth.views import (
@@ -61,4 +62,8 @@ urlpatterns = [
     path('public/destinations/', PublicDestinationListView.as_view(), name='public-destination-list'),
     path('public/destinations/<str:slug>/', PublicDestinationBySlugView.as_view(), name='public-destination-by-slug'),
     path('public/destinations/<str:slug>/weather-time/', PublicDestinationWeatherTimeView.as_view(), name='public-destination-weather-time'),
+    # Buscador unificado: destinos, eventos, experiencias, alojamientos (sugerencias en vivo)
+    path('public/search/', PublicSearchView.as_view(), name='public-search'),
+    # Fallback: el resto de /api/v1/ (creators, auth/token, events, etc.) lo resuelve la API principal
+    path('', include('api.v1.urls')),
 ] 

@@ -123,10 +123,15 @@ def erasmus_slides_assign(request):
     Cualquier slide_id; si no existe se crea con order=max+1.
     """
     from django.db import models
-    slide_id = request.data.get('slide_id')
+    slide_id = (request.data.get('slide_id') or '').strip()
     asset_id = request.data.get('asset_id')
     if not slide_id:
         return Response({'error': 'slide_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if slide_id not in DEFAULT_SLIDE_IDS:
+        return Response(
+            {'error': f'slide_id must be one of: {", ".join(DEFAULT_SLIDE_IDS)}'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     config = ErasmusSlideConfig.objects.filter(slide_id=slide_id).first()
     if not config:
         max_order = ErasmusSlideConfig.objects.aggregate(m=models.Max('order'))
@@ -165,3 +170,37 @@ def erasmus_slides_assign(request):
         'asset_filename': getattr(asset, 'original_filename', None),
         'caption': getattr(config, 'caption', '') or '',
     })
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperUser])
+def erasmus_slides_reorder(request):
+    """
+    POST /api/v1/superadmin/erasmus-slides/reorder/
+    Body: { "order": ["slide_id1", "slide_id2", ...] }
+    Updates each slide's order to its index in the list. Returns the new list.
+    """
+    order_slide_ids = request.data.get('order')
+    if not isinstance(order_slide_ids, list):
+        return Response({'error': 'order must be a list of slide_ids'}, status=status.HTTP_400_BAD_REQUEST)
+    for i, slide_id in enumerate(order_slide_ids):
+        if not slide_id:
+            continue
+        ErasmusSlideConfig.objects.filter(slide_id=slide_id).update(order=i)
+    configs = ErasmusSlideConfig.objects.all().select_related('asset').order_by('order', 'slide_id')
+    result = []
+    for i, cfg in enumerate(configs):
+        asset_url = None
+        asset_filename = None
+        if cfg.asset_id and cfg.asset and not getattr(cfg.asset, 'deleted_at', None):
+            asset_url = cfg.asset.url
+            asset_filename = getattr(cfg.asset, 'original_filename', None)
+        result.append({
+            'slide_id': cfg.slide_id,
+            'asset_id': str(cfg.asset_id) if cfg.asset_id else None,
+            'asset_url': asset_url,
+            'asset_filename': asset_filename,
+            'caption': getattr(cfg, 'caption', '') or '',
+            'order': i,
+        })
+    return Response(result)

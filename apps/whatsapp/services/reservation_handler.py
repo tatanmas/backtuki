@@ -12,6 +12,7 @@ from apps.whatsapp.services.group_notification_service import GroupNotificationS
 from apps.whatsapp.services.whatsapp_client import WhatsAppWebService
 from apps.experiences.models import Experience, ExperienceReservation, TourInstance
 from apps.accommodations.models import AccommodationReservation
+from apps.car_rental.models import CarReservation
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +31,22 @@ class ReservationHandler:
         if not code_obj:
             return
         try:
-            flow_type = 'accommodation_booking' if code_obj.accommodation_id else 'experience_booking'
+            if getattr(code_obj, 'car_id', None):
+                flow_type = 'car_rental_booking'
+            elif code_obj.accommodation_id:
+                flow_type = 'accommodation_booking'
+            else:
+                flow_type = 'experience_booking'
             experience = getattr(code_obj, 'experience', None)
             accommodation = getattr(code_obj, 'accommodation', None)
+            car = getattr(code_obj, 'car', None)
             organizer = None
             if experience:
                 organizer = getattr(experience, 'organizer', None)
             elif accommodation:
                 organizer = getattr(accommodation, 'organizer', None)
+            elif car and getattr(car, 'company', None):
+                organizer = getattr(car.company, 'organizer', None)
             flow = FlowLogger.start_flow(
                 flow_type,
                 experience=experience,
@@ -101,14 +110,22 @@ class ReservationHandler:
                 logger.warning("FlowLogger ensure_flow_and_log_request (from code): %s", e)
             return
         try:
-            flow_type = 'accommodation_booking' if reservation.accommodation_id else 'experience_booking'
+            if getattr(reservation, 'car_id', None):
+                flow_type = 'car_rental_booking'
+            elif reservation.accommodation_id:
+                flow_type = 'accommodation_booking'
+            else:
+                flow_type = 'experience_booking'
             experience = getattr(reservation, 'experience', None)
             accommodation = getattr(reservation, 'accommodation', None)
+            car = getattr(reservation, 'car', None)
             organizer = None
             if experience:
                 organizer = getattr(experience, 'organizer', None)
             elif accommodation:
                 organizer = getattr(accommodation, 'organizer', None)
+            elif car and getattr(car, 'company', None):
+                organizer = getattr(car.company, 'organizer', None)
             flow = FlowLogger.start_flow(
                 flow_type,
                 experience=experience,
@@ -135,12 +152,12 @@ class ReservationHandler:
             logger.warning("FlowLogger ensure_flow_and_log_request (new): %s", e)
 
     @staticmethod
-    def create_reservation(message, tour_code, passengers, operator, experience=None, accommodation=None, existing_flow=None):
+    def create_reservation(message, tour_code, passengers, operator, experience=None, accommodation=None, car=None, existing_flow=None):
         """
-        Create a WhatsAppReservationRequest (experience or accommodation).
+        Create a WhatsAppReservationRequest (experience, accommodation or car_rental).
         Starts platform flow (or reuses existing_flow from code) and logs WHATSAPP_REQUEST_RECEIVED.
 
-        One of experience or accommodation must be set.
+        One of experience, accommodation or car must be set.
         If existing_flow is provided (from code_obj.flow when message is received), reuse it instead of creating a new flow.
         """
         reservation = WhatsAppReservationRequest.objects.create(
@@ -150,6 +167,7 @@ class ReservationHandler:
             operator=operator,
             experience=experience,
             accommodation=accommodation,
+            car=car,
             status="processing",
             timeout_at=timezone.now() + timedelta(minutes=ReservationHandler.DEFAULT_TIMEOUT_MINUTES),
         )
@@ -168,12 +186,19 @@ class ReservationHandler:
                         metadata={'whatsapp_reservation_id': str(reservation.id)},
                     )
             else:
-                flow_type = 'accommodation_booking' if accommodation else 'experience_booking'
+                if car:
+                    flow_type = 'car_rental_booking'
+                elif accommodation:
+                    flow_type = 'accommodation_booking'
+                else:
+                    flow_type = 'experience_booking'
                 organizer = None
                 if experience:
                     organizer = getattr(experience, 'organizer', None)
                 elif accommodation:
                     organizer = getattr(accommodation, 'organizer', None)
+                elif car and getattr(car, 'company', None):
+                    organizer = getattr(car.company, 'organizer', None)
                 flow = FlowLogger.start_flow(
                     flow_type,
                     experience=experience,
@@ -241,9 +266,11 @@ class ReservationHandler:
 
     @staticmethod
     def _build_payment_url(reservation) -> str:
-        """Build frontend URL for payment (experience or accommodation checkout with code)."""
+        """Build frontend URL for payment (experience, accommodation or car_rental checkout with code)."""
         frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:8080").rstrip("/")
         code = reservation.tour_code
+        if getattr(reservation, 'car', None):
+            return f"{frontend_url}/checkout/car-rental/whatsapp?codigo={code}"
         if reservation.accommodation:
             return f"{frontend_url}/checkout/accommodations/whatsapp?codigo={code}"
         exp = reservation.experience
@@ -470,6 +497,108 @@ class ReservationHandler:
             return acc_res
 
     @staticmethod
+    def _create_car_rental_reservation_if_needed(reservation) -> bool:
+        """Create CarReservation from checkout_data and link to request. Returns True if created."""
+        if getattr(reservation, 'linked_car_rental_reservation_id', None):
+            return False
+        code_obj = WhatsAppReservationCode.objects.filter(linked_reservation=reservation).first()
+        if not code_obj or not code_obj.checkout_data:
+            return False
+        car_res = ReservationHandler._create_and_link_car_rental_reservation(reservation, code_obj)
+        return car_res is not None
+
+    @staticmethod
+    def _create_and_link_car_rental_reservation(reservation, code_obj):
+        """Create CarReservation from checkout_data and link to WhatsAppReservationRequest."""
+        from datetime import date as date_type
+
+        checkout_data = code_obj.checkout_data
+        car = getattr(reservation, 'car', None)
+        if not car:
+            return None
+
+        pickup_date = checkout_data.get("pickup_date")
+        return_date = checkout_data.get("return_date")
+        if isinstance(pickup_date, str):
+            try:
+                pickup_date = date_type.fromisoformat(pickup_date)
+            except (ValueError, TypeError):
+                return None
+        if isinstance(return_date, str):
+            try:
+                return_date = date_type.fromisoformat(return_date)
+            except (ValueError, TypeError):
+                return None
+        if not pickup_date or not return_date:
+            return None
+
+        pricing = checkout_data.get("pricing", {}) or {}
+        total = float(pricing.get("total", 0) or 0)
+        currency = pricing.get("currency", "CLP")
+        contact = dict(checkout_data.get("contact") or checkout_data.get("customer") or {})
+        name = (contact.get("name") or "").strip()
+        if name and not contact.get("first_name"):
+            parts = name.split(None, 1)
+            contact["first_name"] = parts[0]
+            contact["last_name"] = parts[1] if len(parts) > 1 else ""
+
+        pickup_time = (checkout_data.get("pickup_time") or car.pickup_time_default or "")[:5]
+        return_time = (checkout_data.get("return_time") or car.return_time_default or "")[:5]
+
+        with transaction.atomic():
+            flow = FlowLogger.from_flow_id(reservation.flow_id) if reservation.flow_id else None
+            if not flow or not flow.flow:
+                try:
+                    flow = FlowLogger.start_flow(
+                        'car_rental_booking',
+                        organizer=getattr(car.company, 'organizer', None) if getattr(car, 'company', None) else None,
+                        user=None,
+                        metadata={
+                            'source': 'whatsapp',
+                            'whatsapp_reservation_id': str(reservation.id),
+                        },
+                    )
+                    if flow and flow.flow:
+                        reservation.flow = flow.flow
+                        reservation.save(update_fields=['flow'])
+                except Exception as e:
+                    logger.warning("FlowLogger car_rental_booking (legacy): %s", e)
+                    flow = None
+
+            reservation_id = f"CAR-{uuid.uuid4().hex[:12].upper()}"
+            car_res = CarReservation.objects.create(
+                reservation_id=reservation_id,
+                car=car,
+                status="pending",
+                pickup_date=pickup_date,
+                return_date=return_date,
+                pickup_time=pickup_time,
+                return_time=return_time,
+                first_name=contact.get("first_name", ""),
+                last_name=contact.get("last_name", ""),
+                email=contact.get("email", ""),
+                phone=reservation.whatsapp_message.phone or "",
+                total=total,
+                currency=currency,
+                flow=flow.flow if flow and flow.flow else None,
+            )
+            reservation.linked_car_rental_reservation = car_res
+            reservation.save(update_fields=["linked_car_rental_reservation"])
+            logger.info("Created CarReservation %s for WhatsApp reservation %s", reservation_id, reservation.id)
+            if flow and flow.flow:
+                try:
+                    flow.log_event(
+                        'RESERVATION_CREATED',
+                        source='api',
+                        status='success',
+                        message=f"Car rental reservation {reservation_id} created via WhatsApp",
+                        metadata={'reservation_id': reservation_id, 'car_id': str(car.id)},
+                    )
+                except Exception as e:
+                    logger.warning("FlowLogger RESERVATION_CREATED: %s", e)
+            return car_res
+
+    @staticmethod
     def confirm_availability(reservation):
         """
         Operator confirmed availability. Send appropriate message to customer.
@@ -504,8 +633,10 @@ class ReservationHandler:
         service = WhatsAppWebService()
 
         if total > 0:
-            # Paid: create ExperienceReservation or AccommodationReservation (needed for payment link)
-            if reservation.accommodation:
+            # Paid: create reservation (Experience, Accommodation or CarRental) needed for payment link
+            if getattr(reservation, 'car', None):
+                ReservationHandler._create_car_rental_reservation_if_needed(reservation)
+            elif reservation.accommodation:
                 ReservationHandler._create_accommodation_reservation_if_needed(reservation)
             else:
                 ReservationHandler._create_experience_reservation_if_needed(reservation)

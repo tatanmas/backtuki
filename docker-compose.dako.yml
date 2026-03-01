@@ -64,6 +64,13 @@ services:
     container_name: tuki-backend-a
     ports:
       - "8000:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.homeserver
       - DEBUG=False
@@ -101,13 +108,6 @@ services:
     volumes:
       - tuki_media:/app/media
       - tuki_staticfiles:/app/staticfiles
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz/" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
     networks:
       - tuki-network
 
@@ -160,13 +160,13 @@ services:
     volumes:
       - tuki_media:/app/media
       - tuki_staticfiles:/app/staticfiles
-    restart: "no"
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz/" ]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz/"]
+      interval: 10s
+      timeout: 5s
       retries: 3
-      start_period: 60s
+      start_period: 20s
     networks:
       - tuki-network
 
@@ -277,6 +277,8 @@ services:
   # ═══════════════════════════════════════════════════════════════
   # 📱 WhatsApp Web Service (Node.js)
   # ═══════════════════════════════════════════════════════════════
+  # WhatsApp envía webhooks a nginx (tuki-frontend), que hace proxy a tuki_backend_live.
+  # Así los mensajes entrantes siempre llegan al backend en producción (blue-green).
   tuki-whatsapp-service:
     build:
       context: ./backtuki/whatsapp-service
@@ -286,12 +288,12 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
-      - DJANGO_API_URL=http://tuki-backend-a:8080
+      - DJANGO_API_URL=http://tuki-frontend:80
       - NODE_ENV=production
     volumes:
       - tuki_whatsapp_sessions:/app/sessions
     depends_on:
-      - tuki-backend-a
+      - tuki-frontend
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/health"]

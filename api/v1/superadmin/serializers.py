@@ -13,6 +13,53 @@ from apps.organizers.models import Organizer
 logger = logging.getLogger(__name__)
 
 
+def validate_itinerary_items(value):
+    """
+    Validate itinerary items (shared by Experience and Erasmus activity).
+    `time` is optional and accepts:
+    - HH:mm (e.g. "10:00") for clock time
+    - Step number as string or int (e.g. "1", "2", 3) for "Paso 1", "Paso 2"
+    - Any other string as label (e.g. "Inicio", "Primera hora", "Segunda hora")
+    So one itinerary works for all instances/slots regardless of start time.
+    """
+    if not value:
+        return
+    for item in value:
+        if not isinstance(item, dict):
+            raise serializers.ValidationError(
+                "Cada item del itinerario debe ser un objeto."
+            )
+        if "title" not in item or not item["title"]:
+            raise serializers.ValidationError(
+                "Cada item del itinerario debe tener un 'title'."
+            )
+        if "description" not in item or not item["description"]:
+            raise serializers.ValidationError(
+                "Cada item del itinerario debe tener una 'description'."
+            )
+        if "time" in item and item["time"] is not None and item["time"] != "":
+            t = item["time"]
+            if isinstance(t, int):
+                if not (1 <= t <= 99):
+                    raise serializers.ValidationError(
+                        f"El paso del itinerario '{t}' debe ser un número entre 1 y 99."
+                    )
+            else:
+                tstr = str(t).strip()
+                if ":" in tstr:
+                    try:
+                        datetime.strptime(tstr, "%H:%M")
+                    except ValueError:
+                        raise serializers.ValidationError(
+                            f"El horario '{tstr}' no está en formato válido (HH:mm)."
+                        )
+                elif tstr.isdigit():
+                    if not (1 <= int(tstr) <= 99):
+                        raise serializers.ValidationError(
+                            f"El paso del itinerario '{tstr}' debe ser entre 1 y 99."
+                        )
+
+
 class JsonExperienceCreateSerializer(serializers.Serializer):
     """
     🚀 ENTERPRISE: Serializer for creating experiences from JSON.
@@ -143,6 +190,8 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
         """
         Validate recurrence pattern structure.
         Acepta el formato del flujo real: { schema_version: 1, weekly_schedule: {...} }
+        Por cada día acepta array de slots O un solo objeto (se normaliza a array de 1).
+        Así se soportan múltiples horarios por día (varios slots en el array).
         """
         if not value:
             return value
@@ -156,18 +205,25 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
                 )
             
             valid_days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+            # Normalizar: cada día debe quedar como list de slots (copiamos para no mutar input)
+            normalized = {}
             for day, slots in weekly_schedule.items():
                 if day.lower() not in valid_days:
                     raise serializers.ValidationError(
                         f"El día '{day}' no es válido. Debe ser uno de: {', '.join(valid_days)}."
                     )
-                
-                if not isinstance(slots, list):
+                # Aceptar array de slots O un solo objeto → siempre guardar como array
+                if isinstance(slots, list):
+                    slot_list = slots
+                elif isinstance(slots, dict):
+                    slot_list = [slots]
+                else:
                     raise serializers.ValidationError(
-                        f"Los horarios para '{day}' deben ser un array."
+                        f"Los horarios para '{day}' deben ser un array o un objeto con startTime/endTime."
                     )
+                normalized[day] = slot_list
                 
-                for slot_idx, slot in enumerate(slots):
+                for slot_idx, slot in enumerate(slot_list):
                     if not isinstance(slot, dict):
                         raise serializers.ValidationError(
                             f"Cada slot en '{day}' debe ser un objeto."
@@ -189,6 +245,7 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
                             raise serializers.ValidationError(
                                 f"El horario de fin '{slot['endTime']}' en {day}[{slot_idx}] no está en formato válido (HH:mm)."
                             )
+            value = {**value, 'weekly_schedule': normalized}
         
         # Formato legacy (mantener compatibilidad)
         elif 'pattern' in value:
@@ -220,35 +277,8 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
         return value
     
     def validate_itinerary(self, value):
-        """Validate itinerary items."""
-        if not value:
-            return value
-        
-        for item in value:
-            if not isinstance(item, dict):
-                raise serializers.ValidationError(
-                    "Cada item del itinerario debe ser un objeto."
-                )
-            
-            if 'title' not in item or not item['title']:
-                raise serializers.ValidationError(
-                    "Cada item del itinerario debe tener un 'title'."
-                )
-            
-            if 'description' not in item or not item['description']:
-                raise serializers.ValidationError(
-                    "Cada item del itinerario debe tener una 'description'."
-                )
-            
-            # Validate time format if provided
-            if 'time' in item and item['time']:
-                try:
-                    datetime.strptime(item['time'], '%H:%M')
-                except ValueError:
-                    raise serializers.ValidationError(
-                        f"El horario '{item['time']}' no está en formato válido (HH:mm)."
-                    )
-        
+        """Validate itinerary items (HH:mm, paso 1-99, or label)."""
+        validate_itinerary_items(value)
         return value
     
     def validate_organizer(self, value):
@@ -433,6 +463,74 @@ class JsonAccommodationCreateSerializer(serializers.Serializer):
     not_amenities = serializers.ListField(child=serializers.CharField(), required=False, allow_empty=True)
     images = serializers.ListField(child=serializers.URLField(), required=False, allow_empty=True)
     gallery_media_ids = serializers.ListField(child=serializers.UUIDField(), required=False, allow_empty=True)
+    # Rental hub / unit (for centrales de arrendamiento)
+    rental_hub_id = serializers.UUIDField(required=False, allow_null=True)
+    # Hotel / room (habitaciones con herencia)
+    hotel_id = serializers.UUIDField(required=False, allow_null=True)
+    inherit_location_from_hotel = serializers.BooleanField(default=True, required=False)
+    inherit_amenities_from_hotel = serializers.BooleanField(default=True, required=False)
+    room_type_code = serializers.CharField(max_length=30, required=False, allow_blank=True)
+    external_id = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    unit_type = serializers.CharField(max_length=30, required=False, allow_blank=True)
+    tower = serializers.CharField(max_length=30, required=False, allow_blank=True)
+    floor = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    unit_number = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    square_meters = serializers.DecimalField(max_digits=8, decimal_places=2, required=False, allow_null=True, min_value=0)
+
+    # Reseñas (igual que alojamientos normales; aplica también a unidades de central de arrendamiento)
+    reviews = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        allow_empty=True,
+        help_text="Array de reseñas: author_name, rating (1-5), text o body, review_date (YYYY-MM-DD), author_location, stay_type, host_reply",
+    )
+    rating_avg = serializers.FloatField(
+        min_value=1, max_value=5,
+        required=False, allow_null=True,
+        help_text="Promedio 1-5 (opcional). Se acepta ej. 4.93 y se guarda redondeado a 1 decimal (4.9). Si envías reviews, se recalcula.",
+    )
+    review_count = serializers.IntegerField(min_value=0, required=False, allow_null=True)
+
+
+class JsonCarRentalCompanyCreateSerializer(serializers.Serializer):
+    """Serializer for creating CarRentalCompany from JSON. organizer_id optional."""
+
+    organizer_id = serializers.UUIDField(required=False, allow_null=True)
+    name = serializers.CharField(max_length=255, required=True)
+    slug = serializers.SlugField(required=False, allow_blank=True)
+    short_description = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    description = serializers.CharField(required=False, allow_blank=True)
+    hero_media_id = serializers.UUIDField(required=False, allow_null=True)
+    gallery_media_ids = serializers.ListField(child=serializers.UUIDField(), required=False, allow_empty=True)
+    conditions = serializers.JSONField(required=False, default=dict)
+    is_active = serializers.BooleanField(default=True, required=False)
+    country = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    city = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
+
+class JsonCarCreateSerializer(serializers.Serializer):
+    """Serializer for creating Car from JSON. company_id required."""
+
+    company_id = serializers.UUIDField(required=True)
+    title = serializers.CharField(max_length=255, required=True)
+    slug = serializers.SlugField(required=False, allow_blank=True)
+    description = serializers.CharField(required=False, allow_blank=True)
+    short_description = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    status = serializers.ChoiceField(choices=["draft", "published", "cancelled"], default="draft", required=False)
+    price_per_day = serializers.DecimalField(max_digits=12, decimal_places=2, default=0, min_value=0, required=False)
+    currency = serializers.CharField(max_length=3, default="CLP", required=False)
+    pickup_time_default = serializers.CharField(max_length=5, required=False, allow_blank=True)
+    return_time_default = serializers.CharField(max_length=5, required=False, allow_blank=True)
+    included = serializers.ListField(child=serializers.CharField(), required=False, allow_empty=True)
+    not_included = serializers.ListField(child=serializers.CharField(), required=False, allow_empty=True)
+    inherit_company_conditions = serializers.BooleanField(default=True, required=False)
+    conditions_override = serializers.JSONField(required=False, default=dict)
+    gallery_media_ids = serializers.ListField(child=serializers.UUIDField(), required=False, allow_empty=True)
+    images = serializers.ListField(child=serializers.URLField(), required=False, allow_empty=True)
+    min_driver_age = serializers.IntegerField(required=False, allow_null=True, min_value=18)
+    transmission = serializers.ChoiceField(choices=["manual", "automatic"], default="manual", required=False)
+    seats = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    bags = serializers.IntegerField(required=False, allow_null=True, min_value=0)
 
 
 class JsonDestinationCreateSerializer(serializers.Serializer):
@@ -488,6 +586,11 @@ class JsonErasmusActivityInstanceSerializer(serializers.Serializer):
     end_time = serializers.CharField(max_length=8, required=False, allow_blank=True, allow_null=True)
     display_order = serializers.IntegerField(default=0, min_value=0, required=False)
     is_active = serializers.BooleanField(default=True, required=False)
+    instructions_es = serializers.CharField(required=False, allow_blank=True)
+    instructions_en = serializers.CharField(required=False, allow_blank=True)
+    whatsapp_message_es = serializers.CharField(required=False, allow_blank=True)
+    whatsapp_message_en = serializers.CharField(required=False, allow_blank=True)
+    interested_count_boost = serializers.IntegerField(default=0, min_value=0, required=False)
 
     def validate(self, attrs):
         has_date = attrs.get("scheduled_date") is not None
@@ -541,4 +644,14 @@ class JsonErasmusActivityCreateSerializer(serializers.Serializer):
     display_order = serializers.IntegerField(default=0, min_value=0, required=False)
     is_active = serializers.BooleanField(default=True, required=False)
     experience_id = serializers.UUIDField(required=False, allow_null=True)
+    detail_layout = serializers.ChoiceField(
+        choices=["default", "two_column"],
+        default="default",
+        required=False,
+    )
+
+    def validate_itinerary(self, value):
+        """Same flexibility as Experience: time = HH:mm, step 1-99, or any label (e.g. Primera hora, Segunda hora)."""
+        validate_itinerary_items(value)
+        return value
 

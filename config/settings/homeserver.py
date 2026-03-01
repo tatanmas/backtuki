@@ -27,6 +27,12 @@ ALLOWED_HOSTS = config(
     default='tukitickets.duckdns.org,prop.cl,tuki.cl,localhost,127.0.0.1',
     cast=Csv()
 )
+# WhatsApp (Node) calls nginx (tuki-frontend), which proxies to the live backend; Django must accept that Host header
+_allowed = list(ALLOWED_HOSTS) if isinstance(ALLOWED_HOSTS, (list, tuple)) else [h.strip() for h in str(ALLOWED_HOSTS).split(',') if h.strip()]
+for h in ('tuki-backend-a', 'tuki-backend-b', 'tuki-frontend', 'tuki-frontend:80'):
+    if h not in _allowed:
+        _allowed.append(h)
+ALLOWED_HOSTS = _allowed
 CSRF_TRUSTED_ORIGINS = config(
     'CSRF_TRUSTED_ORIGINS',
     default='https://tukitickets.duckdns.org,https://prop.cl,https://tuki.cl,http://localhost:8000',

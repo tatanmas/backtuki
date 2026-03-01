@@ -32,6 +32,7 @@ CAMPOS_FIJOS = [
     {"key": "degree", "pregunta": "¿Qué carrera o programa?", "required": "si stay_reason=university", "type": "text"},
     {"key": "arrival_date", "pregunta": "¿Cuándo llegas a Chile? (fecha, ej. 2026-02-22)", "required": True, "type": "date"},
     {"key": "departure_date", "pregunta": "¿Hasta cuándo te quedas? (fecha, ej. 2026-07-12)", "required": True, "type": "date"},
+    {"key": "budget_stay", "pregunta": "¿Presupuesto aproximado para viajes durante tu intercambio? (estancias, paseos, experiencias)", "required": False, "type": "text"},
     {"key": "has_accommodation_in_chile", "pregunta": "¿Ya tienes alojamiento en Chile?", "required": False, "type": "boolean"},
     {"key": "wants_rumi4students_contact", "pregunta": "¿Quieres que te contactemos para ayudarte a encontrar alojamiento? (Rumi4Students u otros)", "required": False, "type": "boolean"},
     {"key": "destinations", "pregunta": "¿Qué destinos te interesan? (ej. san-pedro-atacama, valparaiso)", "required": False, "type": "list"},

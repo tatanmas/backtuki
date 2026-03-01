@@ -451,7 +451,24 @@ class WhatsAppReservationRequest(TimeStampedModel, UUIDModel):
         related_name='whatsapp_requests',
         verbose_name=_('Linked Accommodation Reservation')
     )
-    # 🚀 ENTERPRISE: Platform flow for full audit trail (experience & accommodation WhatsApp)
+    car = models.ForeignKey(
+        'car_rental.Car',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='whatsapp_reservations',
+        verbose_name=_('Car'),
+        help_text=_('Car for WhatsApp reservation (when product is car_rental)')
+    )
+    linked_car_rental_reservation = models.ForeignKey(
+        'car_rental.CarReservation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='whatsapp_requests',
+        verbose_name=_('Linked Car Rental Reservation')
+    )
+    # 🚀 ENTERPRISE: Platform flow for full audit trail (experience, accommodation, car_rental WhatsApp)
     flow = models.ForeignKey(
         'core.PlatformFlow',
         on_delete=models.SET_NULL,
@@ -702,6 +719,77 @@ class AccommodationGroupBinding(TimeStampedModel, UUIDModel):
         return f"{self.accommodation.title} -> {group_name}"
 
 
+class CarOperatorBinding(TimeStampedModel, UUIDModel):
+    """Binding between Car (car_rental) and TourOperator."""
+    car = models.ForeignKey(
+        'car_rental.Car',
+        on_delete=models.CASCADE,
+        related_name='operator_bindings',
+        verbose_name=_('Car')
+    )
+    tour_operator = models.ForeignKey(
+        TourOperator,
+        on_delete=models.CASCADE,
+        related_name='car_bindings',
+        verbose_name=_('Tour Operator')
+    )
+    priority = models.IntegerField(default=0, help_text=_('Lower number = higher priority'), verbose_name=_('Priority'))
+    is_active = models.BooleanField(default=True, verbose_name=_('Active'))
+
+    class Meta:
+        app_label = 'whatsapp'
+        verbose_name = _('Car-Operator Binding')
+        verbose_name_plural = _('Car-Operator Bindings')
+        ordering = ['car', 'priority']
+        unique_together = [('car', 'tour_operator')]
+
+    def __str__(self):
+        return f"{self.car.title} -> {self.tour_operator.name}"
+
+
+class CarGroupBinding(TimeStampedModel, UUIDModel):
+    """Binding between Car and WhatsApp Group."""
+    car = models.ForeignKey(
+        'car_rental.Car',
+        on_delete=models.CASCADE,
+        related_name='whatsapp_group_bindings',
+        verbose_name=_('Car')
+    )
+    whatsapp_group = models.ForeignKey(
+        'whatsapp.WhatsAppChat',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='car_bindings',
+        verbose_name=_('WhatsApp Group'),
+        limit_choices_to={'type': 'group'}
+    )
+    tour_operator = models.ForeignKey(
+        TourOperator,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='car_group_bindings',
+        verbose_name=_('Tour Operator')
+    )
+    is_active = models.BooleanField(default=True, verbose_name=_('Active'))
+    is_override = models.BooleanField(default=False, verbose_name=_('Override Default'))
+
+    class Meta:
+        app_label = 'whatsapp'
+        verbose_name = _('Car-Group Binding')
+        verbose_name_plural = _('Car-Group Bindings')
+        unique_together = [('car', 'whatsapp_group')]
+        indexes = [
+            models.Index(fields=['car', 'is_active']),
+            models.Index(fields=['whatsapp_group', 'is_active']),
+        ]
+
+    def __str__(self):
+        group_name = self.whatsapp_group.name if self.whatsapp_group else 'No Group'
+        return f"{self.car.title} -> {group_name}"
+
+
 class WhatsAppReservationCode(TimeStampedModel, UUIDModel):
     """Unique reservation code generated at checkout (experience or accommodation)."""
     
@@ -733,7 +821,16 @@ class WhatsAppReservationCode(TimeStampedModel, UUIDModel):
         verbose_name=_('Accommodation'),
         null=True,
         blank=True,
-        help_text=_('Accommodation for accommodation codes. Null when experience is set.')
+        help_text=_('Accommodation for accommodation codes. Null when experience/car is set.')
+    )
+    car = models.ForeignKey(
+        'car_rental.Car',
+        on_delete=models.CASCADE,
+        related_name='whatsapp_reservation_codes',
+        verbose_name=_('Car'),
+        null=True,
+        blank=True,
+        help_text=_('Car for car_rental codes. Null when experience/accommodation is set.')
     )
     checkout_data = models.JSONField(
         default=dict,
@@ -1002,4 +1099,122 @@ class ConversationState(TimeStampedModel, UUIDModel):
         if self.expires_at:
             return timezone.now() > self.expires_at
         return False
+
+
+class GroupOutreachConfig(TimeStampedModel, UUIDModel):
+    """
+    Configuración de outreach (primer mensaje) por grupo de WhatsApp.
+    Permite activar/desactivar el envío automático de mensajes iniciales a participantes
+    que aún no tienen conversación con nosotros, con mensajes randomizados y delays humanos
+    para reducir riesgo de detección como spam.
+    """
+    group = models.OneToOneField(
+        WhatsAppChat,
+        on_delete=models.CASCADE,
+        related_name='outreach_config',
+        limit_choices_to={'type': 'group'},
+        verbose_name=_('Group'),
+    )
+    enabled = models.BooleanField(
+        default=False,
+        db_index=True,
+        verbose_name=_('Enabled'),
+        help_text=_('When enabled, the system will send first messages to eligible participants.'),
+    )
+    message_templates = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_('Message templates'),
+        help_text=_('List of message texts. One will be chosen at random per send.'),
+    )
+    exclude_numbers = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_('Exclude numbers'),
+        help_text=_('Phone numbers to never message (e.g. ["56912345678"]).'),
+    )
+    min_delay_seconds = models.PositiveIntegerField(
+        default=120,
+        verbose_name=_('Min delay (seconds)'),
+        help_text=_('Minimum seconds between two sends.'),
+    )
+    max_delay_seconds = models.PositiveIntegerField(
+        default=300,
+        verbose_name=_('Max delay (seconds)'),
+        help_text=_('Maximum seconds between two sends.'),
+    )
+    max_per_run = models.PositiveSmallIntegerField(
+        default=1,
+        verbose_name=_('Max per run'),
+        help_text=_('Max first messages to send per scheduled run.'),
+    )
+    skip_saved_contacts = models.BooleanField(
+        default=True,
+        verbose_name=_('Skip saved contacts'),
+        help_text=_('Do not send to numbers that are in your phone contacts.'),
+    )
+    last_run_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_('Last run at'),
+    )
+
+    class Meta:
+        app_label = 'whatsapp'
+        verbose_name = _('Group outreach config')
+        verbose_name_plural = _('Group outreach configs')
+
+    def __str__(self):
+        return f'{self.group.name} (outreach: {"on" if self.enabled else "off"})'
+
+
+class GroupOutreachSent(TimeStampedModel, UUIDModel):
+    """Registro de primer mensaje de outreach enviado a un participante de un grupo."""
+    config = models.ForeignKey(
+        GroupOutreachConfig,
+        on_delete=models.CASCADE,
+        related_name='sent_records',
+        verbose_name=_('Outreach config'),
+    )
+    participant_id = models.CharField(
+        max_length=100,
+        db_index=True,
+        verbose_name=_('Participant ID'),
+        help_text=_('WhatsApp participant id (e.g. 569xxx@c.us or xxx@lid).'),
+    )
+    phone_normalized = models.CharField(
+        max_length=50,
+        blank=True,
+        db_index=True,
+        verbose_name=_('Phone normalized'),
+        help_text=_('Digits-only phone for exclude lookups.'),
+    )
+    message_used = models.TextField(
+        blank=True,
+        verbose_name=_('Message used'),
+        help_text=_('The message text that was sent.'),
+    )
+    message_index = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_('Message template index'),
+    )
+    sent_at = models.DateTimeField(
+        default=timezone.now,
+        db_index=True,
+        verbose_name=_('Sent at'),
+    )
+
+    class Meta:
+        app_label = 'whatsapp'
+        verbose_name = _('Group outreach sent')
+        verbose_name_plural = _('Group outreach sent')
+        unique_together = [('config', 'participant_id')]
+        indexes = [
+            models.Index(fields=['config', 'sent_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.config.group.name} -> {self.participant_id} @ {self.sent_at}'
 

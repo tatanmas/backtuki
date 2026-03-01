@@ -55,6 +55,40 @@ def finalize_accommodation_payment(payment: Payment) -> None:
         logger.exception("WhatsApp accommodation payment notifications failed")
 
 
+def finalize_car_rental_payment(payment: Payment) -> None:
+    """
+    Mark car rental reservation as paid, update WhatsApp request, and send notifications.
+    """
+    order = payment.order
+    if getattr(order, 'order_kind', None) != 'car_rental':
+        return
+    car_res = order.car_rental_reservation
+    if not car_res:
+        return
+    car_res.status = 'paid'
+    car_res.paid_at = timezone.now()
+    car_res.save(update_fields=['status', 'paid_at'])
+    logger.info(f"✅ [PAYMENT] Car rental reservation {car_res.reservation_id} marked as paid")
+
+    from apps.whatsapp.models import WhatsAppReservationRequest
+    wa_req = WhatsAppReservationRequest.objects.filter(
+        linked_car_rental_reservation=car_res
+    ).first()
+    if wa_req:
+        wa_req.payment_received_at = timezone.now()
+        wa_req.save(update_fields=['payment_received_at'])
+
+    try:
+        from apps.whatsapp.services.payment_success_notifier import (
+            notify_operator_payment_received,
+            notify_customer_payment_success,
+        )
+        notify_operator_payment_received(payment)
+        notify_customer_payment_success(payment)
+    except Exception:
+        logger.exception("WhatsApp car_rental payment notifications failed")
+
+
 class PaymentServiceException(Exception):
     """Custom exception for payment service errors"""
     pass
@@ -464,12 +498,37 @@ class TransbankWebPayPlusService(BasePaymentService):
                         finalize_accommodation_payment(payment)
                     except Exception:
                         logger.exception("Failed to finalize accommodation reservation after payment")
+                elif order_kind == 'car_rental':
+                    try:
+                        finalize_car_rental_payment(payment)
+                    except Exception:
+                        logger.exception("Failed to finalize car_rental reservation after payment")
+                elif order_kind == 'erasmus_activity':
+                    try:
+                        link = payment.order.erasmus_activity_payment_link
+                        if link:
+                            from apps.erasmus.models import ErasmusActivityInscriptionPayment
+                            ErasmusActivityInscriptionPayment.objects.update_or_create(
+                                lead=link.lead,
+                                instance=link.instance,
+                                defaults={
+                                    "amount": link.amount,
+                                    "payment_method": "platform",
+                                    "paid_at": timezone.now(),
+                                },
+                            )
+                            logger.info(
+                                "Erasmus inscription marked as paid (platform): lead=%s instance=%s",
+                                link.lead_id, link.instance_id,
+                            )
+                    except Exception:
+                        logger.exception("Failed to finalize erasmus_activity payment")
                 else:
                     # Event: create tickets from reservations
                     self._create_tickets_from_reservations(payment.order)
                 
-                # Log tickets created + cleanup only for event orders (not experience, not accommodation)
-                if order_kind not in ('experience', 'accommodation'):
+                # Log tickets created + cleanup only for event orders (not experience, accommodation, car_rental)
+                if order_kind not in ('experience', 'accommodation', 'car_rental', 'erasmus_activity'):
                     if flow:
                         tickets_count = payment.order.items.aggregate(total=models.Sum('quantity'))['total'] or 0
                         flow.log_event(
@@ -487,7 +546,7 @@ class TransbankWebPayPlusService(BasePaymentService):
                 # This reduces latency from 5+ minutes to <10 seconds
                 # If frontend sync send fails, it will automatically fallback to Celery
                 if flow:
-                    flow_type = 'paid_experience' if getattr(payment.order, 'order_kind', 'event') == 'experience' else 'paid_order'
+                    flow_type = 'paid_experience' if getattr(payment.order, 'order_kind', 'event') == 'experience' else ('paid_car_rental' if getattr(payment.order, 'order_kind', '') == 'car_rental' else 'paid_order')
                     flow.log_event(
                         'EMAIL_PENDING',
                         order=payment.order,

@@ -12,6 +12,7 @@ from apps.whatsapp.models import (
     TourOperator,
     ExperienceGroupBinding,
     AccommodationGroupBinding,
+    CarGroupBinding,
 )
 from apps.whatsapp.services.reservation_handler import ReservationHandler
 
@@ -61,6 +62,19 @@ class OperatorResponseProcessor:
                     if acc_ids:
                         reservation = WhatsAppReservationRequest.objects.filter(
                             accommodation_id__in=acc_ids,
+                            status="operator_notified",
+                        ).order_by("-created_at").first()
+                # Car (car_rental) group bindings (if no experience/accommodation reservation)
+                if not reservation:
+                    car_ids = list(
+                        CarGroupBinding.objects.filter(
+                            whatsapp_group=group_chat,
+                            is_active=True,
+                        ).values_list("car_id", flat=True)
+                    )
+                    if car_ids:
+                        reservation = WhatsAppReservationRequest.objects.filter(
+                            car_id__in=car_ids,
                             status="operator_notified",
                         ).order_by("-created_at").first()
                 if reservation:

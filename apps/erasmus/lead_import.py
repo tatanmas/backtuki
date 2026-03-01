@@ -105,6 +105,7 @@ def normalize_lead(raw: dict, allow_incomplete: bool = False) -> dict:
         "degree": (raw.get("degree") or "").strip()[:255],
         "arrival_date": arrival,
         "departure_date": departure,
+        "budget_stay": (raw.get("budget_stay") or "").strip()[:200],
         "has_accommodation_in_chile": bool(raw.get("has_accommodation_in_chile", False)),
         "wants_rumi4students_contact": bool(raw.get("wants_rumi4students_contact", False)),
         "destinations": [str(x)[:100] for x in (raw.get("destinations") or []) if isinstance(raw.get("destinations"), list)],

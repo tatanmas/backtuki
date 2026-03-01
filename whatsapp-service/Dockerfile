@@ -1,6 +1,6 @@
 FROM node:18-alpine
 
-# Install Chromium and dependencies
+# Install Chromium and dependencies (entrypoint uses built-in su to drop privileges)
 RUN apk add --no-cache \
     chromium \
     nss \
@@ -30,15 +30,13 @@ RUN npm install --production
 # Copy application code
 COPY src/ ./src/
 
-# Create sessions directory with proper permissions
+# Create sessions directory; entrypoint will chown volume at runtime
 RUN mkdir -p sessions && chown -R appuser:appgroup /app
 
-# Switch to non-root user
-USER appuser
+# Entrypoint runs as root: clean Chromium lock in volume, chown sessions, then gosu to appuser
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-# Expose port
 EXPOSE 3001
-
-# Start application
-CMD ["node", "src/server.js"]
+ENTRYPOINT ["/entrypoint.sh"]
 

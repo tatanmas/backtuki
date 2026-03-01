@@ -42,13 +42,13 @@ WELCOME_LOCALES = ("es", "en", "pt", "de", "it", "fr")
 WELCOME_MESSAGES = {
     "es": (
         "Hola {first_name},\n\n"
-        "Soy Sebastián, me dicen Tatán, fundador de Tuki 🙌\n\n"
+        "Soy Tatán (Sebastián), creador de Tuki 🙌\n\n"
         "Bienvenido/a a Tuki Erasmus ✨\n\n"
         "En Tuki estamos construyendo la comunidad de intercambio más grande de Chile, y mi objetivo este semestre es ayudar a que vivas una experiencia increíble en Chile, ojalá la mejor de tu vida 🇨🇱\n\n"
         "Llevo más de un año creando experiencias para estudiantes de Erasmus, y honestamente ha sido de las cosas más entretenidas y significativas que he hecho. Solo el semestre pasado participaron más de 300 personas, y quiero que tú también seas parte de eso 🙌\n\n"
         "Durante el semestre vamos a tener paseos y actividades todas las semanas. Puedes ver todo el calendario actualizado en este link, y te podrás inscribir con la cuenta que acabas de crear:\n"
         "tuki.cl/erasmus\n\n"
-        "Para el grupo principal de WhatsApp, la comunidad y todo lo demás, accede desde aquí:\n"
+        "Para acceder por primera vez a tu cuenta y ver los grupos de WhatsApp y los otros miembros de la comunidad puedes hacer click aquí:\n"
         "{link_plataforma}\n\n"
         "Este es nuestro instagram (recién creado): instagram.com/tukierasmus\n\n"
         "Ese link te va a hacer iniciar sesión directamente; siempre podrás acceder a todo desde tu perfil en tuki.cl/account, ingresando con tu correo {email}\n\n"
@@ -61,13 +61,13 @@ WELCOME_MESSAGES = {
     ),
     "en": (
         "Hi {first_name},\n\n"
-        "I'm Sebastián, they call me Tatán, founder of Tuki 🙌\n\n"
+        "I'm Tatán (Sebastián), creator of Tuki 🙌\n\n"
         "Welcome to Tuki Erasmus ✨\n\n"
         "At Tuki we're building Chile's largest exchange community, and my goal this semester is to help you have an amazing experience in Chile — hopefully the best of your life 🇨🇱\n\n"
         "I've been creating experiences for Erasmus students for over a year, and honestly it's been one of the most fun and meaningful things I've done. Last semester alone over 300 people took part, and I want you to be part of it too 🙌\n\n"
         "During the semester we'll have trips and activities every week. You can see the full updated calendar and sign up with the account you just created here:\n"
         "tuki.cl/erasmus\n\n"
-        "For the main WhatsApp group, the community and everything else, access from here:\n"
+        "To access your account for the first time and see the WhatsApp groups and other community members, you can click here:\n"
         "{link_plataforma}\n\n"
         "This is our Instagram (just created): instagram.com/tukierasmus\n\n"
         "That link will log you in directly; you can always access everything from your profile at tuki.cl/account, using your email {email}\n\n"
@@ -80,13 +80,13 @@ WELCOME_MESSAGES = {
     ),
     "pt": (
         "Olá {first_name},\n\n"
-        "Sou o Sebastián, me chamam de Tatán, fundador da Tuki 🙌\n\n"
+        "Sou Tatán (Sebastián), criador da Tuki 🙌\n\n"
         "Bem-vindo/a à Tuki Erasmus ✨\n\n"
         "Na Tuki estamos a construir a maior comunidade de intercâmbio do Chile, e o meu objetivo este semestre é ajudar-te a viver uma experiência incrível no Chile, espero que a melhor da tua vida 🇨🇱\n\n"
         "Há mais de um ano que crio experiências para estudantes Erasmus, e honestamente tem sido das coisas mais divertidas e significativas que fiz. Só no semestre passado participaram mais de 300 pessoas, e quero que tu também faças parte 🙌\n\n"
         "Durante o semestre vamos ter passeios e atividades todas as semanas. Podes ver o calendário atualizado neste link e inscrever-te com a conta que acabaste de criar:\n"
         "tuki.cl/erasmus\n\n"
-        "Para o grupo principal de WhatsApp, a comunidade e tudo o resto, acede a partir daqui:\n"
+        "Para acederes à tua conta pela primeira vez e veres os grupos de WhatsApp e os outros membros da comunidade, podes clicar aqui:\n"
         "{link_plataforma}\n\n"
         "Este é o nosso Instagram (recém-criado): instagram.com/tukierasmus\n\n"
         "Esse link vai fazer-te iniciar sessão diretamente; sempre podes aceder a tudo a partir do teu perfil em tuki.cl/account, com o teu email {email}\n\n"
@@ -99,13 +99,13 @@ WELCOME_MESSAGES = {
     ),
     "de": (
         "Hallo {first_name},\n\n"
-        "ich bin Sebastián, sie nennen mich Tatán, Gründer von Tuki 🙌\n\n"
+        "ich bin Tatán (Sebastián), Schöpfer von Tuki 🙌\n\n"
         "Willkommen bei Tuki Erasmus ✨\n\n"
         "Bei Tuki bauen wir die größte Austausch-Community Chiles, und mein Ziel dieses Semester ist, dir zu einer unglaublichen Erfahrung in Chile zu verhelfen – hoffentlich die beste deines Lebens 🇨🇱\n\n"
         "Seit über einem Jahr gestalte ich Erlebnisse für Erasmus-Studierende, und ehrlich gesagt war es eines der lustigsten und bedeutendsten Dinge, die ich gemacht habe. Allein im letzten Semester haben über 300 Leute teilgenommen, und ich möchte, dass du auch dabei bist 🙌\n\n"
         "Während des Semesters gibt es jede Woche Ausflüge und Aktivitäten. Den aktuellen Kalender und die Anmeldung mit deinem gerade erstellten Konto findest du hier:\n"
         "tuki.cl/erasmus\n\n"
-        "Für die Haupt-WhatsApp-Gruppe, die Community und alles andere erreichst du hier:\n"
+        "Um dich zum ersten Mal in deinem Konto anzumelden und die WhatsApp-Gruppen und andere Community-Mitglieder zu sehen, kannst du hier klicken:\n"
         "{link_plataforma}\n\n"
         "Das ist unser Instagram (frisch erstellt): instagram.com/tukierasmus\n\n"
         "Dieser Link loggt dich direkt ein; du kannst jederzeit alles über dein Profil unter tuki.cl/account mit deiner E-Mail {email} aufrufen.\n\n"
@@ -118,13 +118,13 @@ WELCOME_MESSAGES = {
     ),
     "it": (
         "Ciao {first_name},\n\n"
-        "sono Sebastián, mi chiamano Tatán, fondatore di Tuki 🙌\n\n"
+        "sono Tatán (Sebastián), creatore di Tuki 🙌\n\n"
         "Benvenuto/a a Tuki Erasmus ✨\n\n"
         "In Tuki stiamo costruendo la più grande community di scambio del Cile, e il mio obiettivo questo semestre è aiutarti a vivere un'esperienza incredibile in Cile, spero la migliore della tua vita 🇨🇱\n\n"
         "Da oltre un anno creo esperienze per studenti Erasmus, e onestamente è stata una delle cose più divertenti e significative che ho fatto. Solo lo scorso semestre hanno partecipato più di 300 persone, e voglio che anche tu ne faccia parte 🙌\n\n"
         "Durante il semestre avremo gite e attività ogni settimana. Puoi vedere il calendario aggiornato e iscriverti con l'account che hai appena creato qui:\n"
         "tuki.cl/erasmus\n\n"
-        "Per il gruppo principale WhatsApp, la community e tutto il resto, accedi da qui:\n"
+        "Per accedere per la prima volta al tuo account e vedere i gruppi WhatsApp e gli altri membri della community, puoi cliccare qui:\n"
         "{link_plataforma}\n\n"
         "Questo è il nostro Instagram (appena creato): instagram.com/tukierasmus\n\n"
         "Questo link ti farà accedere direttamente; potrai sempre accedere a tutto dal tuo profilo su tuki.cl/account, con la tua email {email}\n\n"
@@ -137,13 +137,13 @@ WELCOME_MESSAGES = {
     ),
     "fr": (
         "Salut {first_name},\n\n"
-        "je suis Sebastián, on m'appelle Tatán, fondateur de Tuki 🙌\n\n"
+        "je suis Tatán (Sebastián), créateur de Tuki 🙌\n\n"
         "Bienvenue sur Tuki Erasmus ✨\n\n"
         "Chez Tuki nous construisons la plus grande communauté d'échange du Chili, et mon objectif ce semestre est de t'aider à vivre une expérience incroyable au Chili, j'espère la meilleure de ta vie 🇨🇱\n\n"
         "Cela fait plus d'un an que je crée des expériences pour les étudiants Erasmus, et honnêtement c'est l'une des choses les plus fun et significatives que j'ai faites. Rien que le semestre dernier plus de 300 personnes ont participé, et je veux que tu en fasses partie 🙌\n\n"
         "Pendant le semestre il y aura des sorties et des activités chaque semaine. Tu peux voir tout le calendrier à jour et t'inscrire avec le compte que tu viens de créer ici :\n"
         "tuki.cl/erasmus\n\n"
-        "Pour le groupe principal WhatsApp, la communauté et tout le reste, accède par ici :\n"
+        "Pour accéder à ton compte pour la première fois et voir les groupes WhatsApp et les autres membres de la communauté, tu peux cliquer ici :\n"
         "{link_plataforma}\n\n"
         "Voici notre Instagram (tout juste créé) : instagram.com/tukierasmus\n\n"
         "Ce lien te connectera directement ; tu pourras toujours tout accéder depuis ton profil sur tuki.cl/account, avec ton email {email}\n\n"
@@ -271,12 +271,54 @@ def process_incoming_code(whatsapp_message, eras_code: str) -> bool:
     return True
 
 
-def _send_welcome_message(whatsapp_message, magic, magic_link_url: str) -> None:
-    """Send the personalised WhatsApp welcome reply in the lead's form language."""
-    from apps.whatsapp.services.whatsapp_client import WhatsAppWebService
+def get_or_create_manual_welcome_link(lead):
+    """
+    For superadmin "copy welcome message": return a magic link for this lead
+    that has a valid access_token (so the URL works when they send the message).
+    Reuses an existing valid link if any; otherwise creates a new one with token set.
+    Returns (ErasmusMagicLink, magic_link_url: str).
+    """
+    from apps.erasmus.models import ErasmusMagicLink
 
-    lead = magic.lead
-    phone = getattr(whatsapp_message, "phone", "") or ""
+    now = timezone.now()
+    existing = (
+        ErasmusMagicLink.objects.filter(
+            lead=lead,
+            access_token__isnull=False,
+        )
+        .exclude(access_token="")
+        .filter(link_expires_at__gt=now)
+        .order_by("-link_expires_at")
+        .first()
+    )
+    if existing:
+        frontend_url = (getattr(settings, "FRONTEND_URL", "") or "").rstrip("/")
+        url = f"{frontend_url}/erasmus/acceder?token={existing.access_token}" if frontend_url else ""
+        return existing, url
+
+    code = _generate_verification_code()
+    token = secrets.token_urlsafe(32)
+    link_expires_at = now + timedelta(hours=LINK_EXPIRY_HOURS)
+    expires_at = now + timedelta(hours=CODE_EXPIRY_HOURS)
+    magic = ErasmusMagicLink.objects.create(
+        lead=lead,
+        verification_code=code,
+        access_token=token,
+        target=ErasmusMagicLink.TARGET_COMMUNITY,
+        status=ErasmusMagicLink.STATUS_LINK_SENT,
+        expires_at=expires_at,
+        link_expires_at=link_expires_at,
+    )
+    frontend_url = (getattr(settings, "FRONTEND_URL", "") or "").rstrip("/")
+    url = f"{frontend_url}/erasmus/acceder?token={token}" if frontend_url else ""
+    return magic, url
+
+
+def get_welcome_message_text(lead, magic_link_url: str) -> str:
+    """
+    Build the personalised welcome message text for a lead (no send).
+    Used for manual sending and by _send_welcome_message.
+    """
     locale = (getattr(lead, "form_locale", None) or "").strip().lower() or "es"
     if locale not in WELCOME_LOCALES:
         locale = "es"
@@ -285,13 +327,22 @@ def _send_welcome_message(whatsapp_message, magic, magic_link_url: str) -> None:
         email = {"es": "tu correo", "en": "your email", "pt": "o teu email", "de": "deine E-Mail", "it": "la tua email", "fr": "ton email"}.get(locale, "tu correo")
     first_name = (lead.first_name or "").strip() or {"es": "Erasmus", "en": "there", "pt": "Erasmus", "de": "Erasmus", "it": "Erasmus", "fr": "Erasmus"}.get(locale, "Erasmus")
     template = WELCOME_MESSAGES.get(locale) or WELCOME_MESSAGES["es"]
-    message = template.format(
+    return template.format(
         first_name=first_name,
         link_grupos=magic_link_url,
         link_plataforma=magic_link_url,
         magic_link_url=magic_link_url,
         email=email,
     )
+
+
+def _send_welcome_message(whatsapp_message, magic, magic_link_url: str) -> None:
+    """Send the personalised WhatsApp welcome reply in the lead's form language."""
+    from apps.whatsapp.services.whatsapp_client import WhatsAppWebService
+
+    lead = magic.lead
+    phone = getattr(whatsapp_message, "phone", "") or ""
+    message = get_welcome_message_text(lead, magic_link_url)
 
     try:
         service = WhatsAppWebService()

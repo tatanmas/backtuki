@@ -333,13 +333,15 @@ class ErasmusSlidesPublicApiTests(APITestCase):
         )
 
     def test_public_slides_returns_dict_slide_id_to_url(self):
+        """Public slides returns ordered list of { slide_id, url, caption }; we can find by slide_id."""
         response = self.client.get("/api/v1/erasmus/slides/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         data = response.json()
-        self.assertIsInstance(data, dict)
-        self.assertIn("sunset-manquehue", data)
-        self.assertIsNotNone(data["sunset-manquehue"])
-        self.assertIn("/", data["sunset-manquehue"])  # URL-like
+        self.assertIsInstance(data, list)
+        slide_map = {item["slide_id"]: item.get("url") for item in data if "slide_id" in item and "url" in item}
+        self.assertIn("sunset-manquehue", slide_map)
+        self.assertIsNotNone(slide_map["sunset-manquehue"])
+        self.assertIn("/", slide_map["sunset-manquehue"])  # URL-like
 
     def test_public_slides_excludes_configs_without_asset(self):
         ErasmusSlideConfig.objects.create(slide_id="valpo-concon", asset=None, order=1)

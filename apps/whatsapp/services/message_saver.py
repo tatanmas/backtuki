@@ -7,6 +7,7 @@ import logging
 from typing import Optional, Tuple
 
 from django.db import transaction
+from django.db.utils import IntegrityError
 from django.utils import timezone
 
 from apps.whatsapp.models import WhatsAppMessage, WhatsAppChat
@@ -134,7 +135,15 @@ class MessageSaver:
             create_kwargs["media_type"] = media_type
         if reply_to_whatsapp_id:
             create_kwargs["reply_to_whatsapp_id"] = reply_to_whatsapp_id
-        message = WhatsAppMessage.objects.create(**create_kwargs)
+        try:
+            message = WhatsAppMessage.objects.create(**create_kwargs)
+        except IntegrityError:
+            # Race: another request created the same whatsapp_id (e.g. duplicate webhook delivery).
+            existing_message = WhatsAppMessage.objects.filter(whatsapp_id=whatsapp_id).first()
+            if existing_message:
+                logger.debug("Message %s already exists (race)", whatsapp_id)
+                return existing_message, False
+            raise
 
         update_fields = []
         if not chat.last_message_at or timestamp > chat.last_message_at:

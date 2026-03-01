@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     'apps.whatsapp',  # 🚀 ENTERPRISE: WhatsApp Integration
     'apps.terminal',  # 🚀 ENTERPRISE: Terminal bus schedule management
     'apps.landing_destinations',  # 🚀 ENTERPRISE: Landing destinations (superadmin + public page)
+    'apps.car_rental',  # 🚀 ENTERPRISE: Rent-a-car (companies + cars, WhatsApp reservation flow)
     'apps.creators',  # 🚀 ENTERPRISE: TUKI Creators (influencers)
     'apps.erasmus',  # 🚀 ENTERPRISE: Erasmus registration and leads
     'payment_processor',  # 🚀 ENTERPRISE Payment System
@@ -276,6 +277,10 @@ CELERY_TIMEZONE = TIME_ZONE
 # 🚀 ENTERPRISE PAYMENT SETTINGS
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:8080')
 
+# Open Graph preview: path to SPA index.html (for server-injected meta tags when sharing links).
+# In deploy, copy tuki-experiencias/dist/index.html to this path (e.g. static/frontend_index.html).
+FRONTEND_INDEX_PATH = config('FRONTEND_INDEX_PATH', default='', cast=lambda x: x or None) or (BASE_DIR / 'static' / 'frontend_index.html')
+
 # Transbank WebPay Plus Settings
 TRANSBANK_WEBPAY_PLUS_COMMERCE_CODE = config('TRANSBANK_WEBPAY_PLUS_COMMERCE_CODE', default='597055555532')
 TRANSBANK_WEBPAY_PLUS_API_KEY = config('TRANSBANK_WEBPAY_PLUS_API_KEY', default='579B532A7440BB0C9079DED94D31EA1615BACEB56610332264630D42D0A36B1C')
@@ -305,4 +310,7 @@ MIGRATION_SYSTEM = {
 # Transbank Oneclick Settings (for future implementation)
 TRANSBANK_ONECLICK_COMMERCE_CODE = config('TRANSBANK_ONECLICK_COMMERCE_CODE', default='597055555541')
 TRANSBANK_ONECLICK_API_KEY = config('TRANSBANK_ONECLICK_API_KEY', default='579B532A7440BB0C9079DED94D31EA1615BACEB56610332264630D42D0A36B1C')
-TRANSBANK_ONECLICK_SANDBOX = config('TRANSBANK_ONECLICK_SANDBOX', default=True, cast=bool) 
+TRANSBANK_ONECLICK_SANDBOX = config('TRANSBANK_ONECLICK_SANDBOX', default=True, cast=bool)
+
+# WhatsApp service HTTP timeout (seconds). In production Chromium can take >10s to respond; increase if needed.
+WHATSAPP_SERVICE_TIMEOUT = config('WHATSAPP_SERVICE_TIMEOUT', default=25, cast=int) 

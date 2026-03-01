@@ -21,16 +21,18 @@ from apps.erasmus.models import (
     ErasmusExtraField,
     ErasmusRegistroBackgroundSlide,
     ErasmusSlideConfig,
-    ErasmusTimelineItem,
     ErasmusActivity,
     ErasmusActivityInstance,
+    ErasmusActivityReview,
     ErasmusLocalPartner,
     ErasmusMagicLink,
     ErasmusWhatsAppGroup,
 )
+from apps.erasmus.activity_display import get_activity_display_data
 from apps.erasmus.options_data import get_erasmus_options
 from apps.erasmus.services import get_guides_for_destinations
 from apps.landing_destinations.models import LandingDestination
+from apps.landing_destinations.views import _build_destination_media_urls_from_request
 from .serializers import ErasmusRegisterSerializer
 
 logger = logging.getLogger(__name__)
@@ -52,57 +54,44 @@ def _timeline_sort_key(entry):
 
 
 class ErasmusTimelineView(APIView):
-    """GET /api/v1/erasmus/timeline/ – unified timeline: legacy ErasmusTimelineItem + ErasmusActivityInstance."""
+    """GET /api/v1/erasmus/timeline/ – timeline: solo ErasmusActivityInstance (actividad instanciada en fecha)."""
     permission_classes = [AllowAny]
 
     def get(self, request):
         result = []
-        # Legacy items
-        for item in ErasmusTimelineItem.objects.filter(is_active=True).order_by(
-            "display_order", "scheduled_date", "created_at"
-        ):
-            result.append({
-                "id": str(item.id),
-                "itemType": "legacy",
-                "experienceId": str(item.experience_id) if item.experience_id else None,
-                "title": {"es": item.title_es, "en": item.title_en or item.title_es},
-                "location": item.location or "",
-                "image": item.image or "",
-                "scheduledDate": item.scheduled_date.isoformat() if item.scheduled_date else None,
-                "scheduledMonth": None,
-                "scheduledYear": None,
-                "scheduledLabel": None,
-                "display_order": item.display_order,
-            })
-        # Activity instances (active activity + active instance)
-        # Si la tabla no existe (migraciones sin aplicar), solo devolvemos ítems legacy
         try:
             instances = ErasmusActivityInstance.objects.filter(
                 is_active=True,
                 activity__is_active=True,
-            ).select_related("activity").order_by(
+            ).select_related("activity", "activity__experience").order_by(
                 "display_order", "scheduled_date", "scheduled_year", "scheduled_month", "created_at"
             )
             for inst in instances:
                 act = inst.activity
-                images = act.images or []
-                main_image = images[0] if isinstance(images[0], str) else (images[0].get("url") or images[0].get("image") or images[0].get("src") if images and isinstance(images[0], dict) else "") if images else ""
+                display = get_activity_display_data(act)
                 scheduled_label = None
                 if inst.scheduled_label_es or inst.scheduled_label_en:
                     scheduled_label = {"es": inst.scheduled_label_es or "", "en": inst.scheduled_label_en or inst.scheduled_label_es or ""}
+                display_count = _instance_interested_display_count(inst)
+                capacity = getattr(inst, "capacity", None)
+                is_agotado = getattr(inst, "is_agotado", False)
                 result.append({
                     "id": str(inst.id),
                     "itemType": "instance",
                     "activityId": str(act.id),
                     "experienceId": str(act.experience_id) if act.experience_id else None,
-                    "title": {"es": act.title_es, "en": act.title_en or act.title_es},
-                    "location": act.location or "",
-                    "image": main_image or "",
+                    "title": {"es": display["title_es"], "en": display["title_en"]},
+                    "location": display["location"] or "",
+                    "image": display["image"] or "",
                     "scheduledDate": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
                     "scheduledMonth": inst.scheduled_month,
                     "scheduledYear": inst.scheduled_year,
                     "scheduledLabel": scheduled_label,
                     "display_order": inst.display_order,
+                    "interestedCount": display_count,
+                    "capacity": capacity,
+                    "is_agotado": is_agotado,
+                    "isPast": inst.is_past,
                 })
         except ProgrammingError as e:
             if "does not exist" in str(e).lower() or "undefined_table" in str(e).lower():
@@ -135,23 +124,32 @@ def _format_time(t):
     return t.strftime("%H:%M")
 
 
+def _instance_interested_display_count(inst):
+    """Real inscritos + interested_count_boost for public display."""
+    real = ErasmusLead.objects.filter(
+        interested_experiences__contains=[str(inst.id)]
+    ).count()
+    boost = getattr(inst, "interested_count_boost", 0) or 0
+    return real + boost
+
+
 class ErasmusActivitiesListView(APIView):
     """GET /api/v1/erasmus/activities/ – public list of active activities (for cards view)."""
     permission_classes = [AllowAny]
 
     def get(self, request):
-        activities = ErasmusActivity.objects.filter(is_active=True).order_by("display_order", "created_at")
+        activities = ErasmusActivity.objects.filter(is_active=True).select_related("experience").order_by("display_order", "created_at")
         result = []
         for act in activities:
-            images = act.images or []
+            display = get_activity_display_data(act)
             result.append({
                 "id": str(act.id),
                 "slug": act.slug,
-                "title": {"es": act.title_es, "en": act.title_en or act.title_es},
-                "short_description": {"es": act.short_description_es or "", "en": act.short_description_en or act.short_description_es or ""},
-                "location": act.location or "",
-                "image": _activity_main_image(images),
-                "images": images,
+                "title": {"es": display["title_es"], "en": display["title_en"]},
+                "short_description": {"es": display["short_description_es"], "en": display["short_description_en"]},
+                "location": display["location"] or "",
+                "image": display["image"] or "",
+                "images": display["images"],
                 "display_order": act.display_order,
             })
         return Response(result)
@@ -163,7 +161,68 @@ class ErasmusActivityDetailView(APIView):
 
     def get(self, request, activity_id):
         try:
-            act = ErasmusActivity.objects.get(id=activity_id, is_active=True)
+            act = ErasmusActivity.objects.select_related("experience").get(id=activity_id, is_active=True)
+        except ErasmusActivity.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        instances = act.instances.filter(is_active=True).order_by(
+            "scheduled_date", "scheduled_year", "scheduled_month", "display_order", "created_at"
+        )
+        instance_list = []
+        for inst in instances:
+            scheduled_label = None
+            if inst.scheduled_label_es or inst.scheduled_label_en:
+                scheduled_label = {"es": inst.scheduled_label_es or "", "en": inst.scheduled_label_en or inst.scheduled_label_es or ""}
+            interested_count = ErasmusLead.objects.filter(
+                interested_experiences__contains=[str(inst.id)]
+            ).count()
+            instance_list.append({
+                "id": str(inst.id),
+                "scheduledDate": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
+                "scheduledMonth": inst.scheduled_month,
+                "scheduledYear": inst.scheduled_year,
+                "scheduledLabel": scheduled_label,
+                "startTime": _format_time(getattr(inst, "start_time", None)),
+                "endTime": _format_time(getattr(inst, "end_time", None)),
+                "display_order": inst.display_order,
+                "interestedCount": interested_count,
+                "capacity": getattr(inst, "capacity", None),
+                "is_agotado": getattr(inst, "is_agotado", False),
+            })
+        return Response(_activity_detail_payload(act, instance_list))
+
+
+def _activity_detail_payload(act, instance_list):
+    """Build the same payload for activity detail (by id or by slug). Uses display data when activity is linked to an Experience."""
+    display = get_activity_display_data(act)
+    return {
+        "id": str(act.id),
+        "slug": act.slug,
+        "experienceId": str(act.experience_id) if act.experience_id else None,
+        "title": {"es": display["title_es"], "en": display["title_en"]},
+        "description": {"es": display["description_es"], "en": display["description_en"]},
+        "short_description": {"es": display["short_description_es"], "en": display["short_description_en"]},
+        "location": display["location"] or "",
+        "locationName": display["location_name"] or "",
+        "locationAddress": display["location_address"] or "",
+        "durationMinutes": display["duration_minutes"],
+        "included": display["included"],
+        "notIncluded": display["not_included"],
+        "itinerary": display["itinerary"],
+        "images": display["images"],
+        "image": display["image"] or "",
+        "display_order": act.display_order,
+        "detailLayout": getattr(act, "detail_layout", "default") or "default",
+        "instances": instance_list,
+    }
+
+
+class ErasmusActivityDetailBySlugView(APIView):
+    """GET /api/v1/erasmus/activities/by-slug/<slug>/ – same as activity detail but lookup by slug."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        try:
+            act = ErasmusActivity.objects.select_related("experience").get(slug=slug, is_active=True)
         except ErasmusActivity.DoesNotExist:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         instances = act.instances.filter(is_active=True).order_by(
@@ -183,25 +242,54 @@ class ErasmusActivityDetailView(APIView):
                 "startTime": _format_time(getattr(inst, "start_time", None)),
                 "endTime": _format_time(getattr(inst, "end_time", None)),
                 "display_order": inst.display_order,
+                "interestedCount": _instance_interested_display_count(inst),
+                "capacity": getattr(inst, "capacity", None),
+                "is_agotado": getattr(inst, "is_agotado", False),
+                "isPast": inst.is_past,
             })
-        return Response({
-            "id": str(act.id),
-            "slug": act.slug,
-            "title": {"es": act.title_es, "en": act.title_en or act.title_es},
-            "description": {"es": act.description_es or "", "en": act.description_en or act.description_es or ""},
-            "short_description": {"es": act.short_description_es or "", "en": act.short_description_en or act.short_description_es or ""},
-            "location": act.location or "",
-            "locationName": getattr(act, "location_name", None) or "",
-            "locationAddress": getattr(act, "location_address", None) or "",
-            "durationMinutes": getattr(act, "duration_minutes", None),
-            "included": getattr(act, "included", None) or [],
-            "notIncluded": getattr(act, "not_included", None) or [],
-            "itinerary": getattr(act, "itinerary", None) or [],
-            "images": act.images or [],
-            "image": _activity_main_image(act.images or []),
-            "display_order": act.display_order,
-            "instances": instance_list,
-        })
+        return Response(_activity_detail_payload(act, instance_list))
+
+
+def _instance_review_label(inst):
+    """Label for instance in review list (date or label_es or month/year)."""
+    if inst.scheduled_date:
+        return inst.scheduled_date.strftime("%d/%m/%Y")
+    if inst.scheduled_label_es:
+        return inst.scheduled_label_es
+    if inst.scheduled_month and inst.scheduled_year:
+        return f"{inst.scheduled_month:02d}/{inst.scheduled_year}"
+    return str(inst.id)
+
+
+class ErasmusActivityReviewsListView(APIView):
+    """GET /api/v1/erasmus/activities/<activity_id>/reviews/ – public list of reviews for an activity (with instance date)."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, activity_id):
+        try:
+            act = ErasmusActivity.objects.get(id=activity_id, is_active=True)
+        except ErasmusActivity.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        reviews = (
+            ErasmusActivityReview.objects.filter(instance__activity_id=act.id)
+            .select_related("instance")
+            .order_by("-created_at")
+        )
+        results = []
+        for r in reviews:
+            inst = r.instance
+            results.append({
+                "id": r.id,
+                "instance_id": str(inst.id),
+                "instance_label": _instance_review_label(inst),
+                "instance_scheduled_date": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
+                "author_name": r.author_name,
+                "author_origin": r.author_origin or "",
+                "rating": r.rating,
+                "body": r.body,
+                "review_date": r.created_at.isoformat() if r.created_at else None,
+            })
+        return Response({"results": results, "count": len(results)})
 
 
 class ErasmusActivityInstanceDetailView(APIView):
@@ -210,7 +298,7 @@ class ErasmusActivityInstanceDetailView(APIView):
 
     def get(self, request, instance_id):
         try:
-            inst = ErasmusActivityInstance.objects.select_related("activity").get(
+            inst = ErasmusActivityInstance.objects.select_related("activity", "activity__experience").get(
                 id=instance_id,
                 is_active=True,
                 activity__is_active=True,
@@ -218,6 +306,7 @@ class ErasmusActivityInstanceDetailView(APIView):
         except ErasmusActivityInstance.DoesNotExist:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         act = inst.activity
+        display = get_activity_display_data(act)
         scheduled_label = None
         if inst.scheduled_label_es or inst.scheduled_label_en:
             scheduled_label = {"es": inst.scheduled_label_es or "", "en": inst.scheduled_label_en or inst.scheduled_label_es or ""}
@@ -225,18 +314,19 @@ class ErasmusActivityInstanceDetailView(APIView):
             "id": str(inst.id),
             "itemType": "instance",
             "activityId": str(act.id),
-            "title": {"es": act.title_es, "en": act.title_en or act.title_es},
-            "description": {"es": act.description_es or "", "en": act.description_en or act.description_es or ""},
-            "short_description": {"es": act.short_description_es or "", "en": act.short_description_en or act.short_description_es or ""},
-            "location": act.location or "",
-            "locationName": getattr(act, "location_name", None) or "",
-            "locationAddress": getattr(act, "location_address", None) or "",
-            "durationMinutes": getattr(act, "duration_minutes", None),
-            "included": getattr(act, "included", None) or [],
-            "notIncluded": getattr(act, "not_included", None) or [],
-            "itinerary": getattr(act, "itinerary", None) or [],
-            "images": act.images or [],
-            "image": _activity_main_image(act.images or []),
+            "experienceId": str(act.experience_id) if act.experience_id else None,
+            "title": {"es": display["title_es"], "en": display["title_en"]},
+            "description": {"es": display["description_es"], "en": display["description_en"]},
+            "short_description": {"es": display["short_description_es"], "en": display["short_description_en"]},
+            "location": display["location"] or "",
+            "locationName": display["location_name"] or "",
+            "locationAddress": display["location_address"] or "",
+            "durationMinutes": display["duration_minutes"],
+            "included": display["included"],
+            "notIncluded": display["not_included"],
+            "itinerary": display["itinerary"],
+            "images": display["images"],
+            "image": display["image"] or "",
             "scheduledDate": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
             "scheduledMonth": inst.scheduled_month,
             "scheduledYear": inst.scheduled_year,
@@ -244,17 +334,29 @@ class ErasmusActivityInstanceDetailView(APIView):
             "startTime": _format_time(getattr(inst, "start_time", None)),
             "endTime": _format_time(getattr(inst, "end_time", None)),
             "display_order": inst.display_order,
+            "interestedCount": _instance_interested_display_count(inst),
+            "capacity": getattr(inst, "capacity", None),
+            "is_agotado": getattr(inst, "is_agotado", False),
+            "isPast": inst.is_past,
         })
 
 
 class ErasmusTimelineEntryDetailView(APIView):
-    """GET /api/v1/erasmus/timeline/<uuid:entry_id>/ – detail for one timeline entry (legacy or instance) by id."""
+    """GET /api/v1/erasmus/timeline/<uuid:entry_id>/ – detail for one timeline entry (ErasmusActivityInstance) by id."""
     permission_classes = [AllowAny]
 
     def get(self, request, entry_id):
         payload = _get_timeline_entry_payload(entry_id)
         if payload is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if request.user.is_authenticated:
+            lead = getattr(request.user, "erasmus_leads", None)
+            if lead is not None:
+                lead = request.user.erasmus_leads.order_by("-created_at").first()
+                if lead and (lead.interested_experiences or []):
+                    ids = [str(x).strip() for x in lead.interested_experiences if x]
+                    if str(entry_id) in ids:
+                        payload["userIsInterested"] = True
         return Response(payload)
 
 
@@ -306,21 +408,18 @@ class ErasmusOptionsView(APIView):
             .distinct()
         )
         data["destination_slugs_with_guides"] = slugs_with_guides
-        # Destinos de Tuki (panel superadmin): lista para cards en el formulario Erasmus
-        destinations_list = list(
-            LandingDestination.objects.filter(is_active=True)
-            .order_by("country", "name")
-            .values("slug", "name", "country", "hero_image")
-        )
-        data["destinations_list"] = [
-            {
-                "slug": d["slug"],
-                "name": d["name"],
-                "country": d["country"],
-                "image": d["hero_image"] or "",
-            }
-            for d in destinations_list
-        ]
+        # Destinos de Tuki (panel superadmin): lista para cards en el formulario Erasmus.
+        # Resolver imagen hero (hero_media_id o hero_image) con URL absoluta, igual que public/destinations.
+        dests = LandingDestination.objects.filter(is_active=True).order_by("country", "name")
+        data["destinations_list"] = []
+        for d in dests:
+            hero_url, _ = _build_destination_media_urls_from_request(d, request)
+            data["destinations_list"].append({
+                "slug": d.slug,
+                "name": d.name,
+                "country": d.country or "",
+                "image": hero_url or "",
+            })
         # Fondo del formulario de registro: imágenes que rotan detrás del formulario
         registro_slides = ErasmusRegistroBackgroundSlide.objects.filter(
             asset__isnull=False
@@ -344,16 +443,24 @@ class ErasmusOptionsView(APIView):
 
 
 class ErasmusWhatsAppGroupsView(APIView):
-    """GET /api/v1/erasmus/whatsapp-groups/ – list of { name, link } for student profile (ASMUS)."""
+    """GET /api/v1/erasmus/whatsapp-groups/ – list of { name, link, image_url?, category } for profile and public page."""
     permission_classes = [AllowAny]
 
     def get(self, request):
         groups = list(
             ErasmusWhatsAppGroup.objects.filter(is_active=True)
             .order_by("order", "id")
-            .values("name", "link")
+            .values("name", "link", "image_url", "category")
         )
-        return Response([{"name": g["name"], "link": g["link"]} for g in groups])
+        return Response([
+            {
+                "name": g["name"],
+                "link": g["link"],
+                "image_url": g["image_url"] or None,
+                "category": g["category"] or "tuki",
+            }
+            for g in groups
+        ])
 
 
 class ErasmusTrackVisitView(APIView):
@@ -651,16 +758,14 @@ class ErasmusRequestWhatsAppApprovalView(APIView):
 
 
 class ErasmusExpressInterestView(APIView):
-    """POST /api/v1/erasmus/express-interest/ – vincular lead por teléfono e indicar interés en una actividad.
-    Accepts timeline_item_id (legacy) or activity_instance_id; both stored in interested_experiences."""
+    """POST /api/v1/erasmus/express-interest/ – vincular lead por teléfono e indicar interés en una actividad (instance id)."""
     permission_classes = [AllowAny]
 
     def post(self, request):
         phone_country_code = (request.data.get("phone_country_code") or "").strip()
         phone_number = (request.data.get("phone_number") or "").strip()
-        timeline_item_id = (request.data.get("timeline_item_id") or "").strip()
-        activity_instance_id = (request.data.get("activity_instance_id") or "").strip()
-        activity_id = timeline_item_id or activity_instance_id
+        activity_instance_id = (request.data.get("activity_instance_id") or request.data.get("timeline_item_id") or "").strip()
+        activity_id = activity_instance_id
         if not phone_country_code or not phone_number:
             return Response(
                 {"detail": "Faltan código de país o número de teléfono."},
@@ -668,7 +773,7 @@ class ErasmusExpressInterestView(APIView):
             )
         if not activity_id:
             return Response(
-                {"detail": "Falta el id de la actividad (timeline_item_id o activity_instance_id)."},
+                {"detail": "Falta el id de la instancia (activity_instance_id)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         lead = (
@@ -681,14 +786,52 @@ class ErasmusExpressInterestView(APIView):
         )
         if not lead:
             return Response(
-                {"detail": "No encontramos un registro Erasmus con ese número. Completa primero el formulario de registro."},
-                status=status.HTTP_404_NOT_FOUND,
+                {
+                    "success": False,
+                    "detail": "No encontramos un registro Erasmus con ese número. Completa primero el formulario de registro.",
+                },
+                status=status.HTTP_200_OK,
             )
+        instance = ErasmusActivityInstance.objects.filter(
+            id=activity_id,
+            is_active=True,
+            activity__is_active=True,
+        ).select_related("activity").first()
+        if not instance:
+            return Response(
+                {"success": False, "detail": "No encontramos esa fecha o actividad."},
+                status=status.HTTP_200_OK,
+            )
+        if instance.is_past:
+            return Response(
+                {"success": False, "detail": "Esta actividad ya finalizó. No se pueden inscribir más personas."},
+                status=status.HTTP_200_OK,
+            )
+        if getattr(instance, "is_agotado", False):
+            return Response(
+                {"success": False, "detail": "Esta fecha está agotada. No se aceptan más inscripciones."},
+                status=status.HTTP_200_OK,
+            )
+        if getattr(instance, "capacity", None) is not None:
+            current_count = ErasmusLead.objects.filter(
+                interested_experiences__contains=[str(instance.id)]
+            ).count()
+            if current_count >= instance.capacity:
+                return Response(
+                    {"success": False, "detail": "No quedan cupos para esta fecha."},
+                    status=status.HTTP_200_OK,
+                )
         experiences = list(lead.interested_experiences or [])
         if activity_id not in experiences:
             experiences.append(activity_id)
             lead.interested_experiences = experiences
             lead.save(update_fields=["interested_experiences", "updated_at"])
+            try:
+                from apps.erasmus.partner_notifications import notify_activity_inscription, send_activity_instance_whatsapp_to_lead
+                notify_activity_inscription(lead, instance)
+                send_activity_instance_whatsapp_to_lead(lead, instance)
+            except Exception as e:
+                logger.exception("Erasmus: notify_activity_inscription / send_whatsapp_to_lead failed: %s", e)
         return Response(
             {
                 "success": True,
@@ -699,63 +842,56 @@ class ErasmusExpressInterestView(APIView):
 
 
 def _get_timeline_entry_payload(entry_id):
-    """Build the same payload as timeline entry detail for a given entry_id (instance or legacy). Returns dict or None."""
+    """Detalle de un entry del timeline por id. Solo ErasmusActivityInstance (actividad instanciada). Uses display data when activity is linked to Experience."""
     try:
-        inst = ErasmusActivityInstance.objects.select_related("activity").get(
+        inst = ErasmusActivityInstance.objects.select_related("activity", "activity__experience").get(
             id=entry_id,
             is_active=True,
             activity__is_active=True,
         )
     except (ErasmusActivityInstance.DoesNotExist, ValueError):
-        inst = None
-    if inst:
-        act = inst.activity
-        scheduled_label = None
-        if inst.scheduled_label_es or inst.scheduled_label_en:
-            scheduled_label = {"es": inst.scheduled_label_es or "", "en": inst.scheduled_label_en or inst.scheduled_label_es or ""}
-        return {
-            "id": str(inst.id),
-            "itemType": "instance",
-            "activityId": str(act.id),
-            "title": {"es": act.title_es, "en": act.title_en or act.title_es},
-            "description": {"es": act.description_es or "", "en": act.description_en or act.description_es or ""},
-            "short_description": {"es": act.short_description_es or "", "en": act.short_description_en or act.short_description_es or ""},
-            "location": act.location or "",
-            "locationName": getattr(act, "location_name", None) or "",
-            "locationAddress": getattr(act, "location_address", None) or "",
-            "durationMinutes": getattr(act, "duration_minutes", None),
-            "included": getattr(act, "included", None) or [],
-            "notIncluded": getattr(act, "not_included", None) or [],
-            "itinerary": getattr(act, "itinerary", None) or [],
-            "images": act.images or [],
-            "image": _activity_main_image(act.images or []),
-            "scheduledDate": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
-            "scheduledMonth": inst.scheduled_month,
-            "scheduledYear": inst.scheduled_year,
-            "scheduledLabel": scheduled_label,
-            "startTime": _format_time(getattr(inst, "start_time", None)),
-            "endTime": _format_time(getattr(inst, "end_time", None)),
-            "display_order": inst.display_order,
-        }
-    try:
-        item = ErasmusTimelineItem.objects.get(id=entry_id, is_active=True)
-    except (ErasmusTimelineItem.DoesNotExist, ValueError):
         return None
+    act = inst.activity
+    display = get_activity_display_data(act)
+    scheduled_label = None
+    if inst.scheduled_label_es or inst.scheduled_label_en:
+        scheduled_label = {"es": inst.scheduled_label_es or "", "en": inst.scheduled_label_en or inst.scheduled_label_es or ""}
+    display_count = _instance_interested_display_count(inst)
+    capacity = getattr(inst, "capacity", None)
+    is_agotado = getattr(inst, "is_agotado", False)
     return {
-        "id": str(item.id),
-        "itemType": "legacy",
-        "activityId": None,
-        "title": {"es": item.title_es, "en": item.title_en or item.title_es},
-        "description": {"es": "", "en": ""},
-        "short_description": {"es": "", "en": ""},
-        "location": item.location or "",
-        "images": [item.image] if item.image else [],
-        "image": item.image or "",
-        "scheduledDate": item.scheduled_date.isoformat() if item.scheduled_date else None,
-        "scheduledMonth": None,
-        "scheduledYear": None,
-        "scheduledLabel": None,
-        "display_order": item.display_order,
+        "id": str(inst.id),
+        "itemType": "instance",
+        "activityId": str(act.id),
+        "experienceId": str(act.experience_id) if act.experience_id else None,
+        "title": {"es": display["title_es"], "en": display["title_en"]},
+        "description": {"es": display["description_es"], "en": display["description_en"]},
+        "short_description": {"es": display["short_description_es"], "en": display["short_description_en"]},
+        "location": display["location"] or "",
+        "locationName": display["location_name"] or "",
+        "locationAddress": display["location_address"] or "",
+        "durationMinutes": display["duration_minutes"],
+        "included": display["included"],
+        "notIncluded": display["not_included"],
+        "itinerary": display["itinerary"],
+        "images": display["images"],
+        "capacity": capacity,
+        "is_agotado": is_agotado,
+        "image": display["image"] or "",
+        "scheduledDate": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
+        "scheduledMonth": inst.scheduled_month,
+        "scheduledYear": inst.scheduled_year,
+        "scheduledLabel": scheduled_label,
+        "startTime": _format_time(getattr(inst, "start_time", None)),
+        "endTime": _format_time(getattr(inst, "end_time", None)),
+        "display_order": inst.display_order,
+        "interestedCount": display_count,
+        "isPast": inst.is_past,
+        "detailLayout": getattr(act, "detail_layout", "default") or "default",
+        "instructions_es": getattr(inst, "instructions_es", "") or "",
+        "instructions_en": getattr(inst, "instructions_en", "") or "",
+        "whatsapp_message_es": getattr(inst, "whatsapp_message_es", "") or "",
+        "whatsapp_message_en": getattr(inst, "whatsapp_message_en", "") or "",
     }
 
 

@@ -108,6 +108,7 @@ class ErasmusFlowTrackingTests(TestCase):
             "departure_date": "2026-07-01",
             "accept_tc_erasmus": True,
             "accept_privacy_erasmus": True,
+            "opt_in_community": False,
             "flow_id": flow_id,
         }
         reg_response = self.client.post(reverse("erasmus-register"), payload, format="json")
@@ -145,6 +146,7 @@ class ErasmusFlowTrackingTests(TestCase):
             "departure_date": "2026-07-01",
             "accept_tc_erasmus": True,
             "accept_privacy_erasmus": True,
+            "opt_in_community": False,
             "flow_id": flow_id,
         }
         self.client.post(reverse("erasmus-register"), payload, format="json")

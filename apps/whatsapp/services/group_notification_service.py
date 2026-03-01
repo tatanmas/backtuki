@@ -175,13 +175,16 @@ class GroupNotificationService:
         Returns:
             True if notification sent successfully
         """
-        experience = reservation.experience
-        if not experience:
-            logger.warning(f"Reservation {reservation.id} has no experience")
-            return False
-        
-        # Get group for experience
-        group_info = GroupNotificationService.get_group_for_experience(experience)
+        car = getattr(reservation, 'car', None)
+        if car:
+            from apps.whatsapp.services.car_operator_service import CarOperatorService
+            group_info = CarOperatorService.get_car_whatsapp_group(car)
+        else:
+            experience = reservation.experience
+            if not experience:
+                logger.warning(f"Reservation {reservation.id} has no experience")
+                return False
+            group_info = GroupNotificationService.get_group_for_experience(experience)
         
         if not group_info:
             # Fallback to operator direct notification

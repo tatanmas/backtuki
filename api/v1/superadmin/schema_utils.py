@@ -82,6 +82,8 @@ Consulta el schema devuelto por GET /api/v1/superadmin/schema/experience/ para l
 El objeto debe tener al menos: title. Opcional: organizer_id (UUID; si no se envía, el alojamiento queda vinculado al superadmin).
 Otros campos: slug (o se genera del título), description, short_description, status (draft|published|cancelled), property_type (cabin|house|apartment|hotel|hostel|villa|other),
 location_name, location_address, country, city, latitude, longitude, guests, bedrooms, bathrooms, beds, price, currency (CLP), amenities (array de strings), not_amenities (array).
+Para unidades de central de arrendamiento: rental_hub_id (UUID), unit_type, tower, floor, unit_number, square_meters (mismo formato que alojamientos normales).
+Opcional: reviews (array de objetos). Cada reseña: author_name (obligatorio), rating (1-5), text o body (texto), review_date (YYYY-MM-DD), author_location, stay_type, host_reply. Si envías reviews, se calculan rating_avg y review_count automáticamente. También puedes enviar rating_avg (número 1-5, ej. 4.9; si envías 4.93 se guarda como 4.9) y review_count sin reviews.
 Consulta el schema en GET /api/v1/superadmin/schema/accommodation/ para la lista exacta.""",
 
     "destination": """Genera un JSON válido para crear un destino (LandingDestination) en Tuki.
@@ -92,7 +94,7 @@ Consulta el schema en GET /api/v1/superadmin/schema/destination/ para la lista e
     "erasmus_lead": """Genera un JSON para cargar uno o más leads Erasmus. Formato: { "leads": [ {...}, ... ], "allow_incomplete": false }.
 Cada lead: obligatorios (carga completa): first_name, last_name, birth_date (YYYY-MM-DD), phone_country_code, phone_number, stay_reason (university|practicas|other), arrival_date, departure_date (YYYY-MM-DD).
 Con allow_incomplete=true solo son obligatorios: first_name, last_name, phone_country_code, phone_number; el resto opcional (lead queda "Por completar").
-Opcionales: nickname, country, city, email, instagram, university, degree, destinations (array), interests (array), extra_data (objeto), consent_*, accept_tc_erasmus, accept_privacy_erasmus.
+Opcionales: nickname, country, city, email, instagram, university, degree, budget_stay, destinations (array), interests (array), extra_data (objeto), consent_*, accept_tc_erasmus, accept_privacy_erasmus.
 Consulta GET /api/v1/superadmin/schema/erasmus_lead/ y docs/CARGA_LEADS_ERASMUS.md.""",
 
     "erasmus_timeline_item": """Genera un JSON para crear ítems del timeline Erasmus. Formato: { "items": [ {...}, ... ] } o un solo objeto.
@@ -112,6 +114,7 @@ ERASMUS_LEAD_SCHEMA = {
         "stay_reason": {"type": "string", "required": True, "choices": ["university", "practicas", "other"]},
         "arrival_date": {"type": "date", "required": False, "help_text": "YYYY-MM-DD"},
         "departure_date": {"type": "date", "required": False, "help_text": "YYYY-MM-DD"},
+        "budget_stay": {"type": "string", "required": False, "help_text": "Presupuesto aproximado para viajes durante el intercambio (estancias, paseos, experiencias)"},
         "nickname": {"type": "string", "required": False},
         "country": {"type": "string", "required": False},
         "city": {"type": "string", "required": False},

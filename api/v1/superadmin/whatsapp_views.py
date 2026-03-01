@@ -7,7 +7,9 @@ from django.utils import timezone
 
 from apps.whatsapp.models import (
     WhatsAppSession, WhatsAppReservationRequest, TourOperator, 
-    ExperienceOperatorBinding, WhatsAppMessage, WhatsAppChat
+    ExperienceOperatorBinding, WhatsAppMessage, WhatsAppChat,
+    GroupOutreachConfig,
+    GroupOutreachSent,
 )
 from apps.whatsapp.services.whatsapp_client import WhatsAppWebService
 from apps.experiences.models import Experience
@@ -121,6 +123,24 @@ def whatsapp_qr(request):
             return Response({'qr': None})
     except Exception as e:
         return Response({'qr': None, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperUser])
+def whatsapp_request_new_qr(request):
+    """Ask the WhatsApp service to re-initialize and emit a new QR (e.g. after disconnect / "Recargar")."""
+    try:
+        service = WhatsAppWebService()
+        ok, err_msg = service.request_new_qr()
+        if ok:
+            return Response({'success': True, 'message': 'Solicitado nuevo QR; en unos segundos vuelve a cargar.'})
+        # 503 cuando el servicio falla (ruta no encontrada, perfil bloqueado, etc.); 502 solo si no hay mensaje
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE if err_msg else status.HTTP_502_BAD_GATEWAY
+        return Response({'success': False, 'error': err_msg or 'No se pudo solicitar nuevo QR'}, status=status_code)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("Error requesting new QR: %s", e)
+        return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['GET'])
@@ -1169,8 +1189,122 @@ def whatsapp_assign_group_operator(request, group_id):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsSuperUser])
+def whatsapp_group_outreach(request, group_id):
+    """
+    GET: Return outreach config for group (create default if missing). Includes sent_count.
+         Query param ?refresh=1 fetches participants from Node and returns eligible_count.
+    PATCH: Update outreach config (enabled, message_templates, exclude_numbers, delays, etc.).
+    """
+    import logging
+    from apps.whatsapp.services.whatsapp_client import WhatsAppWebService
+    from apps.whatsapp.services.group_outreach_service import get_eligible_participants
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        group = WhatsAppChat.objects.get(id=group_id)
+    except WhatsAppChat.DoesNotExist:
+        return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if group.type != 'group':
+        return Response({'error': 'Chat is not a group'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if request.method == 'GET':
+        config, _ = GroupOutreachConfig.objects.get_or_create(
+            group=group,
+            defaults={
+                'enabled': False,
+                'message_templates': [],
+                'exclude_numbers': [],
+                'min_delay_seconds': 120,
+                'max_delay_seconds': 300,
+                'max_per_run': 1,
+                'skip_saved_contacts': True,
+            }
+        )
+        sent_count = GroupOutreachSent.objects.filter(config=config).count()
+
+        payload = {
+            'id': str(config.id),
+            'group_id': str(group.id),
+            'group_name': group.name,
+            'enabled': config.enabled,
+            'message_templates': config.message_templates or [],
+            'exclude_numbers': config.exclude_numbers or [],
+            'min_delay_seconds': config.min_delay_seconds,
+            'max_delay_seconds': config.max_delay_seconds,
+            'max_per_run': config.max_per_run,
+            'skip_saved_contacts': config.skip_saved_contacts,
+            'last_run_at': config.last_run_at.isoformat() if config.last_run_at else None,
+            'sent_count': sent_count,
+        }
+
+        if request.query_params.get('refresh'):
+            try:
+                service = WhatsAppWebService()
+                group_info = service.get_group_info(group.chat_id)
+                saved_map = {}
+                if config.skip_saved_contacts and group_info.get('participants'):
+                    ids = [p.get('id') for p in group_info['participants'] if p.get('id')]
+                    saved_map = service.check_saved_contacts(ids)
+                eligible = get_eligible_participants(config, group_info, saved_map)
+                payload['eligible_count'] = len(eligible)
+                payload['participants_total'] = len(group_info.get('participants') or [])
+            except Exception as e:
+                logger.warning(f"Refresh eligible count failed: {e}")
+                payload['eligible_count'] = None
+                payload['participants_total'] = None
+
+        return Response(payload)
+
+    # PATCH
+    config = GroupOutreachConfig.objects.filter(group=group).first()
+    if not config:
+        config = GroupOutreachConfig.objects.create(
+            group=group,
+            enabled=False,
+            message_templates=[],
+            exclude_numbers=[],
+        )
+
+    data = request.data
+    if 'enabled' in data:
+        config.enabled = bool(data['enabled'])
+    if 'message_templates' in data:
+        config.message_templates = data['message_templates'] if isinstance(data['message_templates'], list) else []
+    if 'exclude_numbers' in data:
+        config.exclude_numbers = data['exclude_numbers'] if isinstance(data['exclude_numbers'], list) else []
+    if 'min_delay_seconds' in data:
+        config.min_delay_seconds = max(60, int(data.get('min_delay_seconds', 120)))
+    if 'max_delay_seconds' in data:
+        config.max_delay_seconds = max(config.min_delay_seconds, int(data.get('max_delay_seconds', 300)))
+    if 'max_per_run' in data:
+        config.max_per_run = max(1, min(5, int(data.get('max_per_run', 1))))
+    if 'skip_saved_contacts' in data:
+        config.skip_saved_contacts = bool(data['skip_saved_contacts'])
+    config.save()
+
+    sent_count = GroupOutreachSent.objects.filter(config=config).count()
+    return Response({
+        'success': True,
+        'id': str(config.id),
+        'group_id': str(group.id),
+        'enabled': config.enabled,
+        'message_templates': config.message_templates,
+        'exclude_numbers': config.exclude_numbers,
+        'min_delay_seconds': config.min_delay_seconds,
+        'max_delay_seconds': config.max_delay_seconds,
+        'max_per_run': config.max_per_run,
+        'skip_saved_contacts': config.skip_saved_contacts,
+        'last_run_at': config.last_run_at.isoformat() if config.last_run_at else None,
+        'sent_count': sent_count,
+    })
+
+
 @api_view(['GET'])
-@permission_classes([IsSuperUser])  # ENTERPRISE: Solo superusers
+@permission_classes([IsSuperUser])
 def whatsapp_experiences(request):
     """List all experiences with their WhatsApp group bindings."""
     import logging

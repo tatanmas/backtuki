@@ -68,6 +68,33 @@ app.conf.beat_schedule = {
             'routing_key': 'emails.fallback',
         }
     },
+    # Uptime: heartbeat cada minuto para medir disponibilidad real en BD
+    'record-platform-uptime-heartbeat': {
+        'task': 'core.tasks.record_platform_uptime_heartbeat',
+        'schedule': crontab(minute='*'),  # Every minute
+        'options': {
+            'queue': 'maintenance',
+            'routing_key': 'maintenance.uptime',
+        }
+    },
+    # Limpieza de heartbeats antiguos (mantener 90 días)
+    'cleanup-old-uptime-heartbeats': {
+        'task': 'core.tasks.cleanup_old_uptime_heartbeats',
+        'schedule': crontab(hour=4, minute=0),  # Daily at 4 AM
+        'options': {
+            'queue': 'maintenance',
+            'routing_key': 'maintenance.uptime_cleanup',
+        }
+    },
+    # WhatsApp group outreach: primer mensaje a participantes (delays humanos, 1 por run)
+    'run-group-outreach': {
+        'task': 'apps.whatsapp.tasks.run_group_outreach',
+        'schedule': crontab(minute='*/12'),  # Every 12 minutes
+        'options': {
+            'queue': 'default',
+            'routing_key': 'default.outreach',
+        }
+    },
 }
 
 # 🚀 ENTERPRISE TASK ROUTING
@@ -85,6 +112,13 @@ app.conf.task_routes = {
     'apps.experiences.tasks.send_experience_confirmation_email': {'queue': 'emails'},
     # OTP email (async to avoid SMTP timeout on generate)
     'apps.otp.tasks.send_otp_email_task': {'queue': 'emails'},
+
+    # Uptime heartbeat + cleanup
+    'core.tasks.record_platform_uptime_heartbeat': {'queue': 'maintenance'},
+    'core.tasks.cleanup_old_uptime_heartbeats': {'queue': 'maintenance'},
+
+    # WhatsApp group outreach
+    'apps.whatsapp.tasks.run_group_outreach': {'queue': 'default'},
 
     # 🚀 ENTERPRISE: WooCommerce Sync Task Routing (disabled by default)
 }

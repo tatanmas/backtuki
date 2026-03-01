@@ -14,6 +14,7 @@ const statusRoutes = require('./routes/status');
 const chatsRoutes = require('./routes/chats');
 const groupsRoutes = require('./routes/groups');
 const profilePictureRoutes = require('./routes/profilePicture');
+const contactsRoutes = require('./routes/contacts');
 
 const logger = createLogger('Server');
 
@@ -33,7 +34,7 @@ app.use((req, res, next) => {
     next();
 });
 
-// Initialize WhatsApp client
+// Initialize WhatsApp client (Chromium lock cleanup is done in Docker entrypoint.sh)
 logger.info('Initializing WhatsApp client...');
 const client = initClient();
 
@@ -62,6 +63,7 @@ app.use('/', statusRoutes);
 app.use('/', chatsRoutes);
 app.use('/', groupsRoutes);
 app.use('/', profilePictureRoutes);
+app.use('/', contactsRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

@@ -490,6 +490,42 @@ class CeleryTaskLog(BaseModel):
         return f"{task_short} [{self.status}] - {self.task_id[:8]}"
 
 
+class PlatformUptimeHeartbeat(models.Model):
+    """
+    Heartbeat para medir uptime real de la plataforma en BD.
+    Una tarea Celery inserta un registro cada minuto. Los huecos entre
+    heartbeats se consideran downtime. Permite calcular % uptime y
+    cuándo no estuvo arriba.
+    """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    recorded_at = models.DateTimeField(
+        _("Recorded at"),
+        db_index=True,
+        help_text="Momento en que se registró el heartbeat (plataforma arriba)",
+    )
+    source = models.CharField(
+        max_length=50,
+        default="celery",
+        blank=True,
+        help_text="Origen del heartbeat (celery, management_command, etc.)",
+    )
+
+    class Meta:
+        verbose_name = _("Platform Uptime Heartbeat")
+        verbose_name_plural = _("Platform Uptime Heartbeats")
+        ordering = ["recorded_at"]
+        indexes = [
+            models.Index(fields=["recorded_at"]),
+        ]
+
+    def __str__(self):
+        return f"Heartbeat @ {self.recorded_at}"
+
+
 class Country(TimeStampedModel):
     """
     Country model for categorizing experiences and accommodations by country.

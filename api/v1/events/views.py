@@ -277,6 +277,12 @@ class EventViewSet(viewsets.ModelViewSet):
         if categories:
             queryset = queryset.filter(category__name__in=categories)
         
+        # Optional: return all events without pagination (e.g. for superadmin destination picker)
+        no_pagination = request.query_params.get('no_pagination', '').lower() == 'true'
+        if no_pagination:
+            serializer = PublicEventSerializer(queryset, many=True, context={'request': request})
+            return Response({'results': serializer.data})
+        
         # Pagination
         page = self.paginate_queryset(queryset)
         if page is not None:

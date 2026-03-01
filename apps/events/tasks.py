@@ -530,6 +530,114 @@ def cleanup_expired_ticket_holds():
         raise
 
 
+@shared_task
+def schedule_event_reminders():
+    """
+    🚀 ENTERPRISE: Schedule reminder emails for events starting in ~24 hours.
+
+    Runs daily (e.g. 10:00). Finds events whose start_date is in the next 24–25h
+    and enqueues send_event_reminder_email for each paid order with tickets.
+    """
+    try:
+        from apps.events.models import Event, Order
+
+        now = timezone.now()
+        window_start = now + timedelta(hours=23)
+        window_end = now + timedelta(hours=25)
+
+        events = Event.objects.filter(
+            start_date__gte=window_start,
+            start_date__lt=window_end,
+            start_date__isnull=False,
+        ).select_related('location')
+
+        enqueued = 0
+        for event in events:
+            orders = Order.objects.filter(
+                event=event,
+                status='paid',
+            ).prefetch_related('items__tickets', 'items__ticket_tier')
+            for order in orders:
+                if not order.items.filter(tickets__isnull=False).exists():
+                    continue
+                send_event_reminder_email.delay(str(order.id))
+                enqueued += 1
+
+        logger.info(f"📧 [REMINDERS] Scheduled {enqueued} reminder emails for events in 24h window")
+        return {'enqueued': enqueued, 'events_checked': events.count()}
+    except Exception as e:
+        logger.error(f"📧 [REMINDERS] Error in schedule_event_reminders: {e}", exc_info=True)
+        raise
+
+
+@shared_task(bind=True, max_retries=2)
+def send_event_reminder_email(self, order_id):
+    """
+    🚀 ENTERPRISE: Send event reminder email(s) for one order.
+
+    Sends one reminder per ticket (using event_reminder template) for paid orders
+    when the event is in the next ~24h. Skips raffle tickets.
+    """
+    try:
+        from apps.events.models import Order
+
+        order = Order.objects.select_related(
+            'event',
+            'event__location',
+        ).prefetch_related('items__tickets', 'items__ticket_tier').get(id=order_id)
+
+        if order.status != 'paid':
+            return {'status': 'skipped', 'reason': 'order_not_paid'}
+
+        tickets = []
+        for item in order.items.all():
+            for t in item.tickets.all():
+                if not getattr(item.ticket_tier, 'is_raffle', False):
+                    tickets.append(t)
+
+        if not tickets:
+            return {'status': 'skipped', 'reason': 'no_tickets'}
+
+        event = order.event
+        if not event.start_date:
+            return {'status': 'skipped', 'reason': 'no_start_date'}
+
+        sent = 0
+        for ticket in tickets:
+            attendee_name = f"{ticket.first_name} {ticket.last_name}".strip() or "Asistente"
+            context = {
+                'event': event,
+                'ticket': ticket,
+                'attendee_name': attendee_name,
+            }
+            subject = f"¡Tu evento «{event.title}» es mañana! – Tuki"
+            html_content = render_to_string('emails/event_reminder.html', context)
+            text_content = render_to_string('emails/event_reminder.txt', context)
+            to_email = ticket.email or order.email
+            if not to_email:
+                continue
+            msg = EmailMultiAlternatives(
+                subject=subject,
+                body=text_content,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=[to_email],
+            )
+            msg.attach_alternative(html_content, 'text/html')
+            msg.send(fail_silently=False)
+            sent += 1
+
+        logger.info(f"📧 [REMINDERS] Sent {sent} reminder(s) for order {order.order_number}")
+        return {'status': 'ok', 'sent': sent}
+    except Order.DoesNotExist:
+        logger.warning(f"📧 [REMINDERS] Order {order_id} not found")
+        return {'status': 'skipped', 'reason': 'order_not_found'}
+    except Exception as exc:
+        logger.error(f"📧 [REMINDERS] Error sending reminder for order {order_id}: {exc}", exc_info=True)
+        if self.request.retries < self.max_retries:
+            self.retry(countdown=60 * (self.request.retries + 1))
+        raise
+
+
 @shared_task(bind=True, max_retries=3)
 def cleanup_expired_ticket_holder_reservations(self, hours_old=24):
     """

@@ -280,6 +280,45 @@ def _accommodation_to_public_dict(acc, request=None, include_photo_tour=False):
     return out
 
 
+def _apply_hotel_inheritance_to_public_dict(data, acc):
+    """Apply hotel location/amenities inheritance to an already-built public dict (in place)."""
+    hotel = getattr(acc, "hotel", None)
+    if not hotel:
+        return
+    if getattr(acc, "inherit_location_from_hotel", True) and hotel:
+        # Use hotel location when room has no own location
+        room_has_location = (
+            (acc.location_name or "").strip()
+            or (acc.location_address or "").strip()
+            or (acc.city or "").strip()
+            or (acc.country or "").strip()
+        )
+        if not room_has_location:
+            lat = float(hotel.latitude) if hotel.latitude is not None else 0
+            lng = float(hotel.longitude) if hotel.longitude is not None else 0
+            data["location"] = {
+                "name": hotel.location_name or hotel.city or hotel.country or "",
+                "coordinates": {"lat": lat, "lng": lng},
+                "address": hotel.location_address or None,
+            }
+            data["country"] = hotel.country or "Chile"
+            data["city"] = hotel.city or ""
+    if getattr(acc, "inherit_amenities_from_hotel", True) and hotel and (hotel.amenities or []):
+        hotel_amenities = list(hotel.amenities or [])
+        room_amenities = list(acc.amenities or [])
+        data["amenities"] = list(dict.fromkeys(hotel_amenities + room_amenities))
+
+
+def resolve_room_public_payload(acc, request=None, include_photo_tour=False):
+    """
+    Build public accommodation dict and apply hotel inheritance (location, amenities).
+    Use for hotel rooms list and for accommodation detail when acc has hotel_id.
+    """
+    data = _accommodation_to_public_dict(acc, request, include_photo_tour=include_photo_tour)
+    _apply_hotel_inheritance_to_public_dict(data, acc)
+    return data
+
+
 class PublicAccommodationListSerializer(serializers.BaseSerializer):
     """Serializa lista pública para que el frontend reciba el tipo Accommodation."""
 

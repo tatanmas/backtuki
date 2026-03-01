@@ -53,6 +53,8 @@ class ErasmusRegisterSerializer(serializers.Serializer):
     arrival_date = serializers.DateField(required=False, allow_null=True)
     departure_date = serializers.DateField(required=False, allow_null=True)
 
+    budget_stay = serializers.CharField(max_length=200, required=False, allow_blank=True)
+
     has_accommodation_in_chile = serializers.BooleanField(required=False, default=False)
     wants_rumi4students_contact = serializers.BooleanField(required=False, default=False)
 
@@ -228,6 +230,14 @@ class ErasmusRegisterSerializer(serializers.Serializer):
         except Exception as e:
             import logging
             logging.getLogger(__name__).exception("Erasmus: send_erasmus_guides_whatsapp failed: %s", e)
+
+        # Notificar a Rumi (grupo configurado en SuperAdmin) si el lead pidió contacto para housing
+        try:
+            from apps.erasmus.partner_notifications import notify_rumi_housing_lead
+            notify_rumi_housing_lead(lead)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception("Erasmus: notify_rumi_housing_lead failed: %s", e)
 
         email = (validated_data.get("email") or "").strip()
         if email:

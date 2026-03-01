@@ -49,6 +49,7 @@ class ErasmusRegisterApiTests(TestCase):
             "departure_date": "2026-06-30",
             "accept_tc_erasmus": True,
             "accept_privacy_erasmus": True,
+            "opt_in_community": False,
         }
         response = self.client.post(reverse("erasmus-register"), payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -69,6 +70,7 @@ class ErasmusRegisterApiTests(TestCase):
             "departure_date": "2026-08-01",
             "accept_tc_erasmus": True,
             "accept_privacy_erasmus": True,
+            "opt_in_community": False,
             "source_slug": "whatsapp_campaign",
         }
         response = self.client.post(reverse("erasmus-register"), payload, format="json")

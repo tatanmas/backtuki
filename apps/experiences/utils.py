@@ -84,6 +84,11 @@ def generate_tour_instances_from_pattern(experience: Experience):
                 
                 if day_name and day_name in weekly_schedule:
                     slots = weekly_schedule[day_name]
+                    # Asegurar que slots sea siempre una lista (por si viene un solo objeto por día)
+                    if isinstance(slots, dict):
+                        slots = [slots]
+                    if not isinstance(slots, list):
+                        continue
                     for slot in slots:
                         try:
                             # Parse start and end times

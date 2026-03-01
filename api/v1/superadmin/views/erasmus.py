@@ -23,18 +23,28 @@ from apps.erasmus.models import (
     ErasmusTimelineItem,
     ErasmusActivity,
     ErasmusActivityInstance,
+    ErasmusActivityPublicLink,
+    ErasmusActivityReview,
+    ErasmusActivityInscriptionPayment,
     ErasmusWhatsAppGroup,
+    ErasmusPartnerNotificationConfig,
+    ErasmusActivityNotificationConfig,
 )
+from apps.whatsapp.models import WhatsAppChat
 from apps.media.models import MediaAsset
+from apps.erasmus.whatsapp_og import fetch_whatsapp_group_image
+from apps.experiences.models import Experience
 from apps.erasmus.lead_import import (
     normalize_lead,
     REQUIRED_KEYS_FULL,
     REQUIRED_KEYS_INCOMPLETE,
 )
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from api.v1.superadmin.serializers import (
     JsonErasmusTimelineItemSerializer,
     JsonErasmusActivityCreateSerializer,
     JsonErasmusActivityInstanceSerializer,
+    validate_itinerary_items,
 )
 
 logger = logging.getLogger(__name__)
@@ -147,6 +157,7 @@ def _lead_to_dict(lead):
         "degree": lead.degree or "",
         "arrival_date": str(lead.arrival_date) if lead.arrival_date else "",
         "departure_date": str(lead.departure_date) if lead.departure_date else "",
+        "budget_stay": lead.budget_stay or "",
         "has_accommodation_in_chile": lead.has_accommodation_in_chile,
         "wants_rumi4students_contact": lead.wants_rumi4students_contact,
         "destinations": lead.destinations,
@@ -274,7 +285,8 @@ def _export_leads_csv(qs):
         "id", "first_name", "last_name", "nickname", "birth_date", "country", "city", "email",
         "phone_country_code", "phone_number", "instagram", "form_locale",
         "stay_reason", "stay_reason_detail", "university", "degree",
-        "arrival_date", "departure_date", "has_accommodation_in_chile", "wants_rumi4students_contact",
+        "arrival_date", "departure_date", "budget_stay",
+        "has_accommodation_in_chile", "wants_rumi4students_contact",
         "destinations", "interested_experiences", "interests",
         "source_slug", "utm_source", "utm_medium", "utm_campaign",
         "accept_tc_erasmus", "accept_privacy_erasmus", "consent_email", "consent_whatsapp", "consent_share_providers",
@@ -295,6 +307,7 @@ def _export_leads_csv(qs):
             lead.instagram or "", getattr(lead, "form_locale", "") or "",
             lead.stay_reason, lead.stay_reason_detail or "", lead.university or "", lead.degree or "",
             lead.arrival_date or "", lead.departure_date or "",
+            lead.budget_stay or "",
             getattr(lead, "has_accommodation_in_chile", False),
             getattr(lead, "wants_rumi4students_contact", False),
             json.dumps(lead.destinations, ensure_ascii=False),
@@ -453,6 +466,8 @@ class ErasmusLeadDetailView(APIView):
         if "departure_date" in data:
             val = parse_date(data["departure_date"]) if isinstance(data["departure_date"], str) else data["departure_date"]
             lead.departure_date = val
+        if "budget_stay" in data:
+            lead.budget_stay = (data["budget_stay"] or "").strip()[:200]
         if "has_accommodation_in_chile" in data:
             lead.has_accommodation_in_chile = bool(data["has_accommodation_in_chile"])
         if "wants_rumi4students_contact" in data:
@@ -480,7 +495,7 @@ class ErasmusLeadDetailView(APIView):
             "first_name", "last_name", "nickname", "birth_date", "country", "city", "email",
             "phone_country_code", "phone_number", "instagram",
             "stay_reason", "stay_reason_detail", "university", "degree",
-            "arrival_date", "departure_date",
+            "arrival_date", "departure_date", "budget_stay",
             "has_accommodation_in_chile", "wants_rumi4students_contact",
             "destinations", "interested_experiences", "interests", "extra_data",
             "accept_tc_erasmus", "accept_privacy_erasmus", "consent_email", "consent_whatsapp", "consent_share_providers",
@@ -510,6 +525,35 @@ class ErasmusLeadDetailView(APIView):
             if not ErasmusLead.objects.filter(user=user).exists():
                 user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ErasmusLeadWelcomeMessageView(APIView):
+    """GET /api/v1/superadmin/erasmus/leads/<id>/welcome-message/ – genera mensaje de bienvenida para copiar y enviar manualmente."""
+    permission_classes = [IsSuperUser]
+
+    def get(self, request, lead_id):
+        try:
+            lead = ErasmusLead.objects.get(id=lead_id)
+        except (ErasmusLead.DoesNotExist, ValueError):
+            return Response({"detail": "Lead no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        from apps.erasmus.access_code_service import (
+            get_or_create_manual_welcome_link,
+            get_welcome_message_text,
+        )
+
+        _magic, magic_link_url = get_or_create_manual_welcome_link(lead)
+        message = get_welcome_message_text(lead, magic_link_url)
+
+        phone = (lead.phone_country_code or "").replace(" ", "") + (lead.phone_number or "").replace(" ", "")
+        if phone and not phone.startswith("+"):
+            phone = "+" + phone
+
+        return Response({
+            "message": message,
+            "magic_link_url": magic_link_url,
+            "phone": phone or "",
+        })
 
 
 @api_view(["POST"])
@@ -667,6 +711,140 @@ def _format_time(t):
     return t.strftime("%H:%M")
 
 
+def _instance_detail_response(inst, inscribed_count=None):
+    """Build JSON response for one ErasmusActivityInstance (GET/PATCH)."""
+    if inscribed_count is None:
+        inscribed_count = ErasmusLead.objects.filter(
+            interested_experiences__contains=[str(inst.id)]
+        ).count()
+    return {
+        "id": str(inst.id),
+        "scheduled_date": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
+        "scheduled_month": inst.scheduled_month,
+        "scheduled_year": inst.scheduled_year,
+        "scheduled_label_es": inst.scheduled_label_es or "",
+        "scheduled_label_en": inst.scheduled_label_en or "",
+        "start_time": _format_time(getattr(inst, "start_time", None)),
+        "end_time": _format_time(getattr(inst, "end_time", None)),
+        "display_order": inst.display_order,
+        "is_active": inst.is_active,
+        "capacity": getattr(inst, "capacity", None),
+        "is_agotado": getattr(inst, "is_agotado", False),
+        "interested_count_boost": getattr(inst, "interested_count_boost", 0) or 0,
+        "instructions_es": getattr(inst, "instructions_es", "") or "",
+        "instructions_en": getattr(inst, "instructions_en", "") or "",
+        "whatsapp_message_es": getattr(inst, "whatsapp_message_es", "") or "",
+        "whatsapp_message_en": getattr(inst, "whatsapp_message_en", "") or "",
+        "inscribed_count": inscribed_count,
+    }
+
+
+def _sync_activity_instances(act, instances_payload):
+    """
+    Replace activity instances with the given list. Items with id update existing;
+    items without id create new. Instances not in the list are deleted.
+    """
+    seen_ids = set()
+    for raw in instances_payload:
+        if not isinstance(raw, dict):
+            continue
+        instance_id = raw.get("id") if raw.get("id") else None
+        if instance_id:
+            try:
+                inst = ErasmusActivityInstance.objects.get(id=instance_id, activity_id=act.id)
+            except ErasmusActivityInstance.DoesNotExist:
+                inst = None
+        else:
+            inst = None
+
+        if inst is not None:
+            # Update existing
+            if "scheduled_date" in raw:
+                val = raw["scheduled_date"]
+                if not val:
+                    inst.scheduled_date = None
+                elif isinstance(val, date):
+                    inst.scheduled_date = val
+                elif isinstance(val, str):
+                    try:
+                        inst.scheduled_date = datetime.strptime(val[:10], "%Y-%m-%d").date()
+                    except (ValueError, TypeError):
+                        inst.scheduled_date = None
+                else:
+                    inst.scheduled_date = None
+            if "scheduled_month" in raw:
+                inst.scheduled_month = raw["scheduled_month"] if raw["scheduled_month"] is not None else None
+            if "scheduled_year" in raw:
+                inst.scheduled_year = raw["scheduled_year"] if raw["scheduled_year"] is not None else None
+            if "scheduled_label_es" in raw:
+                inst.scheduled_label_es = (raw["scheduled_label_es"] or "").strip()[:100]
+            if "scheduled_label_en" in raw:
+                inst.scheduled_label_en = (raw["scheduled_label_en"] or "").strip()[:100]
+            if "start_time" in raw:
+                inst.start_time = _parse_time(raw["start_time"])
+            if "end_time" in raw:
+                inst.end_time = _parse_time(raw["end_time"])
+            if "display_order" in raw:
+                inst.display_order = int(raw["display_order"]) if raw["display_order"] is not None else 0
+            if "is_active" in raw:
+                inst.is_active = bool(raw["is_active"])
+            if "capacity" in raw:
+                r = raw["capacity"]
+                inst.capacity = int(r) if r is not None and str(r).strip() != "" else None
+            if "is_agotado" in raw:
+                inst.is_agotado = bool(raw["is_agotado"])
+            if "instructions_es" in raw:
+                inst.instructions_es = (raw["instructions_es"] or "").strip()
+            if "instructions_en" in raw:
+                inst.instructions_en = (raw["instructions_en"] or "").strip()
+            if "whatsapp_message_es" in raw:
+                inst.whatsapp_message_es = (raw["whatsapp_message_es"] or "").strip()
+            if "whatsapp_message_en" in raw:
+                inst.whatsapp_message_en = (raw["whatsapp_message_en"] or "").strip()
+            if "interested_count_boost" in raw:
+                r = raw["interested_count_boost"]
+                inst.interested_count_boost = max(0, int(r)) if r is not None and str(r).strip() != "" else 0
+            try:
+                inst.full_clean()
+                inst.save()
+            except ValidationError:
+                pass
+            seen_ids.add(str(inst.id))
+        else:
+            # Create new (validate with serializer)
+            ser = JsonErasmusActivityInstanceSerializer(data=raw)
+            if not ser.is_valid():
+                continue
+            iv = ser.validated_data
+            inst = ErasmusActivityInstance(
+                activity=act,
+                scheduled_date=iv.get("scheduled_date"),
+                scheduled_month=iv.get("scheduled_month"),
+                scheduled_year=iv.get("scheduled_year"),
+                scheduled_label_es=iv.get("scheduled_label_es", ""),
+                scheduled_label_en=iv.get("scheduled_label_en", ""),
+                start_time=_parse_time(iv.get("start_time")),
+                end_time=_parse_time(iv.get("end_time")),
+                display_order=iv.get("display_order", 0),
+                is_active=iv.get("is_active", True),
+                instructions_es=(iv.get("instructions_es") or "").strip(),
+                instructions_en=(iv.get("instructions_en") or "").strip(),
+                whatsapp_message_es=(iv.get("whatsapp_message_es") or "").strip(),
+                whatsapp_message_en=(iv.get("whatsapp_message_en") or "").strip(),
+            )
+            try:
+                inst.full_clean()
+                inst.save()
+                seen_ids.add(str(inst.id))
+            except ValidationError:
+                pass
+
+    # Remove instances not in the list
+    for inst in act.instances.all():
+        if str(inst.id) not in seen_ids:
+            inst.delete()
+
+
 def _activity_to_dict(act, include_instances=False):
     """Serialize ErasmusActivity for API (same structure as Experience: itinerary, meeting point, included/not_included)."""
     images = act.images or []
@@ -693,13 +871,20 @@ def _activity_to_dict(act, include_instances=False):
         "image": main or "",
         "display_order": act.display_order,
         "is_active": act.is_active,
+        "detail_layout": getattr(act, "detail_layout", "default") or "default",
         "experience_id": str(act.experience_id) if act.experience_id else None,
         "created_at": act.created_at.isoformat() if act.created_at else None,
         "updated_at": act.updated_at.isoformat() if act.updated_at else None,
+        "is_paid": getattr(act, "is_paid", False),
+        "price": str(act.price) if getattr(act, "price", None) is not None else None,
     }
     if include_instances:
-        data["instances"] = [
-            {
+        data["instances"] = []
+        for inst in act.instances.order_by("display_order", "scheduled_date", "scheduled_year", "scheduled_month"):
+            inscribed_count = ErasmusLead.objects.filter(
+                interested_experiences__contains=[str(inst.id)]
+            ).count()
+            data["instances"].append({
                 "id": str(inst.id),
                 "scheduled_date": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
                 "scheduled_month": inst.scheduled_month,
@@ -710,9 +895,15 @@ def _activity_to_dict(act, include_instances=False):
                 "end_time": _format_time(getattr(inst, "end_time", None)),
                 "display_order": inst.display_order,
                 "is_active": inst.is_active,
-            }
-            for inst in act.instances.order_by("display_order", "scheduled_date", "scheduled_year", "scheduled_month")
-        ]
+                "capacity": getattr(inst, "capacity", None),
+                "is_agotado": getattr(inst, "is_agotado", False),
+                "interested_count_boost": getattr(inst, "interested_count_boost", 0) or 0,
+                "instructions_es": getattr(inst, "instructions_es", "") or "",
+                "instructions_en": getattr(inst, "instructions_en", "") or "",
+                "whatsapp_message_es": getattr(inst, "whatsapp_message_es", "") or "",
+                "whatsapp_message_en": getattr(inst, "whatsapp_message_en", "") or "",
+                "inscribed_count": inscribed_count,
+            })
     return data
 
 
@@ -729,8 +920,128 @@ def _normalize_images(raw_images):
     return out
 
 
+@api_view(["POST"])
+@permission_classes([IsSuperUser])
+def link_experience_to_erasmus_activity(request):
+    """
+    POST /api/v1/superadmin/erasmus/activities/link-experience/
+
+    Create an Erasmus activity that uses an existing Experience as content source.
+    Body: {
+      "experience_id": "uuid",   # required
+      "slug": "optional-slug",    # optional; default: experience.slug, made unique if needed
+      "display_order": 0,
+      "is_active": true,
+      "instances": [ { "scheduled_date": "YYYY-MM-DD", ... }, ... ]  # optional; at least one recommended for timeline
+    }
+    Public API will show the experience's title, description, images, etc. (single source of truth).
+    """
+    data = request.data or {}
+    experience_id = data.get("experience_id")
+    if not experience_id:
+        return Response(
+            {"detail": "Se requiere 'experience_id' (UUID de la experiencia)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        experience = Experience.objects.get(id=experience_id)
+    except (Experience.DoesNotExist, ValueError, TypeError):
+        return Response(
+            {"detail": "Experiencia no encontrada."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    if ErasmusActivity.objects.filter(experience_id=experience_id).exists():
+        return Response(
+            {"detail": "Esta experiencia ya está vinculada a una actividad Erasmus."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    slug = (data.get("slug") or "").strip() or experience.slug or ""
+    if not slug:
+        slug = f"erasmus-{str(experience.id)[:8]}"
+    base_slug = slug
+    counter = 0
+    while ErasmusActivity.objects.filter(slug=slug).exists():
+        counter += 1
+        slug = f"{base_slug}-{counter}"
+    title = (experience.title or "").strip() or "Actividad Erasmus"
+    act = ErasmusActivity(
+        title_es=title,
+        title_en=title,
+        slug=slug,
+        description_es="",
+        description_en="",
+        short_description_es="",
+        short_description_en="",
+        location="",
+        location_name="",
+        location_address="",
+        duration_minutes=None,
+        included=[],
+        not_included=[],
+        itinerary=[],
+        images=[],
+        display_order=int(data.get("display_order", 0)) if data.get("display_order") is not None else 0,
+        is_active=data.get("is_active", True) if data.get("is_active") is not None else True,
+        detail_layout=(data.get("detail_layout") or "default").strip() or "default",
+        experience_id=experience_id,
+    )
+    act.save()
+    instances_payload = data.get("instances") or []
+    created_instances = []
+    for raw in instances_payload if isinstance(instances_payload, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        inst_ser = JsonErasmusActivityInstanceSerializer(data=raw)
+        if not inst_ser.is_valid():
+            continue
+        iv = inst_ser.validated_data
+        start_t = _parse_time(iv.get("start_time"))
+        end_t = _parse_time(iv.get("end_time"))
+        inst = ErasmusActivityInstance(
+            activity=act,
+            scheduled_date=iv.get("scheduled_date"),
+            scheduled_month=iv.get("scheduled_month"),
+            scheduled_year=iv.get("scheduled_year"),
+            scheduled_label_es=iv.get("scheduled_label_es", ""),
+            scheduled_label_en=iv.get("scheduled_label_en", ""),
+            start_time=start_t,
+            end_time=end_t,
+            display_order=iv.get("display_order", 0),
+            is_active=iv.get("is_active", True),
+            instructions_es=(iv.get("instructions_es") or "").strip(),
+            instructions_en=(iv.get("instructions_en") or "").strip(),
+            whatsapp_message_es=(iv.get("whatsapp_message_es") or "").strip(),
+            whatsapp_message_en=(iv.get("whatsapp_message_en") or "").strip(),
+            interested_count_boost=iv.get("interested_count_boost", 0) or 0,
+        )
+        try:
+            inst.full_clean()
+            inst.save()
+            created_instances.append({"id": str(inst.id)})
+        except ValidationError:
+            continue
+    logger.info(
+        "Erasmus activity linked to experience: %s (id=%s), slug=%s, instances=%s",
+        experience.title,
+        act.id,
+        act.slug,
+        len(created_instances),
+    )
+    return Response(
+        {
+            "id": str(act.id),
+            "slug": act.slug,
+            "experience_id": str(experience_id),
+            "experience_title": experience.title,
+            "instances_created": len(created_instances),
+            "instances": created_instances,
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
 class ErasmusActivityListView(APIView):
-    """GET /api/v1/superadmin/erasmus/activities/ – list all activities (optional: is_active, search)."""
+    """GET /api/v1/superadmin/erasmus/activities/ – list all activities (optional: is_active, search). Includes public_link paths when exist."""
     permission_classes = [IsSuperUser]
 
     def get(self, request):
@@ -745,7 +1056,23 @@ class ErasmusActivityListView(APIView):
                 | models.Q(title_en__icontains=search)
                 | models.Q(slug__icontains=search)
             )
-        result = [_activity_to_dict(act) for act in qs]
+        activities = list(qs)
+        result = [_activity_to_dict(act) for act in activities]
+        # Attach public link paths for copy-link actions (view inscritos, edit, review, public activity)
+        link_map = {
+            str(link.activity_id): {
+                "view_path": f"/erasmus/lista/{link.view_token}",
+                "edit_path": f"/erasmus/editar/{link.edit_token}",
+                "review_path": f"/erasmus/resenas/{link.review_token}" if link.review_token else None,
+                "public_activity_path": f"/erasmus/actividades/{link.activity.slug}",
+            }
+            for link in ErasmusActivityPublicLink.objects.filter(
+                activity__in=activities
+            ).select_related("activity")
+        }
+        for i, act in enumerate(activities):
+            aid = str(act.id)
+            result[i]["public_link"] = link_map.get(aid)
         return Response({"results": result, "count": len(result)})
 
 
@@ -792,6 +1119,7 @@ def create_erasmus_activity_from_json(request):
         images=images,
         display_order=validated.get("display_order", 0),
         is_active=validated.get("is_active", True),
+        detail_layout=validated.get("detail_layout", "default") or "default",
     )
     if experience_id:
         act.experience_id = experience_id
@@ -818,6 +1146,11 @@ def create_erasmus_activity_from_json(request):
             end_time=end_t,
             display_order=iv.get("display_order", 0),
             is_active=iv.get("is_active", True),
+            instructions_es=(iv.get("instructions_es") or "").strip(),
+            instructions_en=(iv.get("instructions_en") or "").strip(),
+            whatsapp_message_es=(iv.get("whatsapp_message_es") or "").strip(),
+            whatsapp_message_en=(iv.get("whatsapp_message_en") or "").strip(),
+            interested_count_boost=iv.get("interested_count_boost", 0) or 0,
         )
         inst.full_clean()
         inst.save()
@@ -877,7 +1210,12 @@ class ErasmusActivityDetailView(APIView):
         if "not_included" in data:
             act.not_included = data["not_included"] if isinstance(data["not_included"], list) else []
         if "itinerary" in data:
-            act.itinerary = data["itinerary"] if isinstance(data["itinerary"], list) else []
+            raw = data["itinerary"] if isinstance(data["itinerary"], list) else []
+            try:
+                validate_itinerary_items(raw)
+            except DRFValidationError as e:
+                return Response({"detail": str(e.detail)}, status=status.HTTP_400_BAD_REQUEST)
+            act.itinerary = raw
         if "images" in data:
             act.images = _normalize_images(data["images"] if isinstance(data["images"], list) else [])
         if "display_order" in data:
@@ -886,8 +1224,36 @@ class ErasmusActivityDetailView(APIView):
             act.is_active = bool(data["is_active"])
         if "experience_id" in data:
             act.experience_id = data["experience_id"] if data["experience_id"] else None
+        if "detail_layout" in data:
+            val = (data["detail_layout"] or "").strip()
+            if val in ("default", "two_column"):
+                act.detail_layout = val
+        if "is_paid" in data:
+            act.is_paid = bool(data["is_paid"])
+        if "price" in data:
+            v = data["price"]
+            from decimal import Decimal
+            act.price = Decimal(str(v)) if v is not None and str(v).strip() != "" else None
         act.save()
+
+        # Optional: sync instances (full replace). If "instances" is present, create/update/delete to match.
+        if "instances" in data:
+            instances_payload = data["instances"]
+            if isinstance(instances_payload, list):
+                _sync_activity_instances(act, instances_payload)
+
         return Response(_activity_to_dict(act, include_instances=True))
+
+    def delete(self, request, activity_id):
+        """DELETE /api/v1/superadmin/erasmus/activities/<id>/ – delete activity and its instances."""
+        try:
+            act = ErasmusActivity.objects.get(id=activity_id)
+        except ErasmusActivity.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        title = act.title_es or act.slug
+        act.delete()  # CASCADE deletes all instances
+        logger.info(f"🗑️ [ERASMUS_ACTIVITY] Deleted activity: {title} (id={activity_id})")
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ErasmusActivityInstanceListCreateView(APIView):
@@ -899,8 +1265,12 @@ class ErasmusActivityInstanceListCreateView(APIView):
             act = ErasmusActivity.objects.get(id=activity_id)
         except ErasmusActivity.DoesNotExist:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        instances = [
-            {
+        instances = []
+        for inst in act.instances.order_by("display_order", "scheduled_date", "scheduled_year", "scheduled_month"):
+            inscribed_count = ErasmusLead.objects.filter(
+                interested_experiences__contains=[str(inst.id)]
+            ).count()
+            instances.append({
                 "id": str(inst.id),
                 "scheduled_date": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
                 "scheduled_month": inst.scheduled_month,
@@ -911,9 +1281,15 @@ class ErasmusActivityInstanceListCreateView(APIView):
                 "end_time": _format_time(getattr(inst, "end_time", None)),
                 "display_order": inst.display_order,
                 "is_active": inst.is_active,
-            }
-            for inst in act.instances.order_by("display_order", "scheduled_date", "scheduled_year", "scheduled_month")
-        ]
+                "capacity": getattr(inst, "capacity", None),
+                "is_agotado": getattr(inst, "is_agotado", False),
+                "interested_count_boost": getattr(inst, "interested_count_boost", 0) or 0,
+                "instructions_es": getattr(inst, "instructions_es", "") or "",
+                "instructions_en": getattr(inst, "instructions_en", "") or "",
+                "whatsapp_message_es": getattr(inst, "whatsapp_message_es", "") or "",
+                "whatsapp_message_en": getattr(inst, "whatsapp_message_en", "") or "",
+                "inscribed_count": inscribed_count,
+            })
         return Response({"results": instances})
 
     def post(self, request, activity_id):
@@ -936,6 +1312,11 @@ class ErasmusActivityInstanceListCreateView(APIView):
             end_time=_parse_time(iv.get("end_time")),
             display_order=iv.get("display_order", 0),
             is_active=iv.get("is_active", True),
+            instructions_es=(iv.get("instructions_es") or "").strip(),
+            instructions_en=(iv.get("instructions_en") or "").strip(),
+            whatsapp_message_es=(iv.get("whatsapp_message_es") or "").strip(),
+            whatsapp_message_en=(iv.get("whatsapp_message_en") or "").strip(),
+            interested_count_boost=iv.get("interested_count_boost", 0) or 0,
         )
         try:
             inst.full_clean()
@@ -977,6 +1358,11 @@ def erasmus_activity_instances_bulk_from_json(request, activity_id):
             end_time=_parse_time(iv.get("end_time")),
             display_order=iv.get("display_order", 0),
             is_active=iv.get("is_active", True),
+            instructions_es=(iv.get("instructions_es") or "").strip(),
+            instructions_en=(iv.get("instructions_en") or "").strip(),
+            whatsapp_message_es=(iv.get("whatsapp_message_es") or "").strip(),
+            whatsapp_message_en=(iv.get("whatsapp_message_en") or "").strip(),
+            interested_count_boost=iv.get("interested_count_boost", 0) or 0,
         )
         try:
             inst.full_clean()
@@ -996,18 +1382,10 @@ class ErasmusActivityInstanceDetailView(APIView):
             inst = ErasmusActivityInstance.objects.get(id=instance_id, activity_id=activity_id)
         except ErasmusActivityInstance.DoesNotExist:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        return Response({
-            "id": str(inst.id),
-            "scheduled_date": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
-            "scheduled_month": inst.scheduled_month,
-            "scheduled_year": inst.scheduled_year,
-            "scheduled_label_es": inst.scheduled_label_es or "",
-            "scheduled_label_en": inst.scheduled_label_en or "",
-            "start_time": _format_time(getattr(inst, "start_time", None)),
-            "end_time": _format_time(getattr(inst, "end_time", None)),
-            "display_order": inst.display_order,
-            "is_active": inst.is_active,
-        })
+        inscribed_count = ErasmusLead.objects.filter(
+            interested_experiences__contains=[str(inst.id)]
+        ).count()
+        return Response(_instance_detail_response(inst, inscribed_count))
 
     def patch(self, request, activity_id, instance_id):
         try:
@@ -1033,23 +1411,28 @@ class ErasmusActivityInstanceDetailView(APIView):
             inst.display_order = int(data["display_order"]) if data["display_order"] is not None else 0
         if "is_active" in data:
             inst.is_active = bool(data["is_active"])
+        if "capacity" in data:
+            raw = data["capacity"]
+            inst.capacity = int(raw) if raw is not None and str(raw).strip() != "" else None
+        if "is_agotado" in data:
+            inst.is_agotado = bool(data["is_agotado"])
+        if "instructions_es" in data:
+            inst.instructions_es = (data["instructions_es"] or "").strip()
+        if "instructions_en" in data:
+            inst.instructions_en = (data["instructions_en"] or "").strip()
+        if "whatsapp_message_es" in data:
+            inst.whatsapp_message_es = (data["whatsapp_message_es"] or "").strip()
+        if "whatsapp_message_en" in data:
+            inst.whatsapp_message_en = (data["whatsapp_message_en"] or "").strip()
+        if "interested_count_boost" in data:
+            raw = data["interested_count_boost"]
+            inst.interested_count_boost = max(0, int(raw)) if raw is not None and str(raw).strip() != "" else 0
         try:
             inst.full_clean()
             inst.save()
         except ValidationError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({
-            "id": str(inst.id),
-            "scheduled_date": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
-            "scheduled_month": inst.scheduled_month,
-            "scheduled_year": inst.scheduled_year,
-            "scheduled_label_es": inst.scheduled_label_es or "",
-            "scheduled_label_en": inst.scheduled_label_en or "",
-            "start_time": _format_time(getattr(inst, "start_time", None)),
-            "end_time": _format_time(getattr(inst, "end_time", None)),
-            "display_order": inst.display_order,
-            "is_active": inst.is_active,
-        })
+        return Response(_instance_detail_response(inst))
 
     def delete(self, request, activity_id, instance_id):
         try:
@@ -1057,6 +1440,226 @@ class ErasmusActivityInstanceDetailView(APIView):
         except ErasmusActivityInstance.DoesNotExist:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         inst.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ErasmusActivityInstanceInscriptionsView(APIView):
+    """GET /api/v1/superadmin/erasmus/activities/<activity_id>/instances/<instance_id>/inscriptions/ – list leads inscribed for this instance."""
+    permission_classes = [IsSuperUser]
+
+    def get(self, request, activity_id, instance_id):
+        try:
+            inst = ErasmusActivityInstance.objects.get(id=instance_id, activity_id=activity_id)
+        except ErasmusActivityInstance.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        leads = ErasmusLead.objects.filter(
+            interested_experiences__contains=[str(inst.id)]
+        ).order_by("-updated_at")
+        result = [
+            {
+                "id": str(lead.id),
+                "first_name": lead.first_name or "",
+                "last_name": lead.last_name or "",
+                "email": lead.email or "",
+                "phone_country_code": lead.phone_country_code or "",
+                "phone_number": lead.phone_number or "",
+                "instagram": lead.instagram or "",
+                "updated_at": lead.updated_at.isoformat() if lead.updated_at else None,
+            }
+            for lead in leads
+        ]
+        return Response({"inscriptions": result, "count": len(result)})
+
+
+def _public_link_tokens():
+    """Generate unique view, edit and review tokens (URL-safe)."""
+    import secrets
+    return (
+        secrets.token_urlsafe(32)[:64],
+        secrets.token_urlsafe(32)[:64],
+        secrets.token_urlsafe(32)[:64],
+    )
+
+
+class ErasmusActivityPublicLinkView(APIView):
+    """
+    GET/POST/PATCH /api/v1/superadmin/erasmus/activities/<activity_id>/public-link/
+    GET: return existing public link (view_token, edit_token, review_token, links_enabled) + paths.
+    POST: create public link for this activity (idempotent); generates review_token if missing.
+    PATCH: toggle links_enabled.
+    """
+    permission_classes = [IsSuperUser]
+
+    def get(self, request, activity_id):
+        try:
+            act = ErasmusActivity.objects.get(id=activity_id)
+        except ErasmusActivity.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            link = ErasmusActivityPublicLink.objects.get(activity_id=activity_id)
+        except ErasmusActivityPublicLink.DoesNotExist:
+            return Response({
+                "exists": False,
+                "view_token": None,
+                "edit_token": None,
+                "review_token": None,
+                "links_enabled": None,
+                "review_link_enabled": None,
+                "view_path": None,
+                "edit_path": None,
+                "review_path": None,
+            })
+        if not link.review_token:
+            link.review_token = _public_link_tokens()[-1]
+            link.save(update_fields=["review_token"])
+        view_path = f"/erasmus/lista/{link.view_token}"
+        edit_path = f"/erasmus/editar/{link.edit_token}"
+        review_path = f"/erasmus/resenas/{link.review_token}"
+        return Response({
+            "exists": True,
+            "view_token": link.view_token,
+            "edit_token": link.edit_token,
+            "review_token": link.review_token,
+            "links_enabled": link.links_enabled,
+            "review_link_enabled": getattr(link, "review_link_enabled", True),
+            "view_path": view_path,
+            "edit_path": edit_path,
+            "review_path": review_path,
+        })
+
+    def post(self, request, activity_id):
+        try:
+            act = ErasmusActivity.objects.get(id=activity_id)
+        except ErasmusActivity.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        vt, et, rt = _public_link_tokens()
+        link, created = ErasmusActivityPublicLink.objects.get_or_create(
+            activity=act,
+            defaults={
+                "view_token": vt,
+                "edit_token": et,
+                "review_token": rt,
+                "links_enabled": True,
+                "review_link_enabled": True,
+            },
+        )
+        if not created:
+            updates = {}
+            if not link.view_token or not link.edit_token:
+                link.view_token, link.edit_token, _ = _public_link_tokens()
+                updates["view_token"] = link.view_token
+                updates["edit_token"] = link.edit_token
+            if not link.review_token:
+                link.review_token = _public_link_tokens()[-1]
+                updates["review_token"] = link.review_token
+            if updates:
+                link.save(update_fields=list(updates.keys()))
+        view_path = f"/erasmus/lista/{link.view_token}"
+        edit_path = f"/erasmus/editar/{link.edit_token}"
+        review_path = f"/erasmus/resenas/{link.review_token}"
+        return Response({
+            "exists": True,
+            "created": created,
+            "view_token": link.view_token,
+            "edit_token": link.edit_token,
+            "review_token": link.review_token,
+            "links_enabled": link.links_enabled,
+            "review_link_enabled": getattr(link, "review_link_enabled", True),
+            "view_path": view_path,
+            "edit_path": edit_path,
+            "review_path": review_path,
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    def patch(self, request, activity_id):
+        try:
+            act = ErasmusActivity.objects.get(id=activity_id)
+        except ErasmusActivity.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            link = ErasmusActivityPublicLink.objects.get(activity_id=activity_id)
+        except ErasmusActivityPublicLink.DoesNotExist:
+            return Response({"detail": "No public link for this activity. Create one first."}, status=status.HTTP_404_NOT_FOUND)
+        data = request.data or {}
+        update_fields = []
+        if "links_enabled" in data:
+            link.links_enabled = bool(data["links_enabled"])
+            update_fields.append("links_enabled")
+        if "review_link_enabled" in data:
+            link.review_link_enabled = bool(data["review_link_enabled"])
+            update_fields.append("review_link_enabled")
+        if update_fields:
+            link.save(update_fields=update_fields)
+        review_path = f"/erasmus/resenas/{link.review_token}" if link.review_token else None
+        return Response({
+            "view_token": link.view_token,
+            "edit_token": link.edit_token,
+            "review_token": link.review_token,
+            "links_enabled": link.links_enabled,
+            "review_link_enabled": getattr(link, "review_link_enabled", True),
+            "view_path": f"/erasmus/lista/{link.view_token}",
+            "edit_path": f"/erasmus/editar/{link.edit_token}",
+            "review_path": review_path,
+        })
+
+
+def _instance_review_label_superadmin(inst):
+    if inst.scheduled_date:
+        return inst.scheduled_date.strftime("%d/%m/%Y")
+    if inst.scheduled_label_es:
+        return inst.scheduled_label_es
+    if inst.scheduled_month and inst.scheduled_year:
+        return f"{inst.scheduled_month:02d}/{inst.scheduled_year}"
+    return str(inst.id)
+
+
+class ErasmusActivityReviewsListView(APIView):
+    """
+    GET /api/v1/superadmin/erasmus/activities/<activity_id>/reviews/
+    Query: instance_id (optional) – filter by instance.
+    """
+    permission_classes = [IsSuperUser]
+
+    def get(self, request, activity_id):
+        try:
+            act = ErasmusActivity.objects.get(id=activity_id)
+        except ErasmusActivity.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        instance_id = request.query_params.get("instance_id")
+        qs = ErasmusActivityReview.objects.filter(instance__activity_id=activity_id).select_related("instance")
+        if instance_id:
+            qs = qs.filter(instance_id=instance_id)
+        qs = qs.order_by("-created_at")
+        results = []
+        for r in qs:
+            inst = r.instance
+            results.append({
+                "id": r.id,
+                "instance_id": str(inst.id),
+                "instance_label": _instance_review_label_superadmin(inst),
+                "instance_scheduled_date": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
+                "author_name": r.author_name,
+                "author_origin": r.author_origin or "",
+                "rating": r.rating,
+                "body": r.body,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+        return Response({"results": results, "count": len(results)})
+
+
+class ErasmusActivityReviewDeleteView(APIView):
+    """DELETE /api/v1/superadmin/erasmus/activities/<activity_id>/reviews/<int:review_id>/"""
+    permission_classes = [IsSuperUser]
+
+    def delete(self, request, activity_id, review_id):
+        try:
+            act = ErasmusActivity.objects.get(id=activity_id)
+        except ErasmusActivity.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            review = ErasmusActivityReview.objects.get(id=review_id, instance__activity_id=activity_id)
+        except ErasmusActivityReview.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        review.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -1166,7 +1769,7 @@ class ErasmusWhatsAppGroupViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         items = list(
-            self.get_queryset().values("id", "name", "link", "order", "is_active")
+            self.get_queryset().values("id", "name", "link", "image_url", "category", "order", "is_active")
         )
         return Response(items)
 
@@ -1181,18 +1784,23 @@ class ErasmusWhatsAppGroupViewSet(viewsets.ModelViewSet):
             )
         order = int(data.get("order", 0))
         is_active = bool(data.get("is_active", True))
+        image_url = (data.get("image_url") or "").strip() or ""
+        category = (data.get("category") or "tuki").strip()
+        if category not in ("university", "tuki"):
+            category = "tuki"
         obj = ErasmusWhatsAppGroup.objects.create(
-            name=name, link=link, order=order, is_active=is_active
+            name=name, link=link, order=order, is_active=is_active,
+            image_url=image_url, category=category,
         )
         return Response(
-            {"id": obj.id, "name": obj.name, "link": obj.link, "order": obj.order, "is_active": obj.is_active},
+            {"id": obj.id, "name": obj.name, "link": obj.link, "image_url": obj.image_url or "", "category": obj.category, "order": obj.order, "is_active": obj.is_active},
             status=status.HTTP_201_CREATED,
         )
 
     def retrieve(self, request, *args, **kwargs):
         obj = self.get_object()
         return Response({
-            "id": obj.id, "name": obj.name, "link": obj.link, "order": obj.order, "is_active": obj.is_active,
+            "id": obj.id, "name": obj.name, "link": obj.link, "image_url": obj.image_url or "", "category": obj.category, "order": obj.order, "is_active": obj.is_active,
         })
 
     def update(self, request, *args, **kwargs):
@@ -1201,17 +1809,129 @@ class ErasmusWhatsAppGroupViewSet(viewsets.ModelViewSet):
             obj.name = (request.data["name"] or "").strip()
         if "link" in request.data:
             obj.link = (request.data["link"] or "").strip()
+        if "image_url" in request.data:
+            obj.image_url = (request.data["image_url"] or "").strip() or ""
+        if "category" in request.data:
+            raw = (request.data["category"] or "").strip()
+            obj.category = raw if raw in ("university", "tuki") else "tuki"
         if "order" in request.data:
             obj.order = int(request.data["order"])
         if "is_active" in request.data:
             obj.is_active = bool(request.data["is_active"])
         obj.save()
         return Response({
-            "id": obj.id, "name": obj.name, "link": obj.link, "order": obj.order, "is_active": obj.is_active,
+            "id": obj.id, "name": obj.name, "link": obj.link, "image_url": obj.image_url or "", "category": obj.category, "order": obj.order, "is_active": obj.is_active,
         })
 
     def destroy(self, request, *args, **kwargs):
         return super().destroy(request, *args, **kwargs)
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperUser])
+def erasmus_whatsapp_group_fetch_image(request, pk):
+    """
+    Fetch og:image from the group's WhatsApp invite page and save as image_url.
+    POST /api/v1/superadmin/erasmus/whatsapp-groups/<id>/fetch-image/
+    Returns { "image_url": "..." } on success, or 400/404 if no image found or invalid group.
+    """
+    try:
+        obj = ErasmusWhatsAppGroup.objects.get(pk=pk)
+    except ErasmusWhatsAppGroup.DoesNotExist:
+        return Response({"detail": "Group not found."}, status=status.HTTP_404_NOT_FOUND)
+    link = (obj.link or "").strip()
+    if not link:
+        return Response(
+            {"detail": "Group has no link."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    result = fetch_whatsapp_group_image(link)
+    if not result.get("image"):
+        return Response(
+            {"detail": "No se pudo obtener la imagen del enlace (og:image no encontrado)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    obj.image_url = result["image"]
+    obj.save(update_fields=["image_url", "updated_at"])
+    return Response({"image_url": obj.image_url})
+
+
+RUMI_HOUSING_SLUG = "rumi_housing"
+
+
+class ErasmusRumiNotificationConfigView(APIView):
+    """
+    GET: return Rumi (housing) notification config and list of WhatsApp groups for the selector.
+    PATCH: update whatsapp_chat_id and/or is_active for rumi_housing.
+    """
+
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        config = ErasmusPartnerNotificationConfig.objects.filter(slug=RUMI_HOUSING_SLUG).first()
+        if not config:
+            config = ErasmusPartnerNotificationConfig.objects.create(
+                slug=RUMI_HOUSING_SLUG,
+                name="Rumi – Housing",
+                is_active=False,
+                description="Notificar cuando un registro Erasmus requiere housing (wants_rumi4students_contact).",
+            )
+        groups = list(
+            WhatsAppChat.objects.filter(type="group", is_active=True)
+            .order_by("-last_message_at", "-created_at")
+            .values("id", "name", "chat_id")
+        )
+        # Serialize UUID for JSON
+        groups_serialized = [
+            {"id": str(g["id"]), "name": g["name"] or g["chat_id"], "chat_id": g["chat_id"]}
+            for g in groups
+        ]
+        return Response({
+            "config": {
+                "slug": config.slug,
+                "name": config.name,
+                "is_active": config.is_active,
+                "whatsapp_chat_id": str(config.whatsapp_chat_id) if config.whatsapp_chat_id else None,
+                "whatsapp_chat_name": config.whatsapp_chat.name if config.whatsapp_chat else None,
+            },
+            "groups": groups_serialized,
+        })
+
+    def patch(self, request):
+        config = ErasmusPartnerNotificationConfig.objects.filter(slug=RUMI_HOUSING_SLUG).first()
+        if not config:
+            config = ErasmusPartnerNotificationConfig.objects.create(
+                slug=RUMI_HOUSING_SLUG,
+                name="Rumi – Housing",
+                is_active=False,
+                description="Notificar cuando un registro Erasmus requiere housing (wants_rumi4students_contact).",
+            )
+        data = request.data or {}
+        if "whatsapp_chat_id" in data:
+            raw = data["whatsapp_chat_id"]
+            if raw is None or raw == "":
+                config.whatsapp_chat = None
+            else:
+                try:
+                    chat = WhatsAppChat.objects.get(id=raw, type="group")
+                    config.whatsapp_chat = chat
+                except (WhatsAppChat.DoesNotExist, ValueError, TypeError):
+                    return Response(
+                        {"detail": "Invalid or unknown group id."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+        if "is_active" in data:
+            config.is_active = bool(data["is_active"])
+        config.save()
+        return Response({
+            "config": {
+                "slug": config.slug,
+                "name": config.name,
+                "is_active": config.is_active,
+                "whatsapp_chat_id": str(config.whatsapp_chat_id) if config.whatsapp_chat_id else None,
+                "whatsapp_chat_name": config.whatsapp_chat.name if config.whatsapp_chat else None,
+            },
+        })
 
 
 @api_view(["POST"])
@@ -1250,10 +1970,15 @@ def erasmus_whatsapp_groups_bulk_from_json(request):
         link = (raw.get("link") or raw.get("url") or "").strip()
         if not name or not link:
             continue
+        image_url = (raw.get("image_url") or "").strip() or ""
+        category = (raw.get("category") or "tuki").strip()
+        if category not in ("university", "tuki"):
+            category = "tuki"
         obj = ErasmusWhatsAppGroup.objects.create(
-            name=name, link=link, order=i, is_active=True
+            name=name, link=link, order=i, is_active=True,
+            image_url=image_url, category=category,
         )
-        created.append({"id": obj.id, "name": obj.name, "link": obj.link, "order": obj.order})
+        created.append({"id": obj.id, "name": obj.name, "link": obj.link, "image_url": obj.image_url or "", "category": obj.category, "order": obj.order})
     logger.info("[ErasmusWhatsAppGroups] Bulk replaced with %s groups", len(created))
     return Response({"count": len(created), "groups": created}, status=status.HTTP_200_OK)
 

@@ -6,6 +6,7 @@ from .models import (
     AccommodationBlockedDate,
     AccommodationReservation,
     AccommodationReview,
+    Hotel,
     RentalHub,
 )
 
@@ -25,10 +26,10 @@ class AccommodationBlockedDateInline(admin.TabularInline):
 @admin.register(Accommodation)
 class AccommodationAdmin(admin.ModelAdmin):
     list_display = (
-        "title", "slug", "rental_hub", "unit_type", "tower", "unit_number",
+        "title", "slug", "rental_hub", "hotel", "unit_type", "tower", "unit_number",
         "city", "country", "status", "guests", "bedrooms", "price", "rating_avg", "review_count",
     )
-    list_filter = ("status", "property_type", "country", "rental_hub", "unit_type", "tower")
+    list_filter = ("status", "property_type", "country", "rental_hub", "hotel", "unit_type", "tower")
     search_fields = ("title", "slug", "city", "location_name", "unit_number")
     prepopulated_fields = {"slug": ("title",)}
     inlines = [AccommodationReviewInline, AccommodationBlockedDateInline]
@@ -54,6 +55,14 @@ class RentalHubAdmin(admin.ModelAdmin):
     list_display = ("name", "slug", "is_active", "created_at")
     list_filter = ("is_active",)
     search_fields = ("name", "slug")
+    prepopulated_fields = {"slug": ("name",)}
+
+
+@admin.register(Hotel)
+class HotelAdmin(admin.ModelAdmin):
+    list_display = ("name", "slug", "is_active", "city", "country", "created_at")
+    list_filter = ("is_active", "country")
+    search_fields = ("name", "slug", "city")
     prepopulated_fields = {"slug": ("name",)}
 
 

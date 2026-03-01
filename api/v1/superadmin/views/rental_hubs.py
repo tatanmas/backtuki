@@ -1,12 +1,18 @@
 """
 Superadmin CRUD for RentalHub (centrales de arrendamiento).
 List, create, retrieve, update, delete. Media resolved from hero_media_id / gallery_media_ids.
+Nested: list and create accommodations (unidades: departamentos/casas) within a hub.
 """
 
 import re
-from rest_framework import viewsets, serializers
+from decimal import Decimal
+from rest_framework import viewsets, serializers, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
 
-from apps.accommodations.models import RentalHub
+from django.utils.text import slugify
+
+from apps.accommodations.models import RentalHub, Accommodation
 from ..permissions import IsSuperUser
 
 
@@ -84,6 +90,24 @@ class RentalHubSerializer(serializers.ModelSerializer):
     def get_accommodations_count(self, obj):
         return obj.accommodations.filter(deleted_at__isnull=True).count()
 
+
+def _optional_int(value):
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_decimal(value):
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except (TypeError, ValueError):
+        return None
+
     def validate_slug(self, value):
         if value is not None and isinstance(value, str):
             value = value.strip().lower() or None
@@ -119,3 +143,141 @@ class RentalHubViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperUser]
     lookup_field = "id"
     lookup_url_kwarg = "id"
+
+    @action(detail=True, methods=["get", "post"], url_path="accommodations")
+    def accommodations(self, request, id=None):
+        """
+        GET: list accommodations (unidades) of this rental hub.
+        POST: create a new accommodation linked to this hub (rental_hub set automatically).
+        Body for POST: same as superadmin accommodations (title, status, unit_type, tower, floor, unit_number, price, guests, ...). organizer_id optional.
+        """
+        hub = self.get_object()
+        if request.method == "GET":
+            qs = Accommodation.objects.filter(
+                rental_hub=hub,
+                deleted_at__isnull=True,
+            ).select_related("organizer").order_by("tower", "floor", "unit_number", "-created_at")
+            results = []
+            for acc in qs:
+                gallery_ids = acc.gallery_media_ids or []
+                if acc.gallery_items:
+                    ordered = sorted(acc.gallery_items, key=lambda x: x.get("sort_order", 0))
+                    gallery_ids = [str(it.get("media_id")) for it in ordered if it.get("media_id")]
+                item = {
+                    "id": str(acc.id),
+                    "title": acc.title,
+                    "slug": acc.slug,
+                    "status": acc.status,
+                    "organizer_id": str(acc.organizer_id) if acc.organizer_id else None,
+                    "organizer_name": acc.organizer.name if acc.organizer else None,
+                    "city": acc.city or "",
+                    "country": acc.country or "",
+                    "guests": acc.guests,
+                    "price": float(acc.price or 0),
+                    "currency": acc.currency or "CLP",
+                    "photo_count": len(gallery_ids),
+                    "unit_type": acc.unit_type or "",
+                    "tower": acc.tower or "",
+                    "floor": acc.floor,
+                    "unit_number": acc.unit_number or "",
+                    "square_meters": float(acc.square_meters) if acc.square_meters is not None else None,
+                }
+                results.append(item)
+            return Response({"results": results, "count": len(results)})
+
+        # POST: create accommodation bound to this hub
+        data = request.data or {}
+        title = (data.get("title") or "").strip()
+        if not title:
+            return Response(
+                {"detail": "title es requerido."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        organizer = None
+        organizer_id = data.get("organizer_id")
+        if organizer_id:
+            from apps.organizers.models import Organizer
+            try:
+                organizer = Organizer.objects.get(id=organizer_id)
+            except (Organizer.DoesNotExist, ValueError):
+                return Response(
+                    {"detail": "Organizador no encontrado."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        slug_raw = (data.get("slug") or "").strip()
+        slug = slugify(title) if not slug_raw else slugify(slug_raw)
+        if not slug:
+            slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "alojamiento"
+        # Slug must be unique globally for Accommodation
+        if Accommodation.objects.filter(slug=slug, deleted_at__isnull=True).exists():
+            return Response(
+                {"detail": f"Ya existe un alojamiento con slug '{slug}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        status_val = data.get("status", "draft")
+        if status_val not in ("draft", "published", "cancelled"):
+            status_val = "draft"
+        property_type = data.get("property_type", "cabin")
+        if property_type not in dict(Accommodation.PROPERTY_TYPE_CHOICES):
+            property_type = "cabin"
+
+        acc = Accommodation(
+            title=title,
+            slug=slug,
+            organizer=organizer,
+            rental_hub=hub,
+            status=status_val,
+            property_type=property_type,
+            description=(data.get("description") or "").strip(),
+            short_description=(data.get("short_description") or "").strip()[:500],
+            location_name=(data.get("location_name") or "").strip()[:255],
+            location_address=(data.get("location_address") or "").strip(),
+            country=(data.get("country") or "Chile").strip()[:255],
+            city=(data.get("city") or "").strip()[:255],
+            guests=max(1, int(data.get("guests", 2))),
+            bedrooms=max(0, int(data.get("bedrooms", 1))),
+            bathrooms=max(0, int(data.get("bathrooms", 1))),
+            beds=max(0, int(data.get("beds", 1))) if data.get("beds") is not None else 1,
+            price=Decimal(str(data.get("price", 0))) if data.get("price") is not None else Decimal("0"),
+            currency=(data.get("currency") or "CLP")[:3],
+            amenities=[str(x) for x in (data.get("amenities") if isinstance(data.get("amenities"), list) else []) if x],
+            not_amenities=[str(x) for x in (data.get("not_amenities") if isinstance(data.get("not_amenities"), list) else []) if x],
+            unit_type=(data.get("unit_type") or "").strip()[:30],
+            tower=(data.get("tower") or "").strip()[:30],
+            floor=_optional_int(data.get("floor")),
+            unit_number=(data.get("unit_number") or "").strip()[:20],
+            square_meters=_optional_decimal(data.get("square_meters")),
+        )
+        if data.get("latitude") is not None:
+            try:
+                acc.latitude = Decimal(str(data["latitude"]))
+            except (TypeError, ValueError):
+                pass
+        if data.get("longitude") is not None:
+            try:
+                acc.longitude = Decimal(str(data["longitude"]))
+            except (TypeError, ValueError):
+                pass
+        acc.save()
+
+        return Response(
+            {
+                "id": str(acc.id),
+                "title": acc.title,
+                "slug": acc.slug,
+                "status": acc.status,
+                "rental_hub_id": str(hub.id),
+                "rental_hub_slug": hub.slug,
+                "unit_type": acc.unit_type or "",
+                "tower": acc.tower or "",
+                "floor": acc.floor,
+                "unit_number": acc.unit_number or "",
+                "square_meters": float(acc.square_meters) if acc.square_meters is not None else None,
+                "guests": acc.guests,
+                "price": float(acc.price or 0),
+                "currency": acc.currency or "CLP",
+            },
+            status=status.HTTP_201_CREATED,
+        )
