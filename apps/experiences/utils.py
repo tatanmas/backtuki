@@ -111,13 +111,13 @@ def generate_tour_instances_from_pattern(experience: Experience):
                                 duration_minutes = experience.duration_minutes or 120
                                 end_datetime = start_datetime + timedelta(minutes=duration_minutes)
                             
-                            # Get languages (default to Spanish)
-                            languages = slot.get('languages', ['es'])
+                            # Get languages (default to Spanish). Accept both 'languages' (array) and 'language' (string)
+                            languages = slot.get('languages') or (([slot['language']] if slot.get('language') else None)) or ['es']
                             if not isinstance(languages, list):
-                                languages = ['es']
+                                languages = [languages] if languages else ['es']
                             
-                            # Get capacity
-                            max_capacity = slot.get('capacity') or experience.max_participants
+                            # Get capacity (accept both capacity and maxCapacity for JSON/camelCase)
+                            max_capacity = slot.get('capacity') or slot.get('maxCapacity') or experience.max_participants
                             
                             # Create instance for each language
                             for lang in languages:

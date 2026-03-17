@@ -74,6 +74,7 @@ class HotelSerializer(serializers.ModelSerializer):
             "longitude",
             "amenities",
             "external_id",
+            "min_nights",
             "rooms_count",
             "created_at",
             "updated_at",

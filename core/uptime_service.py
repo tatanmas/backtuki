@@ -82,6 +82,41 @@ def get_last_heartbeat() -> Optional[timezone.datetime]:
     return last
 
 
+def get_last_heartbeat_source() -> Optional[str]:
+    """Origen del último heartbeat (celery, health, platform_status, management_command). Para indicar en UI si los datos son fiables."""
+    from core.models import PlatformUptimeHeartbeat
+
+    row = (
+        PlatformUptimeHeartbeat.objects.order_by("-recorded_at")
+        .values_list("source", flat=True)
+        .first()
+    )
+    return row
+
+
+def record_heartbeat_if_throttled(
+    min_interval_seconds: int = 55,
+    source: str = "health",
+) -> bool:
+    """
+    Registra un heartbeat solo si el último es más antiguo que min_interval_seconds.
+    Usado por el endpoint de health (load balancer/Cloud Run) para que el uptime
+    refleje disponibilidad real aunque Celery Beat no esté escribiendo.
+    Devuelve True si se escribió un nuevo heartbeat.
+    """
+    from core.models import PlatformUptimeHeartbeat
+
+    last = get_last_heartbeat()
+    now = timezone.now()
+    if last is not None and (now - last).total_seconds() < min_interval_seconds:
+        return False
+    try:
+        PlatformUptimeHeartbeat.objects.create(recorded_at=now, source=source)
+        return True
+    except Exception:
+        return False
+
+
 def get_current_run_start(
     before: Optional[timezone.datetime] = None,
     gap_seconds: int = DOWNTIME_GAP_SECONDS,

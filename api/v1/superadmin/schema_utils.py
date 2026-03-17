@@ -81,7 +81,8 @@ Consulta el schema devuelto por GET /api/v1/superadmin/schema/experience/ para l
     "accommodation": """Genera un JSON válido para crear un alojamiento en Tuki.
 El objeto debe tener al menos: title. Opcional: organizer_id (UUID; si no se envía, el alojamiento queda vinculado al superadmin).
 Otros campos: slug (o se genera del título), description, short_description, status (draft|published|cancelled), property_type (cabin|house|apartment|hotel|hostel|villa|other),
-location_name, location_address, country, city, latitude, longitude, guests, bedrooms, bathrooms, beds, price, currency (CLP), amenities (array de strings), not_amenities (array).
+location_name, location_address, country, city, latitude, longitude, guests, bedrooms, full_bathrooms, half_bathrooms (o legacy bathrooms: entero o 4.5 → 4 completos + 1 medio), beds, price, currency (CLP), amenities (array de strings), not_amenities (array).
+min_nights (entero, opcional): mínimo de noches para reservar; si no se define, se hereda de la central de arrendamiento o del hotel.
 Para unidades de central de arrendamiento: rental_hub_id (UUID), unit_type, tower, floor, unit_number, square_meters (mismo formato que alojamientos normales).
 Opcional: reviews (array de objetos). Cada reseña: author_name (obligatorio), rating (1-5), text o body (texto), review_date (YYYY-MM-DD), author_location, stay_type, host_reply. Si envías reviews, se calculan rating_avg y review_count automáticamente. También puedes enviar rating_avg (número 1-5, ej. 4.9; si envías 4.93 se guarda como 4.9) y review_count sin reviews.
 Consulta el schema en GET /api/v1/superadmin/schema/accommodation/ para la lista exacta.""",
@@ -100,6 +101,24 @@ Consulta GET /api/v1/superadmin/schema/erasmus_lead/ y docs/CARGA_LEADS_ERASMUS.
     "erasmus_timeline_item": """Genera un JSON para crear ítems del timeline Erasmus. Formato: { "items": [ {...}, ... ] } o un solo objeto.
 Cada ítem: title_es, title_en (strings), location (string), image (URL opcional), scheduled_date (YYYY-MM-DD), display_order (entero), experience_id (UUID opcional), is_active (boolean).
 Consulta GET /api/v1/superadmin/schema/erasmus_timeline_item/ para la lista exacta.""",
+
+    "bank_statement": """Genera un JSON para importar una cartola bancaria en Tuki.
+Formato: { "bank_account_id": "uuid" o "bank_account_name": "nombre exacto", "lines": [ {...}, ... ] }.
+Cada línea: statement_date (YYYY-MM-DD, obligatorio), value_date (YYYY-MM-DD, opcional), external_reference (string), description (string), amount (número: positivo=ingreso, negativo=egreso), balance_after (número opcional).
+Fechas en YYYY-MM-DD. Montos en CLP. Referencia: docs/CARGA_CARTOLAS_BANCARIAS.md y carga/cartolas/ejemplo_cartola.json.""",
+
+    "vendor_bill": """Genera un JSON para cargar facturas de proveedor (VendorBill) en Tuki.
+Formato: { "bills": [ {...}, ... ] }. Cada factura puede incluir vendor (objeto con name, tax_id, ...) para crear proveedor si no existe, o vendor_id (UUID).
+Campos obligatorios: bill_number, issue_date (YYYY-MM-DD), due_date (YYYY-MM-DD), total_amount. Opcionales: subtotal_amount, tax_amount, currency (CLP), description, external_reference, expense_lines (array).
+expense_lines: expense_category_id, tax_treatment_id, cost_center_id (opcional), description, net_amount, tax_amount, gross_amount.
+Referencia: docs/CARGA_FACTURAS.md y carga/facturas/ejemplo_facturas.json.""",
+
+    "external_revenue": """Genera un JSON para cargar revenue externo (eventos pre-plataforma, Excel histórico) en Tuki.
+Formato: { "records": [ {...}, ... ] } o array directo. Cada registro: external_reference (obligatorio), effective_date (YYYY-MM-DD obligatorio), gross_amount, platform_fee_amount, payable_amount.
+organizer_id (UUID): opcional; si no se envía, el registro queda "huérfano" (solo para reportes).
+already_paid (boolean): true = ya fue pagado/transferido al organizador (eventos pre-plataforma). Default false.
+Opcionales: source_type (manual, event_order, etc.), source_system, product_label, description, currency (CLP), event_id, experience_id, accommodation_id, car_id.
+Referencia: docs/CARGA_REVENUE_EXTERNO.md y carga/revenue-externo/ejemplo_revenue.json.""",
 }
 
 # Static schema for entities that don't use a DRF serializer (or not yet)
@@ -139,5 +158,28 @@ ERASMUS_TIMELINE_ITEM_SCHEMA = {
         "display_order": {"type": "integer", "required": False, "default": 0},
         "experience_id": {"type": "uuid", "required": False},
         "is_active": {"type": "boolean", "required": False, "default": True},
+    },
+}
+
+BANK_STATEMENT_SCHEMA = {
+    "type": "object",
+    "fields": {
+        "bank_account_id": {"type": "uuid", "required": False, "help_text": "UUID de la cuenta; alternativamente usar bank_account_name"},
+        "bank_account_name": {"type": "string", "required": False, "help_text": "Nombre exacto de la cuenta"},
+        "lines": {"type": "array", "required": True, "help_text": "Array de líneas. Cada línea: statement_date, value_date?, external_reference?, description?, amount, balance_after?"},
+    },
+}
+
+VENDOR_BILL_SCHEMA = {
+    "type": "object",
+    "fields": {
+        "bills": {"type": "array", "required": True, "help_text": "Array de facturas. Cada una: vendor_id o vendor (objeto), bill_number, issue_date, due_date, total_amount, expense_lines?"},
+    },
+}
+
+EXTERNAL_REVENUE_SCHEMA = {
+    "type": "object",
+    "fields": {
+        "records": {"type": "array", "required": True, "help_text": "Array de registros. Cada uno: external_reference, effective_date, gross_amount, organizer_id?, already_paid?"},
     },
 }

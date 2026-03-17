@@ -4,6 +4,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.renderers import JSONRenderer
+
+from core.throttles import LoginRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.hashers import make_password
@@ -725,8 +727,9 @@ def set_password_view(request):
 
 @method_decorator(csrf_exempt, name='dispatch')
 class EmailTokenObtainPairView(APIView):
-    """Vista para obtener token JWT con email (para organizadores)"""
+    """Vista para obtener token JWT con email (para organizadores). Strict throttle vs brute force."""
     permission_classes = [AllowAny]
+    throttle_classes = [LoginRateThrottle]
     renderer_classes = [JSONRenderer]
     
     def post(self, request):

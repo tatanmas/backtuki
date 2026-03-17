@@ -1,20 +1,34 @@
 """
 SuperAdmin Experiences Views
-Endpoints para creación de experiencias desde JSON.
+Endpoints para creación de experiencias desde JSON y administración de free tours
+(instancias, bloqueo por fecha, inscritos, regenerar instancias).
 """
 
+from datetime import datetime
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django.db import transaction
+from django.utils import timezone
 import logging
 
-from apps.experiences.models import Experience, ExperienceImportedReview
+from apps.experiences.models import (
+    Experience,
+    ExperienceImportedReview,
+    TourInstance,
+    TourBooking,
+)
 from apps.experiences.utils import generate_tour_instances_from_pattern
+from apps.experiences.serializers import (
+    ExperienceSerializer,
+    TourInstanceSerializer,
+    TourBookingSerializer,
+)
 from apps.organizers.models import Organizer
 
 from ..permissions import IsSuperUser
 from ..serializers import JsonExperienceCreateSerializer
+from apps.landing_destinations.models import LandingDestination, LandingDestinationExperience
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +230,8 @@ def update_experience_commission(request, experience_id):
     Body:
         {
             "platform_service_fee_rate": 0.15 | null,  // 0.15 = 15%
-            "creator_commission_rate": 0.5 | null     // 0.5 = 50% of platform fee
+            "creator_commission_rate": 0.5 | null,    // 0.5 = 50% of base; 0.06 = 6% if basis=pct_total
+            "creator_commission_basis": "pct_tuki_commission" | "pct_total"  // default: pct_tuki_commission
         }
     """
     try:
@@ -229,6 +244,7 @@ def update_experience_commission(request, experience_id):
     
     platform_rate = request.data.get('platform_service_fee_rate')
     creator_rate = request.data.get('creator_commission_rate')
+    creator_basis = request.data.get('creator_commission_basis')
     
     if platform_rate is not None:
         try:
@@ -265,12 +281,362 @@ def update_experience_commission(request, experience_id):
             )
     elif 'creator_commission_rate' in request.data:
         experience.creator_commission_rate = None
-    
-    experience.save(update_fields=['platform_service_fee_rate', 'creator_commission_rate', 'updated_at'])
-    
+
+    if creator_basis in ('pct_tuki_commission', 'pct_total'):
+        experience.creator_commission_basis = creator_basis
+
+    update_fields = ['platform_service_fee_rate', 'creator_commission_rate', 'updated_at']
+    if creator_basis is not None:
+        update_fields.append('creator_commission_basis')
+    experience.save(update_fields=update_fields)
+
     return Response({
         "id": str(experience.id),
         "title": experience.title,
         "platform_service_fee_rate": float(experience.platform_service_fee_rate) if experience.platform_service_fee_rate is not None else None,
         "creator_commission_rate": float(experience.creator_commission_rate) if experience.creator_commission_rate is not None else None,
+        "creator_commission_basis": experience.creator_commission_basis,
     }, status=status.HTTP_200_OK)
+
+
+@api_view(['PATCH'])
+@permission_classes([IsSuperUser])
+def superadmin_experience_detail(request, experience_id):
+    """
+    PATCH /api/v1/superadmin/experiences/<experience_id>/
+    Update experience fields and optionally organizer_id.
+    """
+    try:
+        experience = Experience.objects.get(id=experience_id)
+    except Experience.DoesNotExist:
+        return Response(
+            {"detail": "Experiencia no encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    data = request.data
+    # Allow updating organizer
+    organizer_id = data.get('organizer_id')
+    if organizer_id is not None:
+        if organizer_id == '' or organizer_id is None:
+            return Response(
+                {"detail": "organizer_id no puede ser nulo (experiencias requieren organizador)."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            organizer = Organizer.objects.get(id=organizer_id)
+            if not organizer.has_experience_module:
+                return Response(
+                    {"detail": f"El organizador '{organizer.name}' no tiene el módulo de experiencias."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            experience.organizer = organizer
+        except Organizer.DoesNotExist:
+            return Response(
+                {"detail": "Organizador no encontrado."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    # Allowed fields for PATCH (same as ExperienceSerializer minus read_only)
+    allowed = {
+        'title', 'slug', 'description', 'short_description', 'status', 'type',
+        'pricing_mode', 'price', 'child_price', 'is_child_priced', 'infant_price', 'is_infant_priced',
+        'currency', 'is_free_tour', 'credit_per_person', 'capacity_count_rule',
+        'booking_horizon_days', 'sales_cutoff_hours', 'recurrence_pattern',
+        'location_name', 'location_address', 'location_latitude', 'location_longitude',
+        'country', 'duration_minutes', 'max_participants', 'min_participants',
+        'included', 'not_included', 'requirements', 'itinerary', 'images', 'categories', 'tags',
+        'is_active', 'notify_whatsapp_group_on_booking',
+    }
+    for key in allowed:
+        if key in data:
+            setattr(experience, key, data[key])
+
+    experience.save()
+    serializer = ExperienceSerializer(experience)
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET', 'PUT'])
+@permission_classes([IsSuperUser])
+def experience_landing_destinations(request, experience_id):
+    """
+    GET: list landing destinations that include this experience.
+    PUT: set which landing destinations include this experience. Body: { "destination_ids": ["uuid", ...] }.
+    """
+    try:
+        experience = Experience.objects.get(id=experience_id)
+    except Experience.DoesNotExist:
+        return Response(
+            {"detail": "Experiencia no encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if request.method == 'GET':
+        dests = LandingDestination.objects.filter(
+            destination_experiences__experience_id=experience_id
+        ).order_by('name').values('id', 'name', 'slug')
+        return Response([
+            {"id": str(d["id"]), "name": d["name"], "slug": d["slug"]}
+            for d in dests
+        ], status=status.HTTP_200_OK)
+
+    # PUT
+    destination_ids = request.data.get("destination_ids")
+    if not isinstance(destination_ids, list):
+        return Response(
+            {"detail": "Se requiere 'destination_ids' (lista de UUIDs de destinos)."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    exp_id_str = str(experience.id)
+    with transaction.atomic():
+        LandingDestinationExperience.objects.filter(experience_id=exp_id_str).delete()
+        for i, dest_id in enumerate(destination_ids):
+            try:
+                dest = LandingDestination.objects.get(id=dest_id)
+            except (LandingDestination.DoesNotExist, ValueError, TypeError):
+                continue
+            LandingDestinationExperience.objects.create(
+                destination=dest,
+                experience_id=exp_id_str,
+                order=i,
+            )
+    dests = LandingDestination.objects.filter(
+        destination_experiences__experience_id=experience_id
+    ).order_by('name').values('id', 'name', 'slug')
+    return Response([
+        {"id": str(d["id"]), "name": d["name"], "slug": d["slug"]}
+        for d in dests
+    ], status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperUser])
+def superadmin_experience_instances(request, experience_id):
+    """
+    GET /api/v1/superadmin/experiences/<experience_id>/instances/
+    List tour instances for an experience. Query: date_from, date_to, status.
+    """
+    try:
+        experience = Experience.objects.get(id=experience_id)
+    except Experience.DoesNotExist:
+        return Response(
+            {"detail": "Experiencia no encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    qs = TourInstance.objects.filter(experience=experience).select_related('experience').order_by('start_datetime')
+    date_from = request.query_params.get('date_from')
+    date_to = request.query_params.get('date_to')
+    status_filter = request.query_params.get('status')
+    if date_from:
+        try:
+            d = datetime.strptime(date_from, '%Y-%m-%d').date()
+            qs = qs.filter(start_datetime__date__gte=d)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            d = datetime.strptime(date_to, '%Y-%m-%d').date()
+            qs = qs.filter(start_datetime__date__lte=d)
+        except ValueError:
+            pass
+    if status_filter and status_filter in ('active', 'blocked', 'cancelled'):
+        qs = qs.filter(status=status_filter)
+
+    serializer = TourInstanceSerializer(qs, many=True)
+    return Response({"results": serializer.data})
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperUser])
+def superadmin_experience_instances_block_by_date(request, experience_id):
+    """
+    POST /api/v1/superadmin/experiences/<experience_id>/instances/block-by-date/
+    Body: { "date": "YYYY-MM-DD", "language": "es" | "en" | null }
+    """
+    try:
+        experience = Experience.objects.get(id=experience_id)
+    except Experience.DoesNotExist:
+        return Response(
+            {"detail": "Experiencia no encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    date_str = request.data.get('date')
+    if not date_str:
+        return Response(
+            {"detail": "El campo 'date' (YYYY-MM-DD) es requerido."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    try:
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return Response(
+            {"detail": "Formato de fecha inválido. Use YYYY-MM-DD."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    language = request.data.get('language')  # None = both
+
+    qs = TourInstance.objects.filter(
+        experience=experience,
+        start_datetime__date=target_date,
+        status='active',
+    )
+    if language in ('es', 'en'):
+        qs = qs.filter(language=language)
+    updated = qs.update(status='blocked')
+    return Response({"blocked_count": updated, "date": date_str, "language": language})
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperUser])
+def superadmin_experience_instances_unblock_by_date(request, experience_id):
+    """
+    POST /api/v1/superadmin/experiences/<experience_id>/instances/unblock-by-date/
+    Body: { "date": "YYYY-MM-DD", "language": "es" | "en" | null }
+    """
+    try:
+        experience = Experience.objects.get(id=experience_id)
+    except Experience.DoesNotExist:
+        return Response(
+            {"detail": "Experiencia no encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    date_str = request.data.get('date')
+    if not date_str:
+        return Response(
+            {"detail": "El campo 'date' (YYYY-MM-DD) es requerido."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    try:
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return Response(
+            {"detail": "Formato de fecha inválido. Use YYYY-MM-DD."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    language = request.data.get('language')
+
+    qs = TourInstance.objects.filter(
+        experience=experience,
+        start_datetime__date=target_date,
+        status='blocked',
+    )
+    if language in ('es', 'en'):
+        qs = qs.filter(language=language)
+    updated = qs.update(status='active')
+    return Response({"unblocked_count": updated, "date": date_str, "language": language})
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperUser])
+def superadmin_experience_regenerate_instances(request, experience_id):
+    """
+    POST /api/v1/superadmin/experiences/<experience_id>/regenerate-instances/
+    Regenerates tour instances from recurrence_pattern (only creates new, no delete).
+    """
+    try:
+        experience = Experience.objects.get(id=experience_id)
+    except Experience.DoesNotExist:
+        return Response(
+            {"detail": "Experiencia no encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    count = generate_tour_instances_from_pattern(experience)
+    return Response({"instances_created": count}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperUser])
+def superadmin_experience_instance_bookings(request, experience_id, instance_id):
+    """
+    GET /api/v1/superadmin/experiences/<experience_id>/instances/<instance_id>/bookings/
+    List bookings (inscritos) for a tour instance.
+    """
+    try:
+        instance = TourInstance.objects.get(id=instance_id, experience_id=experience_id)
+    except TourInstance.DoesNotExist:
+        return Response(
+            {"detail": "Instancia no encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    qs = TourBooking.objects.filter(tour_instance=instance).order_by('-created_at')
+    serializer = TourBookingSerializer(qs, many=True)
+    return Response({"results": serializer.data})
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperUser])
+def superadmin_experience_instance_cancel_and_notify(request, experience_id, instance_id):
+    """
+    POST /api/v1/superadmin/experiences/<experience_id>/instances/<instance_id>/cancel-and-notify/
+    Cancel the tour instance and send cancellation email to all confirmed attendees.
+    """
+    try:
+        instance = TourInstance.objects.get(id=instance_id, experience_id=experience_id)
+    except TourInstance.DoesNotExist:
+        return Response(
+            {"detail": "Instancia no encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    if instance.status == 'cancelled':
+        return Response(
+            {"detail": "La instancia ya está cancelada.", "status": "cancelled"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    instance.status = 'cancelled'
+    instance.save(update_fields=['status', 'updated_at'])
+    from apps.experiences.tasks import send_tour_instance_cancellation_emails
+    result = send_tour_instance_cancellation_emails(instance)
+    return Response({
+        "status": "cancelled",
+        "emails_sent": result['sent_count'],
+        "errors": result['errors'],
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperUser])
+def superadmin_experience_bookings_by_date(request, experience_id):
+    """
+    GET /api/v1/superadmin/experiences/<experience_id>/bookings-by-date/?date=YYYY-MM-DD
+    List all bookings for instances on the given date (grouped by instance or flat).
+    """
+    try:
+        experience = Experience.objects.get(id=experience_id)
+    except Experience.DoesNotExist:
+        return Response(
+            {"detail": "Experiencia no encontrada."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    date_str = request.query_params.get('date')
+    if not date_str:
+        return Response(
+            {"detail": "Query param 'date' (YYYY-MM-DD) es requerido."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    try:
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return Response(
+            {"detail": "Formato de fecha inválido. Use YYYY-MM-DD."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    instances = TourInstance.objects.filter(
+        experience=experience,
+        start_datetime__date=target_date,
+    ).order_by('start_datetime')
+    by_instance = []
+    for inst in instances:
+        bookings = TourBooking.objects.filter(tour_instance=inst, status='confirmed').order_by('created_at')
+        ser = TourBookingSerializer(bookings, many=True)
+        by_instance.append({
+            "instance_id": str(inst.id),
+            "start_datetime": timezone.localtime(inst.start_datetime).isoformat(),
+            "language": inst.language,
+            "bookings": ser.data,
+        })
+    return Response({"date": date_str, "by_instance": by_instance})

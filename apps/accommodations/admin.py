@@ -4,6 +4,7 @@ from django.contrib import admin
 from .models import (
     Accommodation,
     AccommodationBlockedDate,
+    AccommodationExtraCharge,
     AccommodationReservation,
     AccommodationReview,
     Hotel,
@@ -23,6 +24,12 @@ class AccommodationBlockedDateInline(admin.TabularInline):
     fields = ("date",)
 
 
+class AccommodationExtraChargeInline(admin.TabularInline):
+    model = AccommodationExtraCharge
+    extra = 0
+    fields = ("code", "name", "charge_type", "amount", "currency", "is_optional", "default_quantity", "max_quantity", "is_active", "display_order")
+
+
 @admin.register(Accommodation)
 class AccommodationAdmin(admin.ModelAdmin):
     list_display = (
@@ -32,7 +39,7 @@ class AccommodationAdmin(admin.ModelAdmin):
     list_filter = ("status", "property_type", "country", "rental_hub", "hotel", "unit_type", "tower")
     search_fields = ("title", "slug", "city", "location_name", "unit_number")
     prepopulated_fields = {"slug": ("title",)}
-    inlines = [AccommodationReviewInline, AccommodationBlockedDateInline]
+    inlines = [AccommodationReviewInline, AccommodationBlockedDateInline, AccommodationExtraChargeInline]
 
 
 @admin.register(AccommodationReview)

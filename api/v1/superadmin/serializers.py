@@ -145,6 +145,17 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
         help_text="Duración en minutos"
     )
 
+    # Capacity (optional; used as default for instances when slot does not set capacity/maxCapacity)
+    max_participants = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1,
+        help_text="Máximo de participantes por instancia (null = ilimitado)"
+    )
+    min_participants = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1,
+        default=1,
+        help_text="Mínimo de participantes para realizar el tour"
+    )
+
     # Carga: when experience is under Tuki organizer, real operator identifier for future transfer
     managed_operator_slug = serializers.CharField(
         max_length=100, required=False, allow_blank=True,
@@ -302,23 +313,18 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
         """Cross-field validation."""
         errors = {}
         
-        # Validate free tour requirements (solo si es free_tour, no para WhatsApp)
+        # Validate free tour requirements: credit_per_person required when is_free_tour (with or without WhatsApp)
         is_free_tour = attrs.get('is_free_tour', False)
         is_whatsapp = attrs.get('is_whatsapp_reservation', False)
         
-        if is_free_tour and not is_whatsapp:
+        if is_free_tour:
             credit_per_person = attrs.get('credit_per_person')
             if credit_per_person is None or credit_per_person <= 0:
                 errors['credit_per_person'] = [
-                    "El crédito por persona es requerido para tours gratuitos y debe ser mayor a 0."
+                    "El crédito por persona es requerido para free tours y debe ser mayor a 0."
                 ]
         
-        # Para WhatsApp, is_free_tour debe ser false
-        if is_whatsapp and is_free_tour:
-            errors['is_free_tour'] = [
-                "Los tours con reserva por WhatsApp no pueden ser free_tour."
-            ]
-        
+        # Free tour + reserva WhatsApp is allowed (same flow: reserve via WhatsApp, no payment on platform)
         if errors:
             raise serializers.ValidationError(errors)
         
@@ -403,9 +409,8 @@ class JsonExperienceCreateSerializer(serializers.Serializer):
         if 'recurrence_pattern' not in validated_data:
             validated_data['recurrence_pattern'] = {}
         
-        # Set defaults for WhatsApp tours
-        if validated_data.get('is_whatsapp_reservation'):
-            validated_data['is_free_tour'] = False
+        # Set defaults for WhatsApp-only (non-free) tours
+        if validated_data.get('is_whatsapp_reservation') and not validated_data.get('is_free_tour'):
             validated_data['type'] = 'tour'
             if 'status' not in validated_data:
                 validated_data['status'] = 'published'
@@ -455,7 +460,10 @@ class JsonAccommodationCreateSerializer(serializers.Serializer):
     city = serializers.CharField(max_length=255, required=False, allow_blank=True)
     guests = serializers.IntegerField(default=2, min_value=1, required=False)
     bedrooms = serializers.IntegerField(default=1, min_value=0, required=False)
-    bathrooms = serializers.IntegerField(default=1, min_value=0, required=False)
+    # Legacy: "bathrooms" (int or float e.g. 4.5 → 4 full + 1 half). Preferred: full_bathrooms + half_bathrooms (industry standard).
+    bathrooms = serializers.FloatField(default=1, min_value=0, required=False)
+    full_bathrooms = serializers.IntegerField(default=1, min_value=0, required=False)
+    half_bathrooms = serializers.IntegerField(default=0, min_value=0, required=False)
     beds = serializers.IntegerField(default=1, min_value=0, required=False, allow_null=True)
     price = serializers.DecimalField(max_digits=12, decimal_places=2, default=0, min_value=0, required=False)
     currency = serializers.CharField(max_length=3, default="CLP", required=False)
@@ -476,6 +484,26 @@ class JsonAccommodationCreateSerializer(serializers.Serializer):
     floor = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     unit_number = serializers.CharField(max_length=20, required=False, allow_blank=True)
     square_meters = serializers.DecimalField(max_digits=8, decimal_places=2, required=False, allow_null=True, min_value=0)
+    min_nights = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=1,
+        help_text="Minimum number of nights for a booking. Overrides hub/hotel rule when set.",
+    )
+    # Número de orden (opcional). public_code se genera al publicar; no enviar en JSON.
+    display_order = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=1,
+        help_text="Order number from 1. Optional; assigned automatically when published if omitted.",
+    )
+    # Prefijo opcional del código público (ej. Tuki-PV → Tuki-PV-001). Si se omite, se usa tuqui{N}-{random}.
+    public_code_prefix = serializers.CharField(
+        max_length=30,
+        required=False,
+        allow_blank=True,
+        help_text="Optional prefix for public code (e.g. Tuki-PV for Pedra Verde → Tuki-PV-001).",
+    )
 
     # Reseñas (igual que alojamientos normales; aplica también a unidades de central de arrendamiento)
     reviews = serializers.ListField(
@@ -490,6 +518,14 @@ class JsonAccommodationCreateSerializer(serializers.Serializer):
         help_text="Promedio 1-5 (opcional). Se acepta ej. 4.93 y se guarda redondeado a 1 decimal (4.9). Si envías reviews, se recalcula.",
     )
     review_count = serializers.IntegerField(min_value=0, required=False, allow_null=True)
+
+    # Cobros adicionales (v1.5): code, name, charge_type (per_stay|per_night), amount, is_optional, default_quantity, max_quantity, display_order
+    extra_charges = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        allow_empty=True,
+        help_text="Array de cobros: code (único), name, description (opcional), charge_type (per_stay|per_night), amount (>=0), currency (opcional), is_optional (bool), default_quantity (>=1), max_quantity (opcional), display_order (>=0).",
+    )
 
 
 class JsonCarRentalCompanyCreateSerializer(serializers.Serializer):
@@ -648,6 +684,10 @@ class JsonErasmusActivityCreateSerializer(serializers.Serializer):
         choices=["default", "two_column"],
         default="default",
         required=False,
+    )
+    is_paid = serializers.BooleanField(default=False, required=False)
+    price = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True, min_value=0,
     )
 
     def validate_itinerary(self, value):

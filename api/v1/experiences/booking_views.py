@@ -36,6 +36,29 @@ DEFAULT_PLATFORM_FEE_RATE = Decimal('0.15')  # 15%
 DEFAULT_CREATOR_COMMISSION_RATE = Decimal('0.5')  # 50% of platform fee
 
 
+def extract_travel_guide_context(data):
+    """Normalize optional travel-guide source context from request payload."""
+    source_type = data.get('source_type')
+    guide_id = data.get('travel_guide_id')
+    block_key = (data.get('travel_guide_block_key') or '').strip()
+    context = data.get('travel_guide_context') or {}
+    if source_type != 'travel_guide' or not guide_id or not block_key:
+        return None
+    if not isinstance(context, dict):
+        context = {}
+    context = {
+        **context,
+        'travel_guide_id': str(guide_id),
+        'travel_guide_block_key': block_key,
+    }
+    return {
+        'source_type': 'travel_guide',
+        'travel_guide_id': str(guide_id),
+        'travel_guide_block_key': block_key,
+        'travel_guide_context': context,
+    }
+
+
 def get_effective_platform_fee_rate(experience):
     """Platform fee rate for experiences: experience → organizer → default."""
     if experience.platform_service_fee_rate is not None:
@@ -301,6 +324,7 @@ class PublicExperienceReserveView(APIView):
         selected_resources = request.data.get('selected_resources', [])  # [{resource_id, quantity}]
         reservation_id = request.data.get('reservation_id')  # For updating existing reservation
         creator_slug = request.data.get('creator_slug') or request.data.get('ref')  # TUKI Creators attribution
+        guide_source = extract_travel_guide_context(request.data)
         
         # Contact info (optional at reserve stage, required at book)
         first_name = request.data.get('first_name', '')
@@ -405,6 +429,11 @@ class PublicExperienceReserveView(APIView):
                 reservation.selected_resources = selected_resources
                 reservation.capacity_count_rule = experience.capacity_count_rule
                 reservation.expires_at = expires_at
+                if guide_source:
+                    reservation.source_type = 'travel_guide'
+                    reservation.travel_guide_id = guide_source['travel_guide_id']
+                    reservation.travel_guide_block_key = guide_source['travel_guide_block_key']
+                    reservation.travel_guide_context = guide_source['travel_guide_context']
                 reservation.save()
                 
             except ExperienceReservation.DoesNotExist:
@@ -424,7 +453,12 @@ class PublicExperienceReserveView(APIView):
             creator_commission_status = None
             if creator:
                 creator_rate = get_effective_creator_commission_rate(experience)
-                creator_commission_amount = (pricing['service_fee'] * creator_rate).quantize(Decimal('1'))
+                basis = getattr(experience, 'creator_commission_basis', None) or 'pct_tuki_commission'
+                if basis == 'pct_total':
+                    base_amount = pricing['total']
+                else:
+                    base_amount = pricing['service_fee']
+                creator_commission_amount = (base_amount * creator_rate).quantize(Decimal('1'))
                 creator_commission_status = 'pending'
             
             reservation = ExperienceReservation.objects.create(
@@ -451,6 +485,10 @@ class PublicExperienceReserveView(APIView):
                 creator=creator,
                 creator_commission_amount=creator_commission_amount,
                 creator_commission_status=creator_commission_status,
+                source_type='travel_guide' if guide_source else 'direct',
+                travel_guide_id=guide_source['travel_guide_id'] if guide_source else None,
+                travel_guide_block_key=guide_source['travel_guide_block_key'] if guide_source else '',
+                travel_guide_context=guide_source['travel_guide_context'] if guide_source else {},
             )
             
             # 🚀 ENTERPRISE: Start flow tracking for new reservations
@@ -469,6 +507,10 @@ class PublicExperienceReserveView(APIView):
                         'infants': infant_count,
                     },
                     'creator_slug': creator_slug or '',
+                    'source_type': reservation.source_type,
+                    'travel_guide_id': str(reservation.travel_guide_id) if reservation.travel_guide_id else '',
+                    'travel_guide_block_key': reservation.travel_guide_block_key or '',
+                    'travel_guide_context': reservation.travel_guide_context or {},
                 }
             )
             
@@ -544,6 +586,7 @@ class PublicExperienceBookView(APIView):
     def post(self, request, experience_id):
         """Confirm reservation and create Order."""
         reservation_id = request.data.get('reservation_id')
+        guide_source = extract_travel_guide_context(request.data)
         
         if not reservation_id:
             return Response({'error': 'reservation_id is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -574,6 +617,13 @@ class PublicExperienceBookView(APIView):
             if contact_info.get('phone') is not None:
                 reservation.phone = (contact_info['phone'] or '').strip()
             reservation.save(update_fields=['first_name', 'last_name', 'email', 'phone'])
+
+        if guide_source and reservation.source_type != 'travel_guide':
+            reservation.source_type = 'travel_guide'
+            reservation.travel_guide_id = guide_source['travel_guide_id']
+            reservation.travel_guide_block_key = guide_source['travel_guide_block_key']
+            reservation.travel_guide_context = guide_source['travel_guide_context']
+            reservation.save(update_fields=['source_type', 'travel_guide', 'travel_guide_block_key', 'travel_guide_context'])
         
         # Normalize: last_name empty -> use "-" for validation
         if not (reservation.last_name or '').strip():
@@ -681,6 +731,24 @@ class PublicExperienceBookView(APIView):
             reservation.status = 'paid'
             reservation.paid_at = timezone.now()
             reservation.save()
+            # Notify WhatsApp group for free tour if enabled
+            try:
+                from apps.whatsapp.services.group_notification_service import GroupNotificationService
+                total_pax = reservation.adult_count + reservation.child_count + reservation.infant_count
+                instance = reservation.instance
+                if instance:
+                    GroupNotificationService.send_free_tour_booking_notification(
+                        experience=reservation.experience,
+                        first_name=reservation.first_name or '',
+                        last_name=reservation.last_name or '',
+                        email=reservation.email or '',
+                        phone=reservation.phone or '',
+                        participants_count=total_pax,
+                        instance_start_datetime=instance.start_datetime,
+                        language=instance.language or 'es',
+                    )
+            except Exception as e:
+                logger.exception("Failed to send free tour booking notification: %s", e)
             # Notify creator by email when sale was with their link (free experience)
             if reservation.creator_id:
                 try:

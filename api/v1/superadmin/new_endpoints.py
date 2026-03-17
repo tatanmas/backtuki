@@ -1,7 +1,18 @@
-# Temporary file with new endpoints - will be merged into views.py
+# Legacy file: live routes use views/organizers.py (IsSuperUser).
+# This file secured with IsSuperUser to avoid accidental use of AllowAny.
+
+import logging
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+
+from .permissions import IsSuperUser
+
+logger = logging.getLogger(__name__)
+
 
 @api_view(['PATCH'])
-@permission_classes([AllowAny])  # TODO: Cambiar a IsAdminUser en producción
+@permission_classes([IsSuperUser])
 def update_organizer_modules(request, organizer_id):
     """
     🚀 ENTERPRISE: Update organizer modules (events, experiences, accommodations).
@@ -69,7 +80,7 @@ def update_organizer_modules(request, organizer_id):
 
 
 @api_view(['PATCH'])
-@permission_classes([AllowAny])  # TODO: Cambiar a IsAdminUser en producción
+@permission_classes([IsSuperUser])
 def update_organizer_service_fee(request, organizer_id):
     """
     🚀 ENTERPRISE: Update organizer service fee rate.

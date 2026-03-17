@@ -659,6 +659,38 @@ class ErasmusSlideConfig(BaseModel):
         return f"{self.slide_id} -> {self.asset_id or 'unassigned'}"
 
 
+class ErasmusWelcomeMessageConfig(TimeStampedModel):
+    """
+    Singleton config for WhatsApp welcome message templates per locale (es, en, pt, de, it, fr).
+    Editable from Super Admin. Placeholders: {first_name}, {link_plataforma}, {magic_link_url}, {email}.
+    If a locale is missing or empty, the code falls back to the default hardcoded template.
+    """
+
+    # Single row: we use a constant key so there is only one config record
+    CONFIG_KEY = "default"
+
+    config_key = models.CharField(
+        _("config key"),
+        max_length=50,
+        unique=True,
+        default=CONFIG_KEY,
+        editable=False,
+    )
+    messages_by_locale = models.JSONField(
+        _("messages by locale"),
+        default=dict,
+        blank=True,
+        help_text=_('Dict locale -> template text, e.g. {"es": "Hola {first_name}...", "en": "Hi {first_name}..."}. Placeholders: first_name, link_plataforma, magic_link_url, email.'),
+    )
+
+    class Meta:
+        verbose_name = _("Erasmus welcome message config")
+        verbose_name_plural = _("Erasmus welcome message configs")
+
+    def __str__(self):
+        return f"Welcome messages ({len(self.messages_by_locale)} locales)"
+
+
 class ErasmusRegistroBackgroundSlide(BaseModel):
     """
     Ordered images for the Erasmus registration form background.
@@ -833,6 +865,62 @@ class ErasmusActivity(BaseModel):
         return f"{self.title_es} ({self.slug})"
 
 
+class ErasmusActivityExtraField(models.Model):
+    """
+    Dynamic extra question for inscription in a specific Erasmus activity (e.g. número de ruta, pasaporte).
+    Configurable per activity in Superadmin; answers are stored in ErasmusActivityInstanceRegistration.extra_data.
+    Used in WhatsApp/post-purchase messages as metatags: {{field_key}}.
+    """
+
+    FIELD_TYPE_CHOICES = (
+        ("text", _("Text")),
+        ("email", _("Email")),
+        ("phone", _("Phone")),
+        ("number", _("Number")),
+        ("select", _("Select")),
+        ("multiselect", _("Multiple select")),
+        ("checkbox", _("Checkbox")),
+        ("radio", _("Radio")),
+        ("date", _("Date")),
+        ("textarea", _("Text area")),
+        ("url", _("URL")),
+    )
+
+    activity = models.ForeignKey(
+        ErasmusActivity,
+        on_delete=models.CASCADE,
+        related_name="extra_fields",
+        verbose_name=_("activity"),
+    )
+    label = models.CharField(_("label"), max_length=255)
+    field_key = models.SlugField(
+        _("field key"),
+        max_length=80,
+        help_text=_("Unique key for this field (e.g. numero_ruta, pasaporte). Use in messages as {{field_key}}."),
+    )
+    type = models.CharField(_("type"), max_length=20, choices=FIELD_TYPE_CHOICES)
+    required = models.BooleanField(_("required"), default=False)
+    placeholder = models.CharField(_("placeholder"), max_length=255, blank=True)
+    help_text = models.TextField(_("help text"), blank=True)
+    order = models.PositiveIntegerField(_("order"), default=0)
+    is_active = models.BooleanField(_("active"), default=True, db_index=True)
+    options = models.JSONField(
+        _("options"),
+        default=list,
+        blank=True,
+        help_text=_("For select/radio: list of {value, label}"),
+    )
+
+    class Meta:
+        verbose_name = _("Erasmus activity extra field")
+        verbose_name_plural = _("Erasmus activity extra fields")
+        ordering = ["order", "id"]
+        unique_together = [("activity", "field_key")]
+
+    def __str__(self):
+        return f"{self.activity.title_es} – {self.label} ({self.field_key})"
+
+
 class ErasmusActivityInstance(BaseModel):
     """
     When an Erasmus activity is scheduled (exact date or month-only).
@@ -926,6 +1014,17 @@ class ErasmusActivityInstance(BaseModel):
         blank=True,
         help_text=_("Message sent by WhatsApp to the lead after they register (English)."),
     )
+    # Mensaje post-pago: correo de confirmación y/o WhatsApp tras pagar. Placeholders: {{first_name}}, {{activity_title}}, {{instance_label}}, {{order_number}}.
+    post_purchase_message_es = models.TextField(
+        _("Post-purchase message Spanish"),
+        blank=True,
+        help_text=_("Message in confirmation email and optional WhatsApp after payment (Spanish). Same placeholders as WhatsApp message."),
+    )
+    post_purchase_message_en = models.TextField(
+        _("Post-purchase message English"),
+        blank=True,
+        help_text=_("Message in confirmation email and optional WhatsApp after payment (English). Same placeholders as WhatsApp message."),
+    )
     # Número extra que se suma a los inscritos reales para mostrar (tracción / prueba social).
     interested_count_boost = models.PositiveIntegerField(
         _("interested count boost"),
@@ -976,6 +1075,39 @@ class ErasmusActivityInstance(BaseModel):
             f"{self.scheduled_month or '?'}/{self.scheduled_year or '?'}" if self.scheduled_month else "sin fecha"
         )
         return f"{self.activity.title_es} - {label}"
+
+
+class ErasmusActivityInstanceRegistration(TimeStampedModel):
+    """
+    One registration of a lead for an activity instance, with optional extra_data (answers to
+    ErasmusActivityExtraField). Used for CSV export and for message metatags ({{field_key}}).
+    """
+    lead = models.ForeignKey(
+        ErasmusLead,
+        on_delete=models.CASCADE,
+        related_name="activity_instance_registrations",
+        verbose_name=_("lead"),
+    )
+    instance = models.ForeignKey(
+        ErasmusActivityInstance,
+        on_delete=models.CASCADE,
+        related_name="registrations",
+        verbose_name=_("instance"),
+    )
+    extra_data = models.JSONField(
+        _("extra data"),
+        default=dict,
+        blank=True,
+        help_text=_("Answers to activity extra fields: {field_key: value}."),
+    )
+
+    class Meta:
+        verbose_name = _("Erasmus activity instance registration")
+        verbose_name_plural = _("Erasmus activity instance registrations")
+        unique_together = [("lead", "instance")]
+
+    def __str__(self):
+        return f"{self.lead} – {self.instance}"
 
 
 class ErasmusActivityPublicLink(models.Model):
@@ -1081,6 +1213,13 @@ class ErasmusActivityInscriptionPayment(TimeStampedModel):
         default=timezone.now,
         help_text=_("When the payment was recorded."),
     )
+    # Exclude from revenue (cortesía, invitados, prueba) — do not count in erasmus_sales
+    exclude_from_revenue = models.BooleanField(
+        _("exclude from revenue"),
+        default=False,
+        db_index=True,
+        help_text=_("If True, this payment does not count in revenue (cortesía, invited guests, test)."),
+    )
 
     class Meta:
         verbose_name = _("Erasmus activity inscription payment")
@@ -1134,12 +1273,43 @@ class ErasmusActivityPaymentLink(models.Model):
     )
     expires_at = models.DateTimeField(_("expires at"), null=True, blank=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True, db_index=True)
+    # Estado de envío del link por WhatsApp (automático al inscribirse, o manual si se copia y manda)
+    link_sent_at = models.DateTimeField(
+        _("link sent at"),
+        null=True,
+        blank=True,
+        help_text=_("When the payment link was sent to the lead (WhatsApp)."),
+    )
+    link_sent_via = models.CharField(
+        _("link sent via"),
+        max_length=20,
+        choices=[
+            ("automatic", _("Automático")),
+            ("manual", _("Manual")),
+        ],
+        null=True,
+        blank=True,
+        help_text=_("Whether the link was sent automatically (flow) or marked as sent manually."),
+    )
+    link_send_error = models.CharField(
+        _("link send error"),
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text=_("Error message if automatic send failed (e.g. WhatsApp disconnected)."),
+    )
 
     class Meta:
         verbose_name = _("Erasmus activity payment link")
         verbose_name_plural = _("Erasmus activity payment links")
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["instance"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("lead", "instance"),
+                name="erasmus_activity_payment_link_lead_instance_unique",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.lead} – {self.instance} – {self.amount}"
@@ -1199,3 +1369,236 @@ class ErasmusActivityReview(TimeStampedModel):
 
     def __str__(self):
         return f"{self.author_name} – {self.rating}★ for {self.instance}"
+
+
+# -----------------------------------------------------------------------------
+# Contests / Sorteos (landing + inscripción + código WhatsApp + flujo)
+# -----------------------------------------------------------------------------
+
+
+class Contest(TimeStampedModel):
+    """
+    Sorteo/concurso con landing pública: slider, experiencia vinculada,
+    T&C, requisitos (pasos a seguir), formulario con preguntas dinámicas.
+    Inscripción genera código WhatsApp y flujo (PlatformFlow).
+    """
+
+    slug = models.SlugField(
+        _("slug"),
+        max_length=120,
+        unique=True,
+        help_text=_("URL identifier, e.g. salar-uyuni-2026"),
+    )
+    title = models.CharField(_("title"), max_length=255)
+    subtitle = models.CharField(_("subtitle"), max_length=255, blank=True)
+    headline = models.TextField(
+        _("headline"),
+        blank=True,
+        help_text=_("Main message e.g. 'Tuki y House and Flats te regalan un viaje para dos...'"),
+    )
+    experience = models.ForeignKey(
+        "experiences.Experience",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="contests",
+        verbose_name=_("experience"),
+    )
+    terms_and_conditions_html = models.TextField(
+        _("terms and conditions HTML"),
+        blank=True,
+        help_text=_("Rich text (HTML) for T&C page"),
+    )
+    requirements_html = models.TextField(
+        _("requirements HTML"),
+        blank=True,
+        help_text=_("Requisitos / pasos a seguir (rich text), shown on landing"),
+    )
+    # WhatsApp: mensaje que recibe el participante al enviar su código (placeholders: {{nombre}}, {{codigo}}, {{concurso}})
+    whatsapp_confirmation_message = models.TextField(
+        _("WhatsApp confirmation message"),
+        blank=True,
+        help_text=_(
+            "Message sent back when participant sends their code via WhatsApp. "
+            "Placeholders: {{nombre}}, {{codigo}}, {{concurso}}."
+        ),
+    )
+    is_active = models.BooleanField(_("active"), default=True, db_index=True)
+    starts_at = models.DateTimeField(_("starts at"), null=True, blank=True)
+    ends_at = models.DateTimeField(_("ends at"), null=True, blank=True)
+    order = models.PositiveIntegerField(_("order"), default=0)
+
+    class Meta:
+        verbose_name = _("Contest")
+        verbose_name_plural = _("Contests")
+        ordering = ["order", "slug"]
+
+    def __str__(self):
+        return f"{self.title} ({self.slug})"
+
+
+class ContestSlideConfig(BaseModel):
+    """Slide del hero del concurso; imágenes desde biblioteca de medios."""
+
+    contest = models.ForeignKey(
+        Contest,
+        on_delete=models.CASCADE,
+        related_name="slide_configs",
+        verbose_name=_("contest"),
+    )
+    asset = models.ForeignKey(
+        "media.MediaAsset",
+        on_delete=models.SET_NULL,
+        related_name="contest_slide_configs",
+        verbose_name=_("asset"),
+        null=True,
+        blank=True,
+    )
+    order = models.PositiveIntegerField(_("order"), default=0)
+    caption = models.CharField(_("caption"), max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = _("Contest slide config")
+        verbose_name_plural = _("Contest slide configs")
+        ordering = ["contest", "order", "id"]
+
+    def __str__(self):
+        return f"{self.contest.slug} slide #{self.order} -> {self.asset_id or 'unassigned'}"
+
+
+class ContestExtraField(models.Model):
+    """Pregunta dinámica del formulario de inscripción del concurso."""
+
+    FIELD_TYPE_CHOICES = (
+        ("text", _("Text")),
+        ("email", _("Email")),
+        ("phone", _("Phone")),
+        ("number", _("Number")),
+        ("select", _("Select")),
+        ("multiselect", _("Multiple select")),
+        ("checkbox", _("Checkbox")),
+        ("radio", _("Radio")),
+        ("date", _("Date")),
+        ("textarea", _("Text area")),
+        ("url", _("URL")),
+    )
+
+    contest = models.ForeignKey(
+        Contest,
+        on_delete=models.CASCADE,
+        related_name="extra_fields",
+        verbose_name=_("contest"),
+    )
+    label = models.CharField(_("label"), max_length=255)
+    field_key = models.SlugField(_("field key"), max_length=80)
+    type = models.CharField(_("type"), max_length=20, choices=FIELD_TYPE_CHOICES)
+    required = models.BooleanField(_("required"), default=False)
+    placeholder = models.CharField(_("placeholder"), max_length=255, blank=True)
+    help_text = models.TextField(_("help text"), blank=True)
+    order = models.PositiveIntegerField(_("order"), default=0)
+    is_active = models.BooleanField(_("active"), default=True, db_index=True)
+    options = models.JSONField(
+        _("options"),
+        default=list,
+        blank=True,
+        help_text=_("For select/radio: list of {value, label}"),
+    )
+
+    class Meta:
+        verbose_name = _("Contest extra field")
+        verbose_name_plural = _("Contest extra fields")
+        ordering = ["contest", "order", "id"]
+        unique_together = [["contest", "field_key"]]
+
+    def __str__(self):
+        return f"{self.contest.slug}: {self.label} ({self.field_key})"
+
+
+class ContestRegistration(TimeStampedModel):
+    """Inscripción a un concurso; vinculada a un flujo (PlatformFlow) y opcionalmente a un código WhatsApp."""
+
+    contest = models.ForeignKey(
+        Contest,
+        on_delete=models.CASCADE,
+        related_name="registrations",
+        verbose_name=_("contest"),
+    )
+    first_name = models.CharField(_("first name"), max_length=150)
+    last_name = models.CharField(_("last name"), max_length=150)
+    email = models.EmailField(_("email"), blank=True, null=True)
+    phone_country_code = models.CharField(_("phone country code"), max_length=10, blank=True)
+    phone_number = models.CharField(_("phone number"), max_length=20, blank=True)
+    extra_data = models.JSONField(
+        _("extra data"),
+        default=dict,
+        blank=True,
+        help_text=_("Answers to ContestExtraField questions"),
+    )
+    accept_terms = models.BooleanField(_("accept terms"), default=False)
+    flow = models.ForeignKey(
+        "core.PlatformFlow",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="contest_registrations",
+        verbose_name=_("flow"),
+    )
+
+    class Meta:
+        verbose_name = _("Contest registration")
+        verbose_name_plural = _("Contest registrations")
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["contest", "created_at"])]
+
+    def __str__(self):
+        return f"{self.first_name} {self.last_name} – {self.contest.slug}"
+
+
+class ContestParticipationCode(TimeStampedModel):
+    """
+    Código único para confirmar participación por WhatsApp (como reservas).
+    Se genera al inscribirse; el usuario envía el código por WhatsApp y recibe
+    el mensaje personalizado del concurso (whatsapp_confirmation_message).
+    """
+
+    STATUS_CHOICES = [
+        ("pending", _("Pendiente")),
+        ("confirmed", _("Confirmado")),
+    ]
+
+    contest = models.ForeignKey(
+        Contest,
+        on_delete=models.CASCADE,
+        related_name="participation_codes",
+        verbose_name=_("contest"),
+    )
+    registration = models.OneToOneField(
+        ContestRegistration,
+        on_delete=models.CASCADE,
+        related_name="participation_code",
+        verbose_name=_("registration"),
+    )
+    code = models.CharField(_("code"), max_length=50, unique=True, db_index=True)
+    status = models.CharField(
+        _("status"),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="pending",
+        db_index=True,
+    )
+    flow = models.ForeignKey(
+        "core.PlatformFlow",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="contest_participation_codes",
+        verbose_name=_("flow"),
+    )
+
+    class Meta:
+        verbose_name = _("Contest participation code")
+        verbose_name_plural = _("Contest participation codes")
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.code} – {self.contest.slug}"

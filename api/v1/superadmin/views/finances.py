@@ -20,6 +20,7 @@ from django.core.exceptions import ObjectDoesNotExist
 
 from apps.events.models import Order
 from apps.organizers.models import Organizer, Payout
+from core.revenue_system import order_revenue_eligible_q
 from apps.organizers.wallet_service import get_organizer_wallet
 from apps.organizers.bank_constants import (
     CHILE_BANK_CHOICES,
@@ -69,13 +70,13 @@ def pending_payouts(request):
                 Q(event__organizer=org) |
                 Q(experience_reservation__experience__organizer=org) |
                 Q(accommodation_reservation__accommodation__organizer=org)
-            ).filter(status='paid').order_by('-created_at').first()
+            ).filter(order_revenue_eligible_q()).order_by('-created_at').first()
 
             orders_count = Order.objects.filter(
                 Q(event__organizer=org) |
                 Q(experience_reservation__experience__organizer=org) |
                 Q(accommodation_reservation__accommodation__organizer=org)
-            ).filter(status='paid').count()
+            ).filter(order_revenue_eligible_q()).count()
 
             try:
                 banking = org.banking_details

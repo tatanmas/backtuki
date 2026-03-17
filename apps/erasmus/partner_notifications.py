@@ -189,28 +189,48 @@ def notify_activity_inscription(lead: ErasmusLead, instance: ErasmusActivityInst
 def send_activity_instance_whatsapp_to_lead(lead: ErasmusLead, instance: ErasmusActivityInstance) -> bool:
     """
     Send the instance's configured message to the person who just registered (the lead).
-    Used for Tuki's own activities: we only message the registrant, not groups.
-    If this instance has whatsapp_message_es or whatsapp_message_en, send it to the lead's
-    phone. Picks language by lead.form_locale (default es).
+    Message supports placeholders: {{first_name}}, {{payment_link}}, {{activity_title}}, {{instance_label}},
+    {{order_number}}, and {{field_key}} for each activity extra field (from registration extra_data).
+    For paid activities, a payment link is created automatically and included in the message.
+    Updates ErasmusActivityPaymentLink.link_sent_at / link_sent_via on success, link_send_error on failure.
 
     Returns True if a message was sent, False otherwise.
     """
-    msg_es = (getattr(instance, "whatsapp_message_es", "") or "").strip()
-    msg_en = (getattr(instance, "whatsapp_message_en", "") or "").strip()
-    message = msg_es or msg_en
-    if not message:
+    from django.utils import timezone
+
+    from apps.erasmus.models import ErasmusActivityPaymentLink, ErasmusActivityInstanceRegistration
+    from apps.erasmus.payment_link_service import build_inscription_message
+
+    extra_data = None
+    reg = ErasmusActivityInstanceRegistration.objects.filter(lead=lead, instance=instance).first()
+    if reg and reg.extra_data:
+        extra_data = reg.extra_data
+    order_number = None
+    link = ErasmusActivityPaymentLink.objects.filter(lead=lead, instance=instance).first()
+    if link and getattr(link, "order", None):
+        order_number = getattr(link.order, "order_number", None) or ""
+    message, _ = build_inscription_message(
+        lead, instance, extra_data=extra_data, order_number=order_number
+    )
+    if not message or not message.strip():
         logger.debug("[ActivityNotify] No WhatsApp message for instance %s; skip send to lead.", instance.id)
         return False
 
-    if (getattr(lead, "form_locale", "") or "es").lower().startswith("en") and msg_en:
-        message = msg_en
-    else:
-        message = msg_es or msg_en
-
     phone = ((lead.phone_country_code or "").replace(" ", "") + (lead.phone_number or "").replace(" ", "")).strip()
+    # Prefer order.phone when available (single source of truth for "person who bought")
+    link = ErasmusActivityPaymentLink.objects.filter(lead=lead, instance=instance).select_related("order").first()
+    order = getattr(link, "order", None) if link else None
+    if order and getattr(order, "phone", None) and str(order.phone).strip():
+        order_phone = str(order.phone).replace(" ", "").strip()
+        if len(order_phone) >= 8:
+            phone = order_phone
     if len(phone) < 8:
         logger.warning("[ActivityNotify] Lead %s has no valid phone for WhatsApp.", lead.id)
         return False
+
+    # Resolve flow_id for flow tracing (link already loaded above)
+    order = getattr(link, "order", None) if link else None
+    flow_id = str(order.flow_id) if order and getattr(order, "flow_id", None) else None
 
     try:
         from apps.whatsapp.services.whatsapp_client import WhatsAppWebService
@@ -222,7 +242,45 @@ def send_activity_instance_whatsapp_to_lead(lead: ErasmusLead, instance: Erasmus
             clean_phone = "56" + clean_phone.lstrip("0")
         service.send_message(clean_phone, message)
         logger.info("[ActivityNotify] Sent instance WhatsApp message to lead %s for instance %s", lead.id, instance.id)
+        if link:
+            link.link_sent_at = timezone.now()
+            link.link_sent_via = "automatic"
+            link.link_send_error = None
+            link.save(update_fields=["link_sent_at", "link_sent_via", "link_send_error"])
+        # Trazabilidad: registrar en el flow que se envió el mensaje (link de pago / confirmación)
+        if flow_id:
+            try:
+                from core.flow_logger import FlowLogger
+                flow_logger = FlowLogger.from_flow_id(flow_id)
+                if flow_logger:
+                    flow_logger.log_event(
+                        "CUSTOMER_MESSAGE_PAYMENT_LINK_SENT",
+                        source="api",
+                        status="success",
+                        message=f"WhatsApp enviado a lead (actividad Erasmus, instance {instance.id})",
+                        metadata={"lead_id": str(lead.id), "instance_id": str(instance.id)},
+                    )
+            except Exception as flog:
+                logger.warning("[ActivityNotify] FlowLogger CUSTOMER_MESSAGE_PAYMENT_LINK_SENT: %s", flog)
         return True
     except Exception as e:
         logger.exception("[ActivityNotify] Failed to send WhatsApp to lead %s: %s", lead.id, e)
+        if link:
+            link.link_send_error = (str(e) or "Error al enviar")[:255]
+            link.save(update_fields=["link_send_error"])
+        # Trazabilidad: registrar fallo en el flow para que Superadmin vea por qué falló
+        if flow_id:
+            try:
+                from core.flow_logger import FlowLogger
+                flow_logger = FlowLogger.from_flow_id(flow_id)
+                if flow_logger:
+                    flow_logger.log_event(
+                        "WHATSAPP_MESSAGE_FAILED",
+                        source="api",
+                        status="failure",
+                        message=f"Error al enviar WhatsApp a lead (actividad Erasmus): {e!s}",
+                        metadata={"lead_id": str(lead.id), "instance_id": str(instance.id), "error": str(e)[:500]},
+                    )
+            except Exception as flog:
+                logger.warning("[ActivityNotify] FlowLogger WHATSAPP_MESSAGE_FAILED: %s", flog)
         return False

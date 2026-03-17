@@ -14,6 +14,8 @@ from decimal import Decimal
 from django.db.models import Sum, Q
 from django.db.models.functions import Coalesce
 
+from core.revenue_system import order_revenue_eligible_q
+
 
 def get_organizer_wallet(organizer, include_breakdown=True):
     """
@@ -36,28 +38,26 @@ def get_organizer_wallet(organizer, include_breakdown=True):
     from apps.events.models import Order
     from apps.organizers.models import Payout
 
-    # Revenue from paid orders only (exclude refunded, cancelled)
+    # Revenue from paid orders only (exclude refunded, cancelled, sandbox, deleted, excluded)
     event_orders = Order.objects.filter(
-        order_kind='event', status='paid', event__organizer=organizer
-    )
+        order_kind='event', event__organizer=organizer,
+    ).filter(order_revenue_eligible_q())
     event_revenue = event_orders.aggregate(
         total=Sum(Coalesce('subtotal_effective', 'subtotal'))
     )['total'] or Decimal('0')
 
     exp_orders = Order.objects.filter(
         order_kind='experience',
-        status='paid',
-        experience_reservation__experience__organizer=organizer
-    )
+        experience_reservation__experience__organizer=organizer,
+    ).filter(order_revenue_eligible_q())
     exp_revenue = exp_orders.aggregate(
         total=Sum(Coalesce('subtotal_effective', 'subtotal'))
     )['total'] or Decimal('0')
 
     acc_orders = Order.objects.filter(
         order_kind='accommodation',
-        status='paid',
-        accommodation_reservation__accommodation__organizer=organizer
-    )
+        accommodation_reservation__accommodation__organizer=organizer,
+    ).filter(order_revenue_eligible_q())
     acc_revenue = acc_orders.aggregate(
         total=Sum(Coalesce('subtotal_effective', 'subtotal'))
     )['total'] or Decimal('0')
@@ -111,10 +111,10 @@ def _get_breakdown(organizer):
 
     breakdown = {'events': [], 'experiences': [], 'accommodations': []}
 
-    # Events: group by event
+    # Events: group by event (exclude sandbox, deleted, excluded)
     event_orders = Order.objects.filter(
-        order_kind='event', status='paid', event__organizer=organizer
-    ).select_related('event')
+        order_kind='event', event__organizer=organizer,
+    ).filter(order_revenue_eligible_q()).select_related('event')
     from collections import defaultdict
     event_totals = defaultdict(lambda: {'revenue': Decimal('0'), 'orders': 0, 'end_date': None})
     for o in event_orders:
@@ -134,11 +134,11 @@ def _get_breakdown(organizer):
             'due_date_reference': v['end_date'].isoformat() if v.get('end_date') else None,
         })
 
-    # Experiences: group by experience
+    # Experiences: group by experience (exclude sandbox, deleted, excluded)
     exp_orders = Order.objects.filter(
-        order_kind='experience', status='paid',
-        experience_reservation__experience__organizer=organizer
-    ).select_related('experience_reservation__experience', 'experience_reservation__instance')
+        order_kind='experience',
+        experience_reservation__experience__organizer=organizer,
+    ).filter(order_revenue_eligible_q()).select_related('experience_reservation__experience', 'experience_reservation__instance')
     exp_totals = defaultdict(lambda: {'revenue': Decimal('0'), 'orders': 0, 'last_date': None})
     for o in exp_orders:
         try:
@@ -162,11 +162,11 @@ def _get_breakdown(organizer):
             'due_date_reference': v['last_date'].isoformat() if v.get('last_date') else None,
         })
 
-    # Accommodations: group by accommodation
+    # Accommodations: group by accommodation (exclude sandbox, deleted, excluded)
     acc_orders = Order.objects.filter(
-        order_kind='accommodation', status='paid',
-        accommodation_reservation__accommodation__organizer=organizer
-    ).select_related('accommodation_reservation__accommodation')
+        order_kind='accommodation',
+        accommodation_reservation__accommodation__organizer=organizer,
+    ).filter(order_revenue_eligible_q()).select_related('accommodation_reservation__accommodation')
     acc_totals = defaultdict(lambda: {'revenue': Decimal('0'), 'orders': 0, 'last_checkout': None})
     for o in acc_orders:
         try:

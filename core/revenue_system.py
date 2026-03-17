@@ -56,6 +56,23 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# REVENUE-ELIGIBLE ORDER FILTER (single source of truth)
+# ============================================================================
+
+def order_revenue_eligible_q():
+    """
+    Q for orders that count in revenue (paid, not sandbox, not deleted, not excluded).
+    Use this everywhere we aggregate revenue or build payables from orders.
+    """
+    return Q(
+        status='paid',
+        is_sandbox=False,
+        deleted_at__isnull=True,
+        exclude_from_revenue=False,
+    )
+
+
+# ============================================================================
 # CORE CALCULATION FUNCTIONS
 # ============================================================================
 
@@ -255,9 +272,9 @@ def get_event_revenue(event, start_date=None, end_date=None, validate=True):
     """
     from apps.events.models import Order, OrderItem
     
-    # Build queryset
-    orders = Order.objects.filter(event=event, status='paid')
-    
+    # Build queryset — exclude sandbox, soft-deleted, and manually excluded (they do not count for revenue)
+    orders = Order.objects.filter(event=event).filter(order_revenue_eligible_q())
+
     if start_date:
         orders = orders.filter(created_at__gte=start_date)
     if end_date:
@@ -356,11 +373,10 @@ def get_ticket_tier_revenue(ticket_tier, start_date=None, end_date=None, validat
     """
     from apps.events.models import Order, OrderItem
     
-    # Get orders containing this tier
+    # Get orders containing this tier — exclude sandbox, soft-deleted, and manually excluded
     orders = Order.objects.filter(
         items__ticket_tier=ticket_tier,
-        status='paid'
-    ).distinct()
+    ).filter(order_revenue_eligible_q()).distinct()
     
     if start_date:
         orders = orders.filter(created_at__gte=start_date)

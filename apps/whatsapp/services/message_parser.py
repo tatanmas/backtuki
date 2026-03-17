@@ -203,11 +203,33 @@ class MessageParser:
             'tour_code': cls.extract_tour_code(message),
             'reservation_code': cls.extract_reservation_code(message),
             'erasmus_code': cls.extract_erasmus_code(message),
+            'contest_code': cls.extract_contest_code(message),
             'passengers': cls.extract_passengers(message),
             'date': cls.extract_date(message),
             'is_reservation': cls.is_reservation_message(message),
             'original_message': message
         }
+
+    @classmethod
+    def extract_contest_code(cls, message: str) -> Optional[str]:
+        """
+        Extract contest participation code (CONC-XXX format) from message.
+        Used when participant sends their code via WhatsApp to receive the personalized reply.
+        """
+        if not message:
+            return None
+        pattern = r'\bCONC-[A-Z0-9-]+\b'
+        match = re.search(pattern, message, re.IGNORECASE)
+        if match:
+            code = match.group(0).upper()
+            try:
+                from apps.erasmus.models import ContestParticipationCode
+                if ContestParticipationCode.objects.filter(code=code).exists():
+                    logger.info("Extracted contest code: %s", code)
+                    return code
+            except Exception:
+                pass
+        return None
 
     @classmethod
     def extract_erasmus_code(cls, message: str) -> Optional[str]:

@@ -1,0 +1,37 @@
+✅ PAGO CONFIRMADO - {{ activity_title }}
+
+Hola {{ customer_name }},
+
+Tu pago ha sido registrado correctamente.
+
+═══════════════════════════════════════════════════════════
+
+DETALLES DE LA ACTIVIDAD
+
+{{ activity_title }}
+
+Fecha / instancia: {{ instance_data.instance_label }}
+Pedido: {{ order_data.order_number }}
+{% if activity_data.location_name %}Ubicación: {{ activity_data.location_name }}{% endif %}
+{% if activity_data.location_address %}{{ activity_data.location_address }}{% endif %}
+
+═══════════════════════════════════════════════════════════
+
+{% if post_purchase_message %}
+MENSAJE PARA TI
+
+{{ post_purchase_message }}
+
+═══════════════════════════════════════════════════════════
+{% endif %}
+
+RESUMEN DE PAGO
+
+Total pagado: ${{ order_data.total|floatformat:0 }} {{ order_data.currency }}
+
+═══════════════════════════════════════════════════════════
+
+¿Necesitas ayuda?
+Contáctanos en {{ support_email }}
+
+© {{ current_year }} Tuki. Todos los derechos reservados.

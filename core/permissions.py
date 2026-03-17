@@ -1,5 +1,6 @@
 """Custom DRF permissions for the Tuki platform."""
 
+from django.conf import settings
 from rest_framework import permissions
 import logging
 from apps.organizers.models import Organizer
@@ -228,19 +229,50 @@ class HasExperienceModule(permissions.BasePermission):
 
 class HasAccommodationModule(permissions.BasePermission):
     """Permission to check if organizer has the accommodation module activated."""
-    
+
     def has_permission(self, request, view):
         """Check if organizer has the accommodation module activated."""
-        from apps.organizers.models import OrganizerUser
-        
         if not request.user.is_authenticated:
             return False
-            
-        try:
-            organizer_user = OrganizerUser.objects.get(user=request.user)
-            return organizer_user.organizer.has_accommodation_module and organizer_user.can_manage_accommodations
-        except OrganizerUser.DoesNotExist:
+
+        organizer_role = (
+            request.user.get_primary_organizer_role()
+            if hasattr(request.user, 'get_primary_organizer_role')
+            else None
+        )
+        if organizer_role is None:
             return False
+
+        return (
+            organizer_role.organizer.has_accommodation_module
+            and organizer_role.can_manage_accommodations
+        )
+
+    def has_object_permission(self, request, view, obj):
+        """Check ownership: the accommodation must belong to the user's organizer."""
+        if not request.user.is_authenticated:
+            return False
+
+        organizer_role = (
+            request.user.get_primary_organizer_role()
+            if hasattr(request.user, 'get_primary_organizer_role')
+            else None
+        )
+        if organizer_role is None:
+            return False
+
+        if not (
+            organizer_role.organizer.has_accommodation_module
+            and organizer_role.can_manage_accommodations
+        ):
+            return False
+
+        if hasattr(obj, 'organizer'):
+            return obj.organizer_id == organizer_role.organizer_id
+        if hasattr(obj, 'accommodation') and hasattr(obj.accommodation, 'organizer_id'):
+            return obj.accommodation.organizer_id == organizer_role.organizer_id
+
+        return False
 
 
 class IsTicketValidator(permissions.BasePermission):
@@ -251,4 +283,21 @@ class IsTicketValidator(permissions.BasePermission):
         return (
             request.user.is_authenticated and 
             request.user.groups.filter(name='ticket_validators').exists()
+        )
+
+
+class ApiDocsPermission(permissions.BasePermission):
+    """
+    Permission for API documentation (Swagger/ReDoc/Schema).
+    In DEBUG: allow anyone. In production: require authenticated superuser.
+    """
+    message = 'Se requiere autenticación como superusuario para acceder a la documentación del API.'
+
+    def has_permission(self, request, view):
+        if getattr(settings, 'DEBUG', False):
+            return True
+        return (
+            request.user is not None
+            and request.user.is_authenticated
+            and request.user.is_superuser
         ) 

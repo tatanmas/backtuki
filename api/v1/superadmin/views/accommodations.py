@@ -2,23 +2,36 @@
 SuperAdmin Accommodations API.
 List, detail with gallery_items + image_url, PATCH for full edit, POST to create.
 Create-from-JSON: POST create-from-json/ with accommodation_data (organizer_id optional).
+Bulk gallery ZIP: POST bulk-upload-gallery-zip/ with multipart file "zip" (folders = accommodation identifier).
+Optional form field "tags" (JSON array of strings) to apply to all uploaded assets in the media library.
 """
 
+import io
+import json
 import logging
 import re
 import uuid
+import zipfile
 
 from django.conf import settings as django_settings
+from django.core.files.base import ContentFile
 from django.db.models import Q
 from django.utils.text import slugify
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
-from apps.accommodations.models import Accommodation, AccommodationBlockedDate, AccommodationReview, Hotel
+from apps.accommodations.models import (
+    Accommodation,
+    AccommodationBlockedDate,
+    AccommodationExtraCharge,
+    AccommodationReview,
+    Hotel,
+)
 from apps.accommodations.constants import ROOM_CATEGORIES
+from apps.accommodations.public_code_service import ensure_public_code_on_publish
 from apps.accommodations.serializers import _normalize_media_url
 from apps.media.models import MediaAsset
 from apps.organizers.models import Organizer
@@ -48,6 +61,32 @@ def _optional_decimal(value):
         return Decimal(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _bathrooms_from_validated(validated):
+    """
+    Resolve (full_bathrooms, half_bathrooms) from validated data.
+    Prefers full_bathrooms/half_bathrooms. Legacy: bathrooms (int → all full; float 4.5 → 4 full + 1 half).
+    """
+    if "full_bathrooms" in validated or "half_bathrooms" in validated:
+        full = max(0, int(validated.get("full_bathrooms", 1)))
+        half = max(0, int(validated.get("half_bathrooms", 0)))
+        return full, half
+    b = validated.get("bathrooms", 1)
+    if b is None:
+        return 1, 0
+    try:
+        b = float(b)
+    except (TypeError, ValueError):
+        return 1, 0
+    if b <= 0:
+        return 0, 0
+    if b == int(b):
+        return max(0, int(b)), 0
+    # e.g. 4.5 → 4 full, 1 half (industry convention)
+    full = int(b)
+    half = 1
+    return max(0, full), max(0, half)
 
 
 def _parse_review_date(value):
@@ -159,7 +198,7 @@ def _build_gallery_items_with_urls(acc, request=None):
 class SuperAdminAccommodationListView(APIView):
     """
     GET /api/v1/superadmin/accommodations/
-    List accommodations (superuser only). Query: organizer_id, status, search.
+    List accommodations (superuser only). Query: organizer_id, status, search, type (hotel|rental_hub|independent), ordering, exclude_rooms.
     """
     permission_classes = [IsSuperUser]
 
@@ -186,8 +225,37 @@ class SuperAdminAccommodationListView(APIView):
                 | Q(city__icontains=search)
                 | Q(country__icontains=search)
             )
+        # Filtro por tipo: hotel | rental_hub | independent. Si no se envía, usar exclude_rooms.
+        type_filter = (request.query_params.get("type") or "").strip().lower()
+        if type_filter == "hotel":
+            qs = qs.filter(hotel_id__isnull=False)
+        elif type_filter == "rental_hub":
+            qs = qs.filter(rental_hub_id__isnull=False)
+        elif type_filter == "independent":
+            qs = qs.filter(hotel_id__isnull=True, rental_hub_id__isnull=True)
+        else:
+            exclude_rooms = request.query_params.get("exclude_rooms", "true").lower() in ("1", "true", "yes")
+            if exclude_rooms:
+                qs = qs.filter(hotel_id__isnull=True)
 
-        qs = qs.order_by("-created_at")
+        ordering_param = (request.query_params.get("ordering") or "-created_at").strip()
+        allowed_ordering = {
+            "title", "-title", "city", "-city", "country", "-country",
+            "price", "-price", "guests", "-guests", "status", "-status",
+            "created_at", "-created_at",
+            "display_order", "-display_order",
+        }
+        if ordering_param in allowed_ordering:
+            qs = qs.order_by(ordering_param)
+        else:
+            qs = qs.order_by("-created_at")
+        # Optional limit so one request doesn't return 100k rows (default: no limit for Super Admin)
+        try:
+            page_size = int(request.query_params.get("page_size", 0) or 0)
+        except (ValueError, TypeError):
+            page_size = 0
+        if page_size > 0:
+            qs = qs[: min(page_size, 50000)]
         results = []
         for acc in qs:
             gallery_ids = acc.gallery_media_ids or []
@@ -198,6 +266,9 @@ class SuperAdminAccommodationListView(APIView):
                 "id": str(acc.id),
                 "title": acc.title,
                 "slug": acc.slug,
+                "public_code": acc.public_code or None,
+                "public_code_prefix": acc.public_code_prefix or None,
+                "display_order": acc.display_order,
                 "status": acc.status,
                 "organizer_id": str(acc.organizer_id) if acc.organizer_id else None,
                 "organizer_name": acc.organizer.name if acc.organizer else None,
@@ -270,6 +341,18 @@ class SuperAdminAccommodationListView(APIView):
         if property_type not in dict(Accommodation.PROPERTY_TYPE_CHOICES):
             property_type = "cabin"
 
+        payment_model = (data.get("payment_model") or "").strip()
+        if payment_model not in ("", "full_platform", "commission_only"):
+            payment_model = ""
+        tuki_commission_rate = None
+        if data.get("tuki_commission_rate") is not None and data.get("tuki_commission_rate") != "":
+            try:
+                r = Decimal(str(data["tuki_commission_rate"]))
+                if Decimal("0") <= r <= Decimal("1"):
+                    tuki_commission_rate = r
+            except (TypeError, ValueError):
+                pass
+
         acc = Accommodation(
             title=title,
             slug=slug,
@@ -286,7 +369,8 @@ class SuperAdminAccommodationListView(APIView):
             city=(data.get("city") or "").strip()[:255],
             guests=max(1, int(data.get("guests", 2))),
             bedrooms=max(0, int(data.get("bedrooms", 1))),
-            bathrooms=max(0, int(data.get("bathrooms", 1))),
+            full_bathrooms=_bathrooms_from_validated(data)[0],
+            half_bathrooms=_bathrooms_from_validated(data)[1],
             beds=max(0, int(data.get("beds", 1))) if data.get("beds") is not None else 1,
             price=Decimal(str(data.get("price", 0))) if data.get("price") is not None else Decimal("0"),
             currency=(data.get("currency") or "CLP")[:3],
@@ -301,6 +385,9 @@ class SuperAdminAccommodationListView(APIView):
             inherit_amenities_from_hotel=data.get("inherit_amenities_from_hotel", True),
             room_type_code=(data.get("room_type_code") or "").strip()[:30],
             external_id=(data.get("external_id") or "").strip()[:255],
+            min_nights=_optional_int(data.get("min_nights")) if data.get("min_nights") is not None else None,
+            payment_model=payment_model,
+            tuki_commission_rate=tuki_commission_rate,
         )
         if data.get("latitude") is not None:
             try:
@@ -313,12 +400,60 @@ class SuperAdminAccommodationListView(APIView):
             except (TypeError, ValueError):
                 pass
         acc.save()
+
+        # Galería opcional al crear: gallery_media_ids o gallery_items
+        gallery_input = data.get("gallery_items") if isinstance(data.get("gallery_items"), list) else None
+        if gallery_input:
+            media_ids = []
+            for i, it in enumerate(gallery_input):
+                if not isinstance(it, dict):
+                    continue
+                mid = it.get("media_id")
+                if not mid:
+                    continue
+                try:
+                    mid_str = str(uuid.UUID(str(mid)))
+                except (ValueError, TypeError):
+                    continue
+                media_ids.append((mid_str, it.get("room_category"), it.get("sort_order", i), it.get("is_principal", False)))
+            if media_ids:
+                all_mids = [m[0] for m in media_ids]
+                assets = MediaAsset.objects.filter(id__in=all_mids, deleted_at__isnull=True)
+                found = {str(a.id) for a in assets}
+                ordered = sorted(
+                    [{"media_id": m[0], "room_category": m[1], "sort_order": m[2], "is_principal": m[3]} for m in media_ids if m[0] in found],
+                    key=lambda x: x["sort_order"],
+                )
+                if ordered:
+                    acc.gallery_items = ordered
+                    acc.gallery_media_ids = [it["media_id"] for it in ordered]
+                    acc.images = []
+                    acc.save(update_fields=["gallery_items", "gallery_media_ids", "images"])
+        else:
+            ids_raw = data.get("gallery_media_ids")
+            if isinstance(ids_raw, list) and ids_raw:
+                valid_ids = []
+                for mid in ids_raw:
+                    try:
+                        valid_ids.append(str(uuid.UUID(str(mid))))
+                    except (ValueError, TypeError):
+                        continue
+                if valid_ids:
+                    assets = MediaAsset.objects.filter(id__in=valid_ids, deleted_at__isnull=True)
+                    found = {str(a.id) for a in assets}
+                    valid_ids = [i for i in valid_ids if i in found]
+                    if valid_ids:
+                        acc.gallery_items = [{"media_id": i, "room_category": None, "sort_order": idx, "is_principal": idx == 0} for idx, i in enumerate(valid_ids)]
+                        acc.gallery_media_ids = valid_ids
+                        acc.images = []
+                        acc.save(update_fields=["gallery_items", "gallery_media_ids", "images"])
+
         # Return same shape as GET detail
         gallery_items = _build_gallery_items_with_urls(acc, request)
         predefined = [{"value": c[0], "label": c[1]} for c in ROOM_CATEGORIES]
         custom = []
         room_categories = predefined + [{"value": "unclassified", "label": "Sin clasificar"}] + custom
-        return Response({
+        create_payload = {
             "id": str(acc.id),
             "title": acc.title,
             "slug": acc.slug,
@@ -326,7 +461,7 @@ class SuperAdminAccommodationListView(APIView):
             "short_description": acc.short_description or "",
             "status": acc.status,
             "property_type": acc.property_type or "cabin",
-            "organizer_id": str(acc.organizer_id),
+            "organizer_id": str(acc.organizer_id) if acc.organizer_id else None,
             "organizer_name": acc.organizer.name if acc.organizer else None,
             "location_name": acc.location_name or "",
             "location_address": acc.location_address or "",
@@ -336,7 +471,9 @@ class SuperAdminAccommodationListView(APIView):
             "country": acc.country or "",
             "guests": acc.guests,
             "bedrooms": acc.bedrooms,
-            "bathrooms": acc.bathrooms,
+            "full_bathrooms": acc.full_bathrooms,
+            "half_bathrooms": acc.half_bathrooms,
+            "bathrooms": (acc.full_bathrooms or 0) + (acc.half_bathrooms or 0),
             "beds": acc.beds,
             "price": float(acc.price or 0),
             "currency": acc.currency or "CLP",
@@ -345,7 +482,26 @@ class SuperAdminAccommodationListView(APIView):
             "photo_count": len(gallery_items),
             "gallery_items": gallery_items,
             "room_categories": room_categories,
-        }, status=status.HTTP_201_CREATED)
+            "min_nights": acc.min_nights,
+            "payment_model": acc.payment_model or "",
+            "tuki_commission_rate": float(acc.tuki_commission_rate) if acc.tuki_commission_rate is not None else None,
+        }
+        if acc.rental_hub_id:
+            create_payload["rental_hub_id"] = str(acc.rental_hub_id)
+            create_payload["rental_hub_slug"] = acc.rental_hub.slug if acc.rental_hub else None
+        if acc.hotel_id:
+            create_payload["hotel_id"] = str(acc.hotel_id)
+            create_payload["hotel_slug"] = acc.hotel.slug if acc.hotel else None
+            create_payload["inherit_location_from_hotel"] = acc.inherit_location_from_hotel
+            create_payload["inherit_amenities_from_hotel"] = acc.inherit_amenities_from_hotel
+            create_payload["room_type_code"] = acc.room_type_code or ""
+        create_payload["external_id"] = acc.external_id or ""
+        create_payload["unit_type"] = acc.unit_type or ""
+        create_payload["tower"] = acc.tower or ""
+        create_payload["floor"] = acc.floor
+        create_payload["unit_number"] = acc.unit_number or ""
+        create_payload["square_meters"] = float(acc.square_meters) if acc.square_meters is not None else None
+        return Response(create_payload, status=status.HTTP_201_CREATED)
 
 
 class SuperAdminAccommodationDetailView(APIView):
@@ -386,6 +542,9 @@ class SuperAdminAccommodationDetailView(APIView):
             "id": str(acc.id),
             "title": acc.title,
             "slug": acc.slug,
+            "public_code": acc.public_code or None,
+            "public_code_prefix": acc.public_code_prefix or None,
+            "display_order": acc.display_order,
             "description": acc.description or "",
             "short_description": acc.short_description or "",
             "status": acc.status,
@@ -400,7 +559,9 @@ class SuperAdminAccommodationDetailView(APIView):
             "country": acc.country or "",
             "guests": acc.guests,
             "bedrooms": acc.bedrooms,
-            "bathrooms": acc.bathrooms,
+            "full_bathrooms": acc.full_bathrooms,
+            "half_bathrooms": acc.half_bathrooms,
+            "bathrooms": (acc.full_bathrooms or 0) + (acc.half_bathrooms or 0),
             "beds": acc.beds,
             "price": float(acc.price or 0),
             "currency": acc.currency or "CLP",
@@ -425,6 +586,27 @@ class SuperAdminAccommodationDetailView(APIView):
         payload["floor"] = acc.floor
         payload["unit_number"] = acc.unit_number or ""
         payload["square_meters"] = float(acc.square_meters) if acc.square_meters is not None else None
+        payload["min_nights"] = acc.min_nights
+        payload["payment_model"] = acc.payment_model or ""
+        payload["tuki_commission_rate"] = float(acc.tuki_commission_rate) if acc.tuki_commission_rate is not None else None
+        # Extra charges (cobros adicionales v1.5)
+        payload["extra_charges"] = [
+            {
+                "id": str(e.id),
+                "code": e.code,
+                "name": e.name,
+                "description": e.description or "",
+                "charge_type": e.charge_type,
+                "amount": float(e.amount),
+                "currency": e.currency or "",
+                "is_optional": e.is_optional,
+                "default_quantity": e.default_quantity,
+                "max_quantity": e.max_quantity,
+                "is_active": e.is_active,
+                "display_order": e.display_order,
+            }
+            for e in acc.extra_charges.order_by("display_order", "name")
+        ]
         return Response(payload)
 
     def patch(self, request, accommodation_id):
@@ -454,8 +636,8 @@ class SuperAdminAccommodationDetailView(APIView):
             acc.property_type = data["property_type"]
             update_fields.append("property_type")
 
-        # Numeric capacity
-        for field in ("guests", "bedrooms", "bathrooms", "beds"):
+        # Numeric capacity (bathrooms: full_bathrooms + half_bathrooms)
+        for field in ("guests", "bedrooms", "beds"):
             if field in data:
                 try:
                     n = int(data[field])
@@ -467,13 +649,34 @@ class SuperAdminAccommodationDetailView(APIView):
                     update_fields.append(field)
                 except (TypeError, ValueError):
                     pass
+        if "full_bathrooms" in data:
+            try:
+                acc.full_bathrooms = max(0, int(data["full_bathrooms"]))
+                update_fields.append("full_bathrooms")
+            except (TypeError, ValueError):
+                pass
+        if "half_bathrooms" in data:
+            try:
+                acc.half_bathrooms = max(0, int(data["half_bathrooms"]))
+                update_fields.append("half_bathrooms")
+            except (TypeError, ValueError):
+                pass
+        # Legacy: "bathrooms" → all full
+        if "bathrooms" in data and "full_bathrooms" not in data and "half_bathrooms" not in data:
+            try:
+                acc.full_bathrooms = max(0, int(data["bathrooms"]))
+                acc.half_bathrooms = 0
+                update_fields.extend(["full_bathrooms", "half_bathrooms"])
+            except (TypeError, ValueError):
+                pass
 
-        # Price
+        # Price: quantize to 2 decimals to avoid float artifacts (e.g. 160000 → 160002)
         if "price" in data:
             try:
-                acc.price = Decimal(str(data["price"]))
-                if acc.price < 0:
-                    acc.price = Decimal("0")
+                raw = Decimal(str(data["price"]))
+                if raw < 0:
+                    raw = Decimal("0")
+                acc.price = raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                 update_fields.append("price")
             except (TypeError, ValueError):
                 pass
@@ -518,6 +721,22 @@ class SuperAdminAccommodationDetailView(APIView):
             acc.square_meters = _optional_decimal(data["square_meters"])
             update_fields.append("square_meters")
 
+        # Central de arrendamiento (rental hub)
+        if "rental_hub_id" in data:
+            rid = data["rental_hub_id"]
+            if rid is None or rid == "":
+                acc.rental_hub = None
+            else:
+                from apps.accommodations.models import RentalHub
+                try:
+                    acc.rental_hub = RentalHub.objects.get(id=rid)
+                except (RentalHub.DoesNotExist, ValueError):
+                    return Response(
+                        {"detail": "Central de arrendamiento no encontrada."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            update_fields.append("rental_hub_id")
+
         # Hotel / room fields
         if "hotel_id" in data:
             hid = data["hotel_id"]
@@ -541,9 +760,138 @@ class SuperAdminAccommodationDetailView(APIView):
         if "external_id" in data:
             acc.external_id = (data["external_id"] or "").strip()[:255]
             update_fields.append("external_id")
+        if "min_nights" in data:
+            acc.min_nights = _optional_int(data["min_nights"])
+            update_fields.append("min_nights")
+
+        # Número de orden (opcional; el código público se genera al publicar)
+        if "display_order" in data:
+            vo = _optional_int(data["display_order"])
+            if vo is not None and vo >= 1:
+                prefix = (data.get("public_code_prefix") or acc.public_code_prefix or "").strip()[:30]
+                if prefix:
+                    would_be_code = f"{prefix}-{vo:03d}"
+                    if Accommodation.objects.filter(public_code=would_be_code).exclude(pk=acc.pk).exists():
+                        return Response(
+                            {"detail": f"El código que se generaría ({would_be_code}) ya existe en otro alojamiento. Usa otro número de orden o prefijo."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                acc.display_order = vo
+                update_fields.append("display_order")
+        # Prefijo del código público (ej. Tuki-PV → Tuki-PV-001)
+        if "public_code_prefix" in data:
+            val = (data.get("public_code_prefix") or "").strip()[:30]
+            if val:
+                # El código que se generaría al publicar es {prefix}-{display_order:03d}; no puede existir en otro
+                order = acc.display_order if (acc.display_order is not None and acc.display_order >= 1) else 1
+                would_be_code = f"{val}-{order:03d}"
+                if Accommodation.objects.filter(public_code=would_be_code).exclude(pk=acc.pk).exists():
+                    return Response(
+                        {"detail": f"El código que se generaría ({would_be_code}) ya existe en otro alojamiento. Usa otro prefijo o cambia el número de orden."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            acc.public_code_prefix = val or ""
+            update_fields.append("public_code_prefix")
+
+        # Al publicar: generar public_code y display_order si no existen
+        if acc.status == "published":
+            for f in ensure_public_code_on_publish(acc):
+                if f not in update_fields:
+                    update_fields.append(f)
+
+        # Modelo de pago y comisión
+        if "payment_model" in data:
+            val = (data["payment_model"] or "").strip()
+            if val in ("", "full_platform", "commission_only"):
+                acc.payment_model = val
+                update_fields.append("payment_model")
+        if "tuki_commission_rate" in data:
+            v = data["tuki_commission_rate"]
+            if v is None or v == "":
+                acc.tuki_commission_rate = None
+                update_fields.append("tuki_commission_rate")
+            else:
+                try:
+                    rate = Decimal(str(v))
+                    if Decimal("0") <= rate <= Decimal("1"):
+                        acc.tuki_commission_rate = rate
+                        update_fields.append("tuki_commission_rate")
+                except (TypeError, ValueError):
+                    pass
 
         if update_fields:
             acc.save(update_fields=update_fields)
+
+        # Extra charges (cobros adicionales v1.5): full list sync
+        if "extra_charges" in data and isinstance(data["extra_charges"], list):
+            kept_ids = []
+            for idx, item in enumerate(data["extra_charges"]):
+                if not isinstance(item, dict):
+                    continue
+                code = (item.get("code") or "").strip()[:64]
+                if not code:
+                    continue
+                name = (item.get("name") or "").strip()[:255]
+                charge_type = (item.get("charge_type") or "per_stay")[:20]
+                if charge_type not in ("per_stay", "per_night"):
+                    charge_type = "per_stay"
+                try:
+                    amount = Decimal(str(item.get("amount") or 0))
+                    if amount < 0:
+                        amount = Decimal("0")
+                except (TypeError, ValueError):
+                    amount = Decimal("0")
+                currency = (item.get("currency") or "").strip()[:3] or None
+                is_optional = bool(item.get("is_optional", True))
+                default_quantity = max(1, int(item.get("default_quantity") or 1))
+                max_quantity = _optional_int(item.get("max_quantity"))
+                is_active = bool(item.get("is_active", True))
+                display_order = max(0, int(item.get("display_order") or idx))
+                description = (item.get("description") or "")[:5000]
+
+                extra_id = item.get("id")
+                if extra_id:
+                    try:
+                        extra = AccommodationExtraCharge.objects.get(
+                            id=extra_id,
+                            accommodation=acc,
+                        )
+                        extra.name = name
+                        extra.charge_type = charge_type
+                        extra.amount = amount
+                        extra.currency = currency
+                        extra.is_optional = is_optional
+                        extra.default_quantity = default_quantity
+                        extra.max_quantity = max_quantity
+                        extra.is_active = is_active
+                        extra.display_order = display_order
+                        extra.description = description
+                        extra.save()
+                        kept_ids.append(extra.id)
+                        continue
+                    except (AccommodationExtraCharge.DoesNotExist, ValueError):
+                        pass
+                # Create new (code must be unique per accommodation)
+                extra, _ = AccommodationExtraCharge.objects.update_or_create(
+                    accommodation=acc,
+                    code=code,
+                    defaults={
+                        "name": name,
+                        "description": description,
+                        "charge_type": charge_type,
+                        "amount": amount,
+                        "currency": currency,
+                        "is_optional": is_optional,
+                        "default_quantity": default_quantity,
+                        "max_quantity": max_quantity,
+                        "is_active": is_active,
+                        "display_order": display_order,
+                    },
+                )
+                kept_ids.append(extra.id)
+            # Remove extras not in the submitted list
+            acc.extra_charges.exclude(id__in=kept_ids).delete()
+
         return self.get(request, accommodation_id)
 
 
@@ -648,6 +996,216 @@ class SuperAdminAccommodationGalleryUpdateView(APIView):
         })
 
 
+# Bulk ZIP: only image extensions; folder name = accommodation public_code or slug
+BULK_ZIP_MAX_SIZE_BYTES = 150 * 1024 * 1024  # 150 MB
+BULK_ZIP_MAX_FILES = 500
+BULK_ZIP_ALLOWED_EXTENSIONS = frozenset({"jpg", "jpeg", "png", "webp", "gif"})
+
+
+def _find_accommodation_by_folder_name(folder_name):
+    """Resolve folder name to Accommodation by public_code (case-insensitive) or slug. Returns None if not found."""
+    key = (folder_name or "").strip()
+    if not key:
+        return None
+    acc = (
+        Accommodation.objects.filter(deleted_at__isnull=True)
+        .filter(Q(public_code__iexact=key) | Q(slug__iexact=key))
+        .select_related("organizer")
+        .first()
+    )
+    return acc
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperUser])
+def bulk_upload_gallery_zip(request):
+    """
+    POST /api/v1/superadmin/accommodations/bulk-upload-gallery-zip/
+    Multipart: file "zip" or "file" = ZIP with top-level folders.
+    Folder name = accommodation identifier (public_code e.g. Tuki001, or slug).
+    Images inside each folder are uploaded to media library and assigned to that accommodation's gallery.
+
+    Limits: ZIP up to 150 MB, max 500 image files. Returns summary with per-folder results and errors.
+    """
+    if not request.FILES:
+        return Response(
+            {"detail": "Envía un archivo ZIP (campo 'zip' o 'file')."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    zip_file = request.FILES.get("zip") or request.FILES.get("file")
+    if not zip_file:
+        return Response(
+            {"detail": "Falta el archivo ZIP. Usa el campo 'zip' o 'file'."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if zip_file.size > BULK_ZIP_MAX_SIZE_BYTES:
+        return Response(
+            {"detail": f"El ZIP no puede superar {BULK_ZIP_MAX_SIZE_BYTES // (1024*1024)} MB."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        with zipfile.ZipFile(zip_file, "r") as zf:
+            namelist = zf.namelist()
+    except zipfile.BadZipFile:
+        return Response(
+            {"detail": "El archivo no es un ZIP válido."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Group members by top-level folder: "Tuki001/a.jpg" -> folder "Tuki001"
+    by_folder = {}
+    for name in namelist:
+        if name.startswith("__MACOSX/") or "/." in name or name.endswith("/"):
+            continue
+        parts = name.replace("\\", "/").strip("/").split("/")
+        if not parts:
+            continue
+        folder = parts[0].strip()
+        if not folder:
+            continue
+        ext = (parts[-1].split(".")[-1] if "." in parts[-1] else "").lower()
+        if ext not in BULK_ZIP_ALLOWED_EXTENSIONS:
+            continue
+        if folder not in by_folder:
+            by_folder[folder] = []
+        by_folder[folder].append((name, parts[-1]))
+
+    if not by_folder:
+        return Response(
+            {"detail": "No se encontraron carpetas con imágenes (jpg, jpeg, png, webp, gif). Cada carpeta debe tener el nombre del alojamiento (public_code o slug)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    total_files = sum(len(files) for files in by_folder.values())
+    if total_files > BULK_ZIP_MAX_FILES:
+        return Response(
+            {"detail": f"Máximo {BULK_ZIP_MAX_FILES} imágenes en total. Tienes {total_files}."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Optional tags for media library (applied to every uploaded asset)
+    tags_list = []
+    raw_tags = request.data.get("tags") or request.POST.get("tags")
+    if raw_tags:
+        if isinstance(raw_tags, list):
+            tags_list = [str(t).strip() for t in raw_tags if t and str(t).strip()][:50]
+        else:
+            try:
+                parsed = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
+                if isinstance(parsed, list):
+                    tags_list = [str(t).strip() for t in parsed if t and str(t).strip()][:50]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    # Re-open zip for reading (file was consumed by namelist)
+    zip_file.seek(0)
+    results = []
+    total_uploaded = 0
+    global_errors = []
+
+    try:
+        with zipfile.ZipFile(zip_file, "r") as zf:
+            for folder_name, file_entries in sorted(by_folder.items()):
+                acc = _find_accommodation_by_folder_name(folder_name)
+                folder_result = {
+                    "folder_name": folder_name,
+                    "accommodation_id": str(acc.id) if acc else None,
+                    "accommodation_title": acc.title if acc else None,
+                    "uploaded": 0,
+                    "errors": [],
+                    "new_media_ids": [],
+                }
+                if not acc:
+                    folder_result["errors"].append("Alojamiento no encontrado (public_code o slug no coincide)")
+                    results.append(folder_result)
+                    continue
+                if not acc.organizer_id:
+                    folder_result["errors"].append(
+                        "El alojamiento no tiene organizador; no se pueden subir fotos a la galería."
+                    )
+                    results.append(folder_result)
+                    continue
+
+                existing_items = list(acc.gallery_items or [])
+                next_sort = max((it.get("sort_order", i) for i, it in enumerate(existing_items)), default=-1) + 1
+                has_principal = any(it.get("is_principal") for it in existing_items)
+                new_media_ids = []
+
+                for zip_path, filename in file_entries:
+                    try:
+                        data = zf.read(zip_path)
+                    except Exception as e:
+                        folder_result["errors"].append(f"{filename}: no se pudo leer ({e})")
+                        continue
+                    if len(data) == 0:
+                        folder_result["errors"].append(f"{filename}: archivo vacío")
+                        continue
+                    ext = (filename.split(".")[-1] if "." in filename else "").lower()
+                    content_type = f"image/{ext}" if ext in ("jpeg", "jpg", "png", "webp", "gif") else "image/jpeg"
+                    if ext == "jpg":
+                        content_type = "image/jpeg"
+
+                    asset = MediaAsset(
+                        scope="organizer",
+                        organizer_id=acc.organizer_id,
+                        uploaded_by=request.user,
+                        original_filename=filename[:255],
+                        content_type=content_type,
+                        size_bytes=len(data),
+                    )
+                    try:
+                        asset.file.save(filename, ContentFile(data), save=True)
+                        asset.generate_thumbnail()
+                        if tags_list:
+                            asset.tags = tags_list
+                            asset.save(update_fields=["tags"])
+                    except Exception as e:
+                        logger.warning("Bulk ZIP: failed to save asset %s: %s", filename, e)
+                        folder_result["errors"].append(f"{filename}: {e}")
+                        continue
+                    new_media_ids.append((asset.id, next_sort, not has_principal))
+                    next_sort += 1
+                    if not has_principal:
+                        has_principal = True
+                    folder_result["uploaded"] += 1
+                    total_uploaded += 1
+
+                for mid, sort_order, is_principal in new_media_ids:
+                    existing_items.append({
+                        "media_id": str(mid),
+                        "room_category": None,
+                        "sort_order": sort_order,
+                        "is_principal": is_principal,
+                    })
+                if new_media_ids:
+                    ordered = sorted(existing_items, key=lambda x: x.get("sort_order", 0))
+                    acc.gallery_items = ordered
+                    acc.gallery_media_ids = [it["media_id"] for it in ordered]
+                    acc.images = []
+                    acc.save(update_fields=["gallery_items", "gallery_media_ids", "images"])
+                    folder_result["new_media_ids"] = [str(mid) for mid, _, _ in new_media_ids]
+
+                results.append(folder_result)
+    except Exception as e:
+        logger.exception("Bulk ZIP processing failed: %s", e)
+        global_errors.append(str(e))
+        return Response(
+            {"detail": "Error al procesar el ZIP.", "errors": global_errors, "results": results},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    accommodations_not_found = [r["folder_name"] for r in results if r["accommodation_id"] is None]
+    accommodations_matched = [r for r in results if r["accommodation_id"]]
+    return Response({
+        "folders_processed": len(results),
+        "accommodations_matched": len(accommodations_matched),
+        "accommodations_not_found": accommodations_not_found,
+        "total_images_uploaded": total_uploaded,
+        "results": results,
+        "errors": global_errors,
+    }, status=status.HTTP_200_OK)
+
+
 @api_view(["POST"])
 @permission_classes([IsSuperUser])
 def create_accommodation_from_json(request):
@@ -731,7 +1289,8 @@ def create_accommodation_from_json(request):
         city=(validated.get("city") or "").strip()[:255],
         guests=max(1, int(validated.get("guests", 2))),
         bedrooms=max(0, int(validated.get("bedrooms", 1))),
-        bathrooms=max(0, int(validated.get("bathrooms", 1))),
+        full_bathrooms=_bathrooms_from_validated(validated)[0],
+        half_bathrooms=_bathrooms_from_validated(validated)[1],
         beds=max(0, int(validated.get("beds", 1))) if validated.get("beds") is not None else 1,
         price=Decimal(str(validated.get("price", 0))) if validated.get("price") is not None else Decimal("0"),
         currency=(validated.get("currency") or "CLP")[:3],
@@ -746,6 +1305,7 @@ def create_accommodation_from_json(request):
         inherit_amenities_from_hotel=validated.get("inherit_amenities_from_hotel", True),
         room_type_code=(validated.get("room_type_code") or "").strip()[:30],
         external_id=(validated.get("external_id") or "").strip()[:255],
+        min_nights=_optional_int(validated.get("min_nights")) if validated.get("min_nights") is not None else None,
     )
     if validated.get("latitude") is not None:
         try:
@@ -762,7 +1322,67 @@ def create_accommodation_from_json(request):
     if validated.get("gallery_media_ids"):
         acc.gallery_media_ids = [str(u) for u in validated["gallery_media_ids"] if u][:50]
 
+    # display_order y public_code_prefix opcionales desde JSON
+    if "display_order" in validated and validated.get("display_order") is not None:
+        try:
+            do = max(1, int(validated["display_order"]))
+            acc.display_order = do
+        except (TypeError, ValueError):
+            pass
+    if "public_code_prefix" in validated:
+        acc.public_code_prefix = (validated.get("public_code_prefix") or "").strip()[:30]
+
     acc.save()
+
+    # Al publicar: generar public_code (y display_order si no se envió)
+    if status_val == "published":
+        pub_fields = ensure_public_code_on_publish(acc)
+        if pub_fields:
+            acc.save(update_fields=pub_fields)
+
+    # Cobros adicionales (extra_charges) desde JSON
+    extra_charges_data = validated.get("extra_charges")
+    if extra_charges_data and isinstance(extra_charges_data, list):
+        seen_codes = set()
+        for idx, item in enumerate(extra_charges_data):
+            if not isinstance(item, dict):
+                continue
+            code = (item.get("code") or "").strip()[:64]
+            if not code or code in seen_codes:
+                continue
+            seen_codes.add(code)
+            name = (item.get("name") or "").strip()[:255] or code
+            charge_type = (item.get("charge_type") or "per_stay")[:20]
+            if charge_type not in ("per_stay", "per_night"):
+                charge_type = "per_stay"
+            try:
+                amount = Decimal(str(item.get("amount") or 0))
+                if amount < 0:
+                    amount = Decimal("0")
+            except (TypeError, ValueError):
+                amount = Decimal("0")
+            currency = (item.get("currency") or "").strip()[:3] or None
+            is_optional = bool(item.get("is_optional", True))
+            default_quantity = max(1, int(item.get("default_quantity") or 1))
+            max_quantity = _optional_int(item.get("max_quantity"))
+            if max_quantity is not None and max_quantity < default_quantity:
+                max_quantity = default_quantity
+            display_order = max(0, int(item.get("display_order") or idx))
+            description = (item.get("description") or "")[:5000]
+            AccommodationExtraCharge.objects.create(
+                accommodation=acc,
+                code=code,
+                name=name,
+                description=description,
+                charge_type=charge_type,
+                amount=amount,
+                currency=currency,
+                is_optional=is_optional,
+                default_quantity=default_quantity,
+                max_quantity=max_quantity,
+                is_active=True,
+                display_order=display_order,
+            )
 
     # Reseñas: crear desde reviews y actualizar rating_avg/review_count
     reviews_data = validated.get("reviews")
@@ -789,6 +1409,9 @@ def create_accommodation_from_json(request):
             "id": str(acc.id),
             "title": acc.title,
             "slug": acc.slug,
+            "public_code": acc.public_code or None,
+            "public_code_prefix": acc.public_code_prefix or None,
+            "display_order": acc.display_order,
             "description": acc.description or "",
             "short_description": acc.short_description or "",
             "status": acc.status,
@@ -803,7 +1426,9 @@ def create_accommodation_from_json(request):
             "country": acc.country or "",
             "guests": acc.guests,
             "bedrooms": acc.bedrooms,
-            "bathrooms": acc.bathrooms,
+            "full_bathrooms": acc.full_bathrooms,
+            "half_bathrooms": acc.half_bathrooms,
+            "bathrooms": (acc.full_bathrooms or 0) + (acc.half_bathrooms or 0),
             "beds": acc.beds,
             "price": float(acc.price or 0),
             "currency": acc.currency or "CLP",
@@ -812,6 +1437,23 @@ def create_accommodation_from_json(request):
             "photo_count": len(gallery_items),
             "gallery_items": gallery_items,
             "room_categories": room_categories,
+            "extra_charges": [
+                {
+                    "id": str(e.id),
+                    "code": e.code,
+                    "name": e.name,
+                    "description": e.description or "",
+                    "charge_type": e.charge_type,
+                    "amount": float(e.amount),
+                    "currency": e.currency or "",
+                    "is_optional": e.is_optional,
+                    "default_quantity": e.default_quantity,
+                    "max_quantity": e.max_quantity,
+                    "is_active": e.is_active,
+                    "display_order": e.display_order,
+                }
+                for e in acc.extra_charges.order_by("display_order", "name")
+            ],
         },
         status=status.HTTP_201_CREATED,
     )
@@ -882,17 +1524,23 @@ def update_accommodation_from_json(request, accommodation_id):
         if field in validated:
             setattr(acc, field, (validated[field] or "").strip()[:255] if field != "location_address" else (validated[field] or "").strip())
             update_fields.append(field)
-    for field in ("guests", "bedrooms", "bathrooms", "beds"):
+    for field in ("guests", "bedrooms", "beds"):
         if field in validated:
             v = validated[field]
             if v is not None:
                 n = max(0, int(v)) if field != "guests" else max(1, int(v))
                 setattr(acc, field, n)
                 update_fields.append(field)
+    full, half = _bathrooms_from_validated(validated)
+    if "full_bathrooms" in validated or "half_bathrooms" in validated or "bathrooms" in validated:
+        acc.full_bathrooms = full
+        acc.half_bathrooms = half
+        update_fields.extend(["full_bathrooms", "half_bathrooms"])
     if "price" in validated and validated["price"] is not None:
-        acc.price = Decimal(str(validated["price"]))
-        if acc.price < 0:
-            acc.price = Decimal("0")
+        raw = Decimal(str(validated["price"]))
+        if raw < 0:
+            raw = Decimal("0")
+        acc.price = raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         update_fields.append("price")
     if "currency" in validated and validated.get("currency"):
         acc.currency = str(validated["currency"])[:3]
@@ -967,12 +1615,31 @@ def update_accommodation_from_json(request, accommodation_id):
     if "square_meters" in validated:
         acc.square_meters = _optional_decimal(validated["square_meters"])
         update_fields.append("square_meters")
+    if "min_nights" in validated:
+        acc.min_nights = _optional_int(validated["min_nights"])
+        update_fields.append("min_nights")
     if "images" in validated and validated["images"]:
         acc.images = [str(u) for u in validated["images"] if u][:50]
         update_fields.append("images")
     if "gallery_media_ids" in validated and validated["gallery_media_ids"]:
         acc.gallery_media_ids = [str(u) for u in validated["gallery_media_ids"] if u][:50]
         update_fields.append("gallery_media_ids")
+    if "display_order" in validated and validated.get("display_order") is not None:
+        try:
+            do = max(1, int(validated["display_order"]))
+            acc.display_order = do
+            update_fields.append("display_order")
+        except (TypeError, ValueError):
+            pass
+    if "public_code_prefix" in validated:
+        acc.public_code_prefix = (validated.get("public_code_prefix") or "").strip()[:30]
+        update_fields.append("public_code_prefix")
+
+    # Al publicar: generar public_code (y display_order si no está definido)
+    if acc.status == "published":
+        for f in ensure_public_code_on_publish(acc):
+            if f not in update_fields:
+                update_fields.append(f)
 
     # Reseñas: si se envía "reviews", reemplazar todas; luego recalcular rating_avg/review_count
     if "reviews" in validated:
@@ -989,6 +1656,70 @@ def update_accommodation_from_json(request, accommodation_id):
     if "review_count" in validated and validated["review_count"] is not None and "reviews" not in validated:
         acc.review_count = max(0, int(validated["review_count"]))
         update_fields.append("review_count")
+
+    # Extra charges (from-json): full list sync, same logic as PATCH
+    if "extra_charges" in validated and isinstance(validated.get("extra_charges"), list):
+        kept_ids = []
+        for idx, item in enumerate(validated["extra_charges"]):
+            if not isinstance(item, dict):
+                continue
+            code = (item.get("code") or "").strip()[:64]
+            if not code:
+                continue
+            name = (item.get("name") or "").strip()[:255]
+            charge_type = (item.get("charge_type") or "per_stay")[:20]
+            if charge_type not in ("per_stay", "per_night"):
+                charge_type = "per_stay"
+            try:
+                amount = Decimal(str(item.get("amount") or 0))
+                if amount < 0:
+                    amount = Decimal("0")
+            except (TypeError, ValueError):
+                amount = Decimal("0")
+            currency = (item.get("currency") or "").strip()[:3] or None
+            is_optional = bool(item.get("is_optional", True))
+            default_quantity = max(1, int(item.get("default_quantity") or 1))
+            max_quantity = _optional_int(item.get("max_quantity"))
+            is_active = bool(item.get("is_active", True))
+            display_order = max(0, int(item.get("display_order") or idx))
+            description = (item.get("description") or "")[:5000]
+            extra_id = item.get("id")
+            if extra_id:
+                try:
+                    extra = AccommodationExtraCharge.objects.get(id=extra_id, accommodation=acc)
+                    extra.name = name
+                    extra.charge_type = charge_type
+                    extra.amount = amount
+                    extra.currency = currency
+                    extra.is_optional = is_optional
+                    extra.default_quantity = default_quantity
+                    extra.max_quantity = max_quantity
+                    extra.is_active = is_active
+                    extra.display_order = display_order
+                    extra.description = description
+                    extra.save()
+                    kept_ids.append(extra.id)
+                    continue
+                except (AccommodationExtraCharge.DoesNotExist, ValueError):
+                    pass
+            extra, _ = AccommodationExtraCharge.objects.update_or_create(
+                accommodation=acc,
+                code=code,
+                defaults={
+                    "name": name,
+                    "description": description,
+                    "charge_type": charge_type,
+                    "amount": amount,
+                    "currency": currency,
+                    "is_optional": is_optional,
+                    "default_quantity": default_quantity,
+                    "max_quantity": max_quantity,
+                    "is_active": is_active,
+                    "display_order": display_order,
+                },
+            )
+            kept_ids.append(extra.id)
+        acc.extra_charges.exclude(id__in=kept_ids).delete()
 
     if update_fields:
         acc.save(update_fields=update_fields)
@@ -1009,6 +1740,9 @@ def update_accommodation_from_json(request, accommodation_id):
         "id": str(acc.id),
         "title": acc.title,
         "slug": acc.slug,
+        "public_code": acc.public_code or None,
+        "public_code_prefix": acc.public_code_prefix or None,
+        "display_order": acc.display_order,
         "description": acc.description or "",
         "short_description": acc.short_description or "",
         "status": acc.status,
@@ -1023,7 +1757,9 @@ def update_accommodation_from_json(request, accommodation_id):
         "country": acc.country or "",
         "guests": acc.guests,
         "bedrooms": acc.bedrooms,
-        "bathrooms": acc.bathrooms,
+        "full_bathrooms": acc.full_bathrooms,
+        "half_bathrooms": acc.half_bathrooms,
+        "bathrooms": (acc.full_bathrooms or 0) + (acc.half_bathrooms or 0),
         "beds": acc.beds,
         "price": float(acc.price or 0),
         "currency": acc.currency or "CLP",
@@ -1037,6 +1773,24 @@ def update_accommodation_from_json(request, accommodation_id):
         "floor": acc.floor,
         "unit_number": acc.unit_number or "",
         "square_meters": float(acc.square_meters) if acc.square_meters is not None else None,
+        "min_nights": acc.min_nights,
+        "extra_charges": [
+            {
+                "id": str(e.id),
+                "code": e.code,
+                "name": e.name,
+                "description": e.description or "",
+                "charge_type": e.charge_type,
+                "amount": float(e.amount),
+                "currency": e.currency or "",
+                "is_optional": e.is_optional,
+                "default_quantity": e.default_quantity,
+                "max_quantity": e.max_quantity,
+                "is_active": e.is_active,
+                "display_order": e.display_order,
+            }
+            for e in acc.extra_charges.order_by("display_order", "name")
+        ],
     }
     if acc.rental_hub_id:
         payload["rental_hub_id"] = str(acc.rental_hub_id)

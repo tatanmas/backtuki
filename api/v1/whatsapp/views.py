@@ -328,6 +328,16 @@ def reservation_by_code(request):
     if isinstance(total, Decimal):
         total = float(total)
 
+    exp_res = getattr(reservation, 'linked_experience_reservation', None)
+    acc_res = getattr(reservation, 'linked_accommodation_reservation', None)
+    car_res = getattr(reservation, 'linked_car_rental_reservation', None)
+    # For accommodation: use reservation total/currency and pricing_snapshot when present
+    if acc_res:
+        total = float(acc_res.total)
+        currency_acc = acc_res.currency or 'CLP'
+    else:
+        currency_acc = None
+
     experience = code_obj.experience
     accommodation = code_obj.accommodation
     car = getattr(code_obj, 'car', None)
@@ -359,9 +369,6 @@ def reservation_by_code(request):
             'currency': getattr(car, 'currency', 'CLP'),
         }
 
-    exp_res = getattr(reservation, 'linked_experience_reservation', None)
-    acc_res = getattr(reservation, 'linked_accommodation_reservation', None)
-    car_res = getattr(reservation, 'linked_car_rental_reservation', None)
     experience_reservation_id = str(exp_res.reservation_id) if exp_res else None
     accommodation_reservation_id = str(acc_res.reservation_id) if acc_res else None
     car_rental_reservation_id = str(car_res.reservation_id) if car_res else None
@@ -401,7 +408,8 @@ def reservation_by_code(request):
             pass
 
     currency = (
-        pricing.get('currency')
+        currency_acc
+        or pricing.get('currency')
         or (getattr(experience, 'currency', 'CLP') if experience else None)
         or (getattr(accommodation, 'currency', 'CLP') if accommodation else None)
         or (getattr(car, 'currency', 'CLP') if car else 'CLP')
@@ -441,6 +449,8 @@ def reservation_by_code(request):
         'allow_payment': reservation.payment_received_at is None,
         'product_type': product_type,
     }
+    if product_type == 'accommodation' and acc_res and getattr(acc_res, 'pricing_snapshot', None):
+        response_data['pricing_snapshot'] = acc_res.pricing_snapshot
 
     return Response(response_data, status=status.HTTP_200_OK)
 

@@ -19,6 +19,7 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_SSL_REDIRECT = True
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
+X_FRAME_OPTIONS = 'DENY'
 
 # Cloud Run specific settings
 ALLOWED_HOSTS = config(
@@ -32,12 +33,14 @@ CSRF_TRUSTED_ORIGINS = config(
     cast=Csv()
 )
 
-# CORS configuration
+# CORS configuration (explicit origins only, no wildcard in production)
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
     default='https://tuki.live,https://www.tuki.live,https://api.tuki.live,https://tuki.cl,https://www.tuki.cl,https://prop.cl,https://terminalcoyhaique.cl,https://www.terminalcoyhaique.cl',
     cast=Csv()
 )
+if '*' in CORS_ALLOWED_ORIGINS:
+    raise ValueError("CORS_ALLOWED_ORIGINS must not contain '*' in production. Set explicit origins in env.")
 CORS_ALLOW_CREDENTIALS = True
 
 # Database - Cloud SQL ENTERPRISE CONFIGURATION
@@ -162,6 +165,7 @@ REST_FRAMEWORK['DEFAULT_THROTTLE_CLASSES'] = [
 REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] = {
     'anon': '500/hour',  # Aumentado para permitir más peticiones de sincronización
     'user': '3000/hour',
+    'login': '10/min',  # POST /auth/token/ brute-force protection
 }
 
 # Logging configuration for Cloud Run

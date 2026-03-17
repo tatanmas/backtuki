@@ -51,30 +51,45 @@ class TicketImageService:
     def generate_ticket_png(cls, reservation: WhatsAppReservationRequest) -> Optional[bytes]:
         """
         Generate a PNG ticket image for a confirmed reservation.
-
-        Args:
-            reservation: WhatsAppReservationRequest instance
-
-        Returns:
-            PNG bytes or None on error
+        Supports experience and accommodation (labels and data from context).
         """
         try:
             from apps.whatsapp.services.group_notification_service import GroupNotificationService
             code_obj = GroupNotificationService._get_code_obj(reservation)
             context = ContextBuilder.build(reservation, code_obj)
 
-            # Estimate height
-            lines = [
-                "COMPROBANTE DE RESERVA",
-                "",
-                f"Experiencia: {context.get('experiencia', '')}",
-                f"Fecha: {context.get('fecha', '')}",
-                f"Hora: {context.get('hora', '')}",
-                f"Pasajeros: {context.get('pasajeros', '')}",
-                f"Total: {context.get('precio', '')}",
-                "",
-                f"Codigo: {context.get('codigo', '')}",
-            ]
+            acc_res = getattr(reservation, 'linked_accommodation_reservation', None)
+            is_accommodation = acc_res is not None
+
+            if is_accommodation:
+                lines = [
+                    "COMPROBANTE DE RESERVA",
+                    "",
+                    f"Alojamiento: {context.get('experiencia', '')}",
+                    f"Check-in: {context.get('check_in', '')}",
+                    f"Check-out: {context.get('check_out', '')}",
+                    f"Huéspedes: {context.get('pasajeros', '')}",
+                ]
+                if context.get('desglose_precio'):
+                    for line in (context['desglose_precio'] or '').strip().split('\n'):
+                        if line.strip():
+                            lines.append(line.strip())
+                lines.append(f"Total: {context.get('precio', '')}")
+                lines.append("")
+                lines.append(f"Código: {context.get('codigo', '')}")
+            else:
+                lines = [
+                    "COMPROBANTE DE RESERVA",
+                    "",
+                    f"Experiencia: {context.get('experiencia', '')}",
+                    f"Fecha: {context.get('fecha', '')}",
+                    f"Hora: {context.get('hora', '')}",
+                    f"Pasajeros: {context.get('pasajeros', '')}",
+                    f"Total: {context.get('precio', '')}",
+                    "",
+                    f"Codigo: {context.get('codigo', '')}",
+                ]
+
             height = cls.PADDING * 2 + len(lines) * cls.LINE_HEIGHT + 40
 
             img = Image.new('RGB', (cls.WIDTH, height), cls.BG_COLOR)
@@ -85,31 +100,22 @@ class TicketImageService:
 
             y = cls.PADDING
 
-            # Title
             draw.text((cls.PADDING, y), "COMPROBANTE DE RESERVA", fill=cls.ACCENT_COLOR, font=font_title)
             y += cls.LINE_HEIGHT + 8
 
-            # Border line
             draw.line([(cls.PADDING, y), (cls.WIDTH - cls.PADDING, y)], fill=cls.BORDER_COLOR, width=1)
             y += cls.LINE_HEIGHT
 
-            for label, key in [
-                ('Experiencia:', 'experiencia'),
-                ('Fecha:', 'fecha'),
-                ('Hora:', 'hora'),
-                ('Pasajeros:', 'pasajeros'),
-                ('Total:', 'precio'),
-            ]:
-                y = cls._draw_text(draw, cls.PADDING, y, f"{label} {context.get(key, 'N/A')}", font_body)
-            y += 4
-            y = cls._draw_text(draw, cls.PADDING, y, f"Codigo: {context.get('codigo', '')}", font_body)
+            for line in lines:
+                if line.startswith("COMPROBANTE") or line == "":
+                    continue
+                y = cls._draw_text(draw, cls.PADDING, y, line[:60], font_body)
 
-            # Output to bytes
             buffer = io.BytesIO()
             img.save(buffer, format='PNG')
             return buffer.getvalue()
         except Exception as e:
-            logger.exception(f"Error generating ticket image: {e}")
+            logger.exception("Error generating ticket image: %s", e)
             return None
 
     @classmethod

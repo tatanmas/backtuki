@@ -1,0 +1,230 @@
+from django.db import migrations, models
+import django.db.models.deletion
+import django.core.validators
+
+
+class Migration(migrations.Migration):
+
+    initial = True
+
+    dependencies = [
+        ('users', '0005_remove_user_organizer_fk'),
+        ('organizers', '0019_add_payout_model'),
+        ('creators', '0006_herovitrinaitem'),
+        ('events', '0050_order_is_sandbox_and_deleted_at'),
+        ('experiences', '0019_experience_auto_approve_free_tour_reservations'),
+    ]
+
+    operations = [
+        migrations.CreateModel(
+            name='PayeeAccount',
+            fields=[
+                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True, verbose_name='Created at')),
+                ('updated_at', models.DateTimeField(auto_now=True, verbose_name='Updated at')),
+                ('id', models.UUIDField(default=__import__('uuid').uuid4, editable=False, primary_key=True, serialize=False)),
+                ('account_key', models.CharField(db_index=True, help_text='Stable identity such as organizer:<uuid> or creator:<uuid>.', max_length=150, unique=True, verbose_name='account key')),
+                ('actor_type', models.CharField(choices=[('organizer', 'Organizer'), ('creator', 'Creator'), ('transport_operator', 'Transport operator'), ('other', 'Other')], db_index=True, max_length=40, verbose_name='actor type')),
+                ('actor_id', models.UUIDField(blank=True, db_index=True, null=True, verbose_name='actor id')),
+                ('display_name', models.CharField(max_length=255, verbose_name='display name')),
+                ('legal_name', models.CharField(blank=True, max_length=255, verbose_name='legal name')),
+                ('email', models.EmailField(blank=True, max_length=254, verbose_name='email')),
+                ('phone', models.CharField(blank=True, max_length=50, verbose_name='phone')),
+                ('currency', models.CharField(default='CLP', max_length=3, verbose_name='currency')),
+                ('status', models.CharField(choices=[('active', 'Active'), ('inactive', 'Inactive'), ('blocked', 'Blocked')], db_index=True, default='active', max_length=20, verbose_name='status')),
+                ('country_code', models.CharField(default='CL', max_length=2, verbose_name='country code')),
+                ('person_type', models.CharField(blank=True, max_length=20, verbose_name='person type')),
+                ('tax_name', models.CharField(blank=True, max_length=255, verbose_name='tax name')),
+                ('tax_id', models.CharField(blank=True, max_length=50, verbose_name='tax id')),
+                ('billing_address', models.CharField(blank=True, max_length=255, verbose_name='billing address')),
+                ('recipient_type', models.CharField(blank=True, max_length=50, verbose_name='recipient type')),
+                ('document_type', models.CharField(blank=True, default='RUT', max_length=50, verbose_name='document type')),
+                ('document_number', models.CharField(blank=True, max_length=50, verbose_name='document number')),
+                ('bank_name', models.CharField(blank=True, max_length=100, verbose_name='bank name')),
+                ('account_type', models.CharField(blank=True, max_length=50, verbose_name='account type')),
+                ('account_number', models.CharField(blank=True, max_length=100, verbose_name='account number')),
+                ('account_holder', models.CharField(blank=True, max_length=255, verbose_name='account holder')),
+                ('metadata', models.JSONField(blank=True, default=dict, verbose_name='metadata')),
+                ('creator', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='finance_payee_accounts', to='creators.creatorprofile')),
+                ('organizer', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='finance_payee_accounts', to='organizers.organizer')),
+            ],
+            options={
+                'verbose_name': 'payee account',
+                'verbose_name_plural': 'payee accounts',
+                'ordering': ['display_name'],
+            },
+        ),
+        migrations.CreateModel(
+            name='PayoutBatch',
+            fields=[
+                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True, verbose_name='Created at')),
+                ('updated_at', models.DateTimeField(auto_now=True, verbose_name='Updated at')),
+                ('id', models.UUIDField(default=__import__('uuid').uuid4, editable=False, primary_key=True, serialize=False)),
+                ('name', models.CharField(max_length=255, verbose_name='name')),
+                ('status', models.CharField(choices=[('draft', 'Draft'), ('approved', 'Approved'), ('exported', 'Exported'), ('submitted', 'Submitted'), ('paid', 'Paid'), ('reconciled', 'Reconciled'), ('failed', 'Failed')], db_index=True, default='draft', max_length=20, verbose_name='status')),
+                ('currency', models.CharField(default='CLP', max_length=3, verbose_name='currency')),
+                ('description', models.TextField(blank=True, verbose_name='description')),
+                ('submitted_at', models.DateTimeField(blank=True, null=True, verbose_name='submitted at')),
+                ('paid_at', models.DateTimeField(blank=True, null=True, verbose_name='paid at')),
+                ('metadata', models.JSONField(blank=True, default=dict, verbose_name='metadata')),
+                ('approved_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='finance_batches_approved', to='users.user')),
+            ],
+            options={
+                'verbose_name': 'payout batch',
+                'verbose_name_plural': 'payout batches',
+                'ordering': ['-created_at'],
+            },
+        ),
+        migrations.CreateModel(
+            name='PayeeSchedule',
+            fields=[
+                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True, verbose_name='Created at')),
+                ('updated_at', models.DateTimeField(auto_now=True, verbose_name='Updated at')),
+                ('id', models.UUIDField(default=__import__('uuid').uuid4, editable=False, primary_key=True, serialize=False)),
+                ('frequency', models.CharField(choices=[('manual', 'Manual'), ('weekly', 'Weekly'), ('biweekly', 'Biweekly'), ('monthly', 'Monthly')], default='manual', max_length=20, verbose_name='frequency')),
+                ('hold_days', models.PositiveIntegerField(default=0, verbose_name='hold days')),
+                ('next_payment_date', models.DateField(blank=True, db_index=True, null=True, verbose_name='next payment date')),
+                ('notes', models.TextField(blank=True, verbose_name='notes')),
+                ('payee', models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name='schedule', to='finance.payeeaccount')),
+            ],
+            options={
+                'verbose_name': 'payee schedule',
+                'verbose_name_plural': 'payee schedules',
+            },
+        ),
+        migrations.CreateModel(
+            name='PayableLine',
+            fields=[
+                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True, verbose_name='Created at')),
+                ('updated_at', models.DateTimeField(auto_now=True, verbose_name='Updated at')),
+                ('id', models.UUIDField(default=__import__('uuid').uuid4, editable=False, primary_key=True, serialize=False)),
+                ('source_type', models.CharField(choices=[('event_order', 'Event order'), ('experience_order', 'Experience order'), ('creator_commission', 'Creator commission'), ('accommodation_order', 'Accommodation order'), ('car_rental_order', 'Car rental order'), ('erasmus_activity_order', 'Erasmus activity order'), ('manual_adjustment', 'Manual adjustment')], db_index=True, max_length=40, verbose_name='source type')),
+                ('source_reference', models.CharField(max_length=150, unique=True, verbose_name='source reference')),
+                ('source_label', models.CharField(blank=True, max_length=255, verbose_name='source label')),
+                ('status', models.CharField(choices=[('open', 'Open'), ('batched', 'Batched'), ('paid', 'Paid'), ('reconciled', 'Reconciled'), ('voided', 'Voided')], db_index=True, default='open', max_length=20, verbose_name='status')),
+                ('maturity_status', models.CharField(choices=[('pending', 'Pending'), ('available', 'Available'), ('blocked', 'Blocked')], db_index=True, default='available', max_length=20, verbose_name='maturity status')),
+                ('gross_amount', models.DecimalField(decimal_places=2, default=0, max_digits=12, verbose_name='gross amount')),
+                ('platform_fee_amount', models.DecimalField(decimal_places=2, default=0, max_digits=12, verbose_name='platform fee amount')),
+                ('payable_amount', models.DecimalField(decimal_places=2, default=0, max_digits=12, verbose_name='payable amount')),
+                ('currency', models.CharField(default='CLP', max_length=3, verbose_name='currency')),
+                ('effective_at', models.DateTimeField(blank=True, db_index=True, null=True, verbose_name='effective at')),
+                ('due_date', models.DateField(blank=True, db_index=True, null=True, verbose_name='due date')),
+                ('paid_at', models.DateTimeField(blank=True, db_index=True, null=True, verbose_name='paid at')),
+                ('metadata', models.JSONField(blank=True, default=dict, verbose_name='metadata')),
+                ('experience_reservation', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='finance_payable_lines', to='experiences.experiencereservation')),
+                ('order', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='finance_payable_lines', to='events.order')),
+                ('payee', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='payable_lines', to='finance.payeeaccount')),
+            ],
+            options={
+                'verbose_name': 'payable line',
+                'verbose_name_plural': 'payable lines',
+                'ordering': ['-effective_at', '-created_at'],
+            },
+        ),
+        migrations.CreateModel(
+            name='BankExportFile',
+            fields=[
+                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True, verbose_name='Created at')),
+                ('updated_at', models.DateTimeField(auto_now=True, verbose_name='Updated at')),
+                ('id', models.UUIDField(default=__import__('uuid').uuid4, editable=False, primary_key=True, serialize=False)),
+                ('adapter_code', models.CharField(db_index=True, max_length=50, verbose_name='adapter code')),
+                ('filename', models.CharField(max_length=255, verbose_name='filename')),
+                ('checksum', models.CharField(blank=True, max_length=128, verbose_name='checksum')),
+                ('content', models.JSONField(blank=True, default=list, verbose_name='content')),
+                ('row_count', models.PositiveIntegerField(default=0, verbose_name='row count')),
+                ('status', models.CharField(choices=[('generated', 'Generated'), ('downloaded', 'Downloaded'), ('archived', 'Archived')], default='generated', max_length=20, verbose_name='status')),
+                ('batch', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='export_files', to='finance.payoutbatch')),
+                ('generated_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='finance_export_files', to='users.user')),
+            ],
+            options={
+                'verbose_name': 'bank export file',
+                'verbose_name_plural': 'bank export files',
+                'ordering': ['-created_at'],
+            },
+        ),
+        migrations.CreateModel(
+            name='Payout',
+            fields=[
+                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True, verbose_name='Created at')),
+                ('updated_at', models.DateTimeField(auto_now=True, verbose_name='Updated at')),
+                ('id', models.UUIDField(default=__import__('uuid').uuid4, editable=False, primary_key=True, serialize=False)),
+                ('status', models.CharField(choices=[('draft', 'Draft'), ('approved', 'Approved'), ('exported', 'Exported'), ('submitted', 'Submitted'), ('paid', 'Paid'), ('reconciled', 'Reconciled'), ('failed', 'Failed')], db_index=True, default='draft', max_length=20, verbose_name='status')),
+                ('amount', models.DecimalField(decimal_places=2, max_digits=12, validators=[django.core.validators.MinValueValidator(0)], verbose_name='amount')),
+                ('currency', models.CharField(default='CLP', max_length=3, verbose_name='currency')),
+                ('reference', models.CharField(blank=True, max_length=255, verbose_name='reference')),
+                ('bank_reference', models.CharField(blank=True, max_length=255, verbose_name='bank reference')),
+                ('paid_at', models.DateTimeField(blank=True, db_index=True, null=True, verbose_name='paid at')),
+                ('submitted_at', models.DateTimeField(blank=True, null=True, verbose_name='submitted at')),
+                ('metadata', models.JSONField(blank=True, default=dict, verbose_name='metadata')),
+                ('approved_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='finance_payouts_approved', to='users.user')),
+                ('batch', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='payouts', to='finance.payoutbatch')),
+                ('payee', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='payouts', to='finance.payeeaccount')),
+            ],
+            options={
+                'verbose_name': 'payout',
+                'verbose_name_plural': 'payouts',
+                'ordering': ['-created_at'],
+            },
+        ),
+        migrations.CreateModel(
+            name='PayoutAttachment',
+            fields=[
+                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True, verbose_name='Created at')),
+                ('updated_at', models.DateTimeField(auto_now=True, verbose_name='Updated at')),
+                ('id', models.UUIDField(default=__import__('uuid').uuid4, editable=False, primary_key=True, serialize=False)),
+                ('file', models.FileField(upload_to='finance/payout-attachments/', verbose_name='file')),
+                ('original_name', models.CharField(blank=True, max_length=255, verbose_name='original name')),
+                ('label', models.CharField(blank=True, max_length=100, verbose_name='label')),
+                ('payout', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='attachments', to='finance.payout')),
+                ('uploaded_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='finance_payout_attachments', to='users.user')),
+            ],
+            options={
+                'verbose_name': 'payout attachment',
+                'verbose_name_plural': 'payout attachments',
+                'ordering': ['-created_at'],
+            },
+        ),
+        migrations.CreateModel(
+            name='PayoutLineAllocation',
+            fields=[
+                ('created_at', models.DateTimeField(auto_now_add=True, db_index=True, verbose_name='Created at')),
+                ('updated_at', models.DateTimeField(auto_now=True, verbose_name='Updated at')),
+                ('id', models.UUIDField(default=__import__('uuid').uuid4, editable=False, primary_key=True, serialize=False)),
+                ('amount', models.DecimalField(decimal_places=2, max_digits=12, validators=[django.core.validators.MinValueValidator(0)], verbose_name='amount')),
+                ('payable_line', models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name='allocation', to='finance.payableline')),
+                ('payout', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='allocations', to='finance.payout')),
+            ],
+            options={
+                'verbose_name': 'payout line allocation',
+                'verbose_name_plural': 'payout line allocations',
+                'ordering': ['created_at'],
+            },
+        ),
+        migrations.AddIndex(
+            model_name='payeeaccount',
+            index=models.Index(fields=['actor_type', 'status'], name='finance_paye_actor_t_5ea214_idx'),
+        ),
+        migrations.AddIndex(
+            model_name='payeeaccount',
+            index=models.Index(fields=['display_name'], name='finance_paye_display_f7a172_idx'),
+        ),
+        migrations.AddIndex(
+            model_name='payableline',
+            index=models.Index(fields=['payee', 'status'], name='finance_paya_payee_i_22cc68_idx'),
+        ),
+        migrations.AddIndex(
+            model_name='payableline',
+            index=models.Index(fields=['payee', 'maturity_status'], name='finance_paya_payee_i_f09d4c_idx'),
+        ),
+        migrations.AddIndex(
+            model_name='payableline',
+            index=models.Index(fields=['source_type', 'effective_at'], name='finance_paya_source__c30e2a_idx'),
+        ),
+        migrations.AddIndex(
+            model_name='payout',
+            index=models.Index(fields=['payee', 'status'], name='finance_payo_payee_i_b0a5e2_idx'),
+        ),
+        migrations.AddIndex(
+            model_name='payout',
+            index=models.Index(fields=['status', 'paid_at'], name='finance_payo_status_733161_idx'),
+        ),
+    ]

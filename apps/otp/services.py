@@ -80,10 +80,61 @@ class OTPService:
                 otp.ip_address = ip_address
                 otp.user_agent = user_agent
                 otp.save(update_fields=['ip_address', 'user_agent'])
-                
-                # Enviar email
-                email_sent = cls._send_otp_email(otp)
-                
+
+                # Start platform flow for observability (quién inicia, email, IP, etc.)
+                flow = None
+                try:
+                    from core.flow_logger import FlowLogger
+                    flow_type = cls._get_otp_flow_type(purpose, metadata or {})
+                    flow_metadata = {
+                        'email': email,
+                        'purpose': purpose,
+                        'ip_address': ip_address,
+                        'user_agent': (user_agent or '')[:500],
+                    }
+                    if metadata:
+                        flow_metadata.update({k: v for k, v in metadata.items() if k not in ('email', 'purpose')})
+                    flow = FlowLogger.start_flow(
+                        flow_type,
+                        user=user,
+                        metadata=flow_metadata,
+                    )
+                    if flow and flow.flow:
+                        flow.log_event(
+                            'OTP_REQUESTED',
+                            source='api',
+                            status='info',
+                            message=f"OTP solicitado para {email}",
+                            metadata={'email': email, 'purpose': purpose},
+                        )
+                except Exception as flow_err:
+                    logger.warning("OTP flow start/log failed (non-blocking): %s", flow_err)
+
+                # Enviar email (returns (success, error_message))
+                email_sent, email_error = cls._send_otp_email(otp)
+
+                if flow and flow.flow:
+                    try:
+                        if email_sent:
+                            flow.log_event(
+                                'EMAIL_SENT',
+                                source='api',
+                                status='success',
+                                message=f"OTP email enviado a {email}",
+                            )
+                            flow.complete(message="OTP email sent successfully")
+                        else:
+                            flow.log_event(
+                                'EMAIL_FAILED',
+                                source='api',
+                                status='failure',
+                                message=f"Fallo envío OTP a {email}",
+                                metadata={'error': email_error or 'Unknown error'},
+                            )
+                            flow.fail(message="OTP email delivery failed", error=email_error)
+                    except Exception as flow_err:
+                        logger.warning("OTP flow complete/fail log failed (non-blocking): %s", flow_err)
+
                 if email_sent:
                     logger.info(f"OTP generado y enviado: {email} - {purpose}")
                     return {
@@ -99,7 +150,7 @@ class OTPService:
                         'otp': None,
                         'message': 'Error al enviar el código'
                     }
-                    
+
         except Exception as e:
             logger.error(f"Error generando OTP: {str(e)}")
             return {
@@ -152,7 +203,8 @@ class OTPService:
         if otp.is_used or otp.expires_at <= timezone.now():
             logger.warning(f"OTP {otp_id} ya usado o expirado, no se envía email")
             return False
-        return cls._send_otp_email(otp)
+        sent, _ = cls._send_otp_email(otp)
+        return sent
     
     @classmethod
     def validate_code(cls, email, code, purpose, request=None):
@@ -342,14 +394,34 @@ class OTPService:
             
             # Enviar email
             email.send(fail_silently=False)
-            
+
             logger.info(f"📧 [OTP EMAIL] Sent OTP email for purpose {otp.purpose} to {otp.email}")
-            return True
-            
+            return (True, None)
+
         except Exception as e:
             logger.error(f"Error enviando email OTP: {str(e)}")
-            return False
-    
+            return (False, str(e))
+
+    @classmethod
+    def _get_otp_flow_type(cls, purpose, metadata):
+        """Map OTP purpose (+ metadata) to PlatformFlow flow_type for observability."""
+        meta = metadata or {}
+        if purpose == OTPPurpose.LOGIN and meta.get('login_method') == 'organizer_otp':
+            return 'otp_organizer_login'
+        if purpose == OTPPurpose.LOGIN:
+            return 'otp_login'
+        if purpose == OTPPurpose.PASSWORD_RESET:
+            return 'otp_password_reset'
+        if purpose == OTPPurpose.TICKET_ACCESS:
+            return 'otp_ticket_access'
+        if purpose == OTPPurpose.EVENT_CREATION:
+            return 'otp_event_creation'
+        if purpose == OTPPurpose.EMAIL_VERIFICATION:
+            return 'otp_email_verification'
+        if purpose == OTPPurpose.ACCOUNT_CREATION:
+            return 'otp_account_creation'
+        return 'otp_login'  # fallback
+
     @classmethod
     def _get_client_ip(cls, request):
         """

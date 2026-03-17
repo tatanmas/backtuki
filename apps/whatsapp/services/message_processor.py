@@ -97,14 +97,45 @@ class MessageProcessor:
         message.processed = True
         message.save(update_fields=["processed"])
 
+        # Group operator commands (free tours first for backward compatibility, then accommodations)
+        chat_id = data.get("chat_id")
+        chat_type = data.get("chat_type", "individual")
+        if chat_type == "group" and chat_id and (message.content or "").strip():
+            try:
+                from apps.whatsapp.services.free_tour_command_processor import process_and_reply
+                if process_and_reply((message.content or "").strip(), chat_id):
+                    return {
+                        "status": "free_tour_command_processed",
+                        "message_id": str(message.id),
+                    }
+            except Exception as e:
+                logger.exception("Free tour command processing failed: %s", e)
+            try:
+                from apps.whatsapp.services.accommodation_command_processor import (
+                    AccommodationCommandProcessor,
+                )
+                if AccommodationCommandProcessor.process_and_reply(
+                    (message.content or "").strip(),
+                    chat_id,
+                    sender_phone=data.get("sender_phone", ""),
+                ):
+                    return {
+                        "status": "accommodation_command_processed",
+                        "message_id": str(message.id),
+                    }
+            except Exception as e:
+                logger.exception("Accommodation command processing failed: %s", e)
+
         parsed = MessageParser.parse_message(message.content)
         reservation_code = parsed.get("reservation_code")
         erasmus_code = parsed.get("erasmus_code")
+        contest_code = parsed.get("contest_code")
         logger.info(
-            "Message content_len=%s parsed_reservation_code=%s erasmus_code=%s content_preview=%s",
+            "Message content_len=%s parsed_reservation_code=%s erasmus_code=%s contest_code=%s content_preview=%s",
             len(message.content or ""),
             reservation_code,
             erasmus_code,
+            contest_code,
             repr((message.content or "")[:100]),
         )
 
@@ -122,6 +153,19 @@ class MessageProcessor:
             except Exception as e:
                 logger.exception("[ErasmusAccess] Error processing ERAS code %s: %s", erasmus_code, e)
                 return {"status": "error", "message_id": str(message.id)}
+
+        # Contest participation code: send personalized reply and mark confirmed
+        if contest_code:
+            try:
+                from apps.erasmus.contest_services import process_contest_code_from_whatsapp
+                success = process_contest_code_from_whatsapp(message, contest_code)
+                return {
+                    "status": "contest_code_processed" if success else "contest_code_invalid",
+                    "message_id": str(message.id),
+                    "contest_code": contest_code,
+                }
+            except Exception as e:
+                logger.exception("Error processing contest code %s: %s", contest_code, e)
 
         if reservation_code:
             try:

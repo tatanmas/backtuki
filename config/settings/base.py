@@ -62,8 +62,10 @@ INSTALLED_APPS = [
     'apps.car_rental',  # 🚀 ENTERPRISE: Rent-a-car (companies + cars, WhatsApp reservation flow)
     'apps.creators',  # 🚀 ENTERPRISE: TUKI Creators (influencers)
     'apps.erasmus',  # 🚀 ENTERPRISE: Erasmus registration and leads
+    'apps.travel_guides',  # 🚀 ENTERPRISE: Travel guides (blog Tuki)
+    'apps.finance',
     'payment_processor',  # 🚀 ENTERPRISE Payment System
-    'core',
+    'core.apps.CoreConfig',
 ]
 
 # WooCommerce sync toggle (runtime)
@@ -166,6 +168,16 @@ REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
+    # Safe default throttling (production/cloudrun/development override with higher limits)
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/hour',
+        'user': '2000/hour',
+        'login': '10/min',  # POST /auth/token/ brute-force protection
+    },
 }
 
 # JWT settings
@@ -212,6 +224,7 @@ SPECTACULAR_SETTINGS = {
 }
 
 # CORS settings
+# In production, set CORS_ALLOWED_ORIGINS to an explicit list of frontend origins (no wildcard '*').
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
     default='http://localhost:3000,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080',

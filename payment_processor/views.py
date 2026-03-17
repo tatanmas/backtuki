@@ -276,49 +276,44 @@ class PaymentViewSet(viewsets.ModelViewSet):
                 
                 
                 # 🚀 ENTERPRISE: Security check for public endpoint
-                # Allow payment if:
-                # 1. User is anonymous (order created anonymously and will be linked by email)
-                # 2. User is authenticated and owns the order directly  
-                # 3. User is authenticated and email matches order email (existing account flow)
-                
-                if request.user.is_authenticated:
-                    user_owns_order = order.user == request.user
-                    email_matches = request.user.email.lower() == order.email.lower()
-                    
-                    # 🚀 ENTERPRISE: Check if user is organizer of the event (event orders only)
-                    from apps.organizers.models import OrganizerUser
-                    is_event_organizer = False
-                    try:
-                        if order.event:
-                            organizer_user = OrganizerUser.objects.get(user=request.user)
-                            is_event_organizer = order.event.organizer == organizer_user.organizer
-                            if is_event_organizer:
-                                logger.info(f"🎯 ORGANIZER: User {request.user.id} is organizer of event {order.event.id}")
-                    except OrganizerUser.DoesNotExist:
-                        pass
-                    
-                    if not (user_owns_order or email_matches or is_event_organizer):
-                        logger.error(f"🚨 SECURITY: User {request.user.id} ({request.user.email}) tried to pay for order {order.id} owned by {order.user_id} ({order.email})")
-                        return Response({
-                            'success': False,
-                            'error': 'Unauthorized access to order'
-                        }, status=status.HTTP_403_FORBIDDEN)
+                # Erasmus activity payment link: link is public, auth must NOT be used. Anyone with the link can pay.
+                is_erasmus_link_order = getattr(order, "order_kind", None) == "erasmus_activity"
+                if is_erasmus_link_order:
+                    # Public link: do not use request.user for authorization. Allow payment.
+                    logger.info(f"✅ PAYMENT AUTH: Erasmus activity link order {order.id} (auth ignored, link is public)")
                 else:
-                    # Anonymous user - payment allowed (order linking happens during booking)
-                    pass
-                
-                # Log successful authorization
-                if request.user.is_authenticated:
-                    user_owns_order = order.user == request.user
-                    email_matches = request.user.email.lower() == order.email.lower()
-                    if user_owns_order:
-                        logger.info(f"✅ PAYMENT AUTH: User {request.user.id} owns order {order.id}")
-                    elif email_matches:
-                        logger.info(f"✅ PAYMENT AUTH: User {request.user.id} authorized by email match for order {order.id}")
-                    elif is_event_organizer:
-                        logger.info(f"✅ PAYMENT AUTH: User {request.user.id} authorized as event organizer for order {order.id}")
-                else:
-                    logger.info(f"✅ PAYMENT AUTH: Anonymous user payment for order {order.id}")
+                    # Other orders: allow if anonymous, or authenticated with ownership/email/organizer
+                    if request.user.is_authenticated:
+                        user_owns_order = order.user == request.user
+                        email_matches = (
+                            (order.email or "").strip()
+                            and request.user.email
+                            and request.user.email.lower() == (order.email or "").strip().lower()
+                        )
+                        from apps.organizers.models import OrganizerUser
+                        is_event_organizer = False
+                        try:
+                            if order.event:
+                                organizer_user = OrganizerUser.objects.get(user=request.user)
+                                is_event_organizer = order.event.organizer == organizer_user.organizer
+                                if is_event_organizer:
+                                    logger.info(f"🎯 ORGANIZER: User {request.user.id} is organizer of event {order.event.id}")
+                        except OrganizerUser.DoesNotExist:
+                            pass
+                        if not (user_owns_order or email_matches or is_event_organizer):
+                            logger.error(f"🚨 SECURITY: User {request.user.id} ({request.user.email}) tried to pay for order {order.id} owned by {order.user_id} ({order.email})")
+                            return Response({
+                                'success': False,
+                                'error': 'Unauthorized access to order'
+                            }, status=status.HTTP_403_FORBIDDEN)
+                        if user_owns_order:
+                            logger.info(f"✅ PAYMENT AUTH: User {request.user.id} owns order {order.id}")
+                        elif email_matches:
+                            logger.info(f"✅ PAYMENT AUTH: User {request.user.id} authorized by email match for order {order.id}")
+                        else:
+                            logger.info(f"✅ PAYMENT AUTH: User {request.user.id} as event organizer for order {order.id}")
+                    else:
+                        logger.info(f"✅ PAYMENT AUTH: Anonymous user payment for order {order.id}")
                 
                 # Create payment service
                 service = PaymentServiceFactory.create_service(payment_method.provider)
@@ -327,6 +322,12 @@ class PaymentViewSet(viewsets.ModelViewSet):
                 payment = service.create_payment(order, order.total, payment_method)
                 
                 logger.info(f"💳 PAYMENT: Created payment {payment.buy_order} for order {order.id}")
+                if getattr(order, "order_kind", None) == "erasmus_activity":
+                    try:
+                        from apps.erasmus.flow_service import log_payment_initiated
+                        log_payment_initiated(order)
+                    except Exception:
+                        pass
                 
                 # Process payment with provider
                 result = service.process_payment(payment)
@@ -384,7 +385,13 @@ class PaymentViewSet(viewsets.ModelViewSet):
         
         try:
             # Get payment by token
-            payment = Payment.objects.select_related('payment_method', 'order').get(token=token)
+            payment = Payment.objects.select_related(
+                'payment_method', 'order',
+                'order__erasmus_activity_payment_link',
+                'order__erasmus_activity_payment_link__lead',
+                'order__erasmus_activity_payment_link__instance',
+                'order__erasmus_activity_payment_link__instance__activity',
+            ).get(token=token)
             
             logger.info(f"🔄 WEBPAY RETURN: Processing return for payment {payment.buy_order}")
             
@@ -410,7 +417,14 @@ class PaymentViewSet(viewsets.ModelViewSet):
                 }, status=status.HTTP_200_OK)
             else:
                 logger.error(f"❌ WEBPAY RETURN: Payment {payment.buy_order} confirmation failed: {result.get('error')}")
-                
+                try:
+                    from apps.erasmus.flow_service import log_payment_failed
+                    log_payment_failed(
+                        payment.order,
+                        message=result.get("error") or "Payment confirmation failed",
+                    )
+                except Exception:
+                    pass
                 return Response({
                     'success': False,
                     'payment': PaymentSerializer(payment).data,

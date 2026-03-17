@@ -333,6 +333,9 @@ class ReservationHandler:
         participants = checkout_data.get('participants', {})
         pricing = checkout_data.get('pricing', {})
         contact = dict(checkout_data.get('contact') or checkout_data.get('customer') or {})
+        guide_context = checkout_data.get('travel_guide_context') or {}
+        travel_guide_id = guide_context.get('travel_guide_id')
+        travel_guide_block_key = str(guide_context.get('travel_guide_block_key') or '').strip()
         if contact.get('name') and not contact.get('first_name'):
             name_parts = str(contact['name']).strip().split(None, 1)
             contact['first_name'] = name_parts[0]
@@ -379,6 +382,10 @@ class ReservationHandler:
                 currency=pricing.get('currency', 'CLP'),
                 pricing_details=pricing.get('breakdown', {}),
                 flow=flow.flow if flow and flow.flow else None,
+                source_type='travel_guide' if travel_guide_id and travel_guide_block_key else 'direct',
+                travel_guide_id=travel_guide_id if travel_guide_id else None,
+                travel_guide_block_key=travel_guide_block_key,
+                travel_guide_context=guide_context if isinstance(guide_context, dict) else {},
             )
             reservation.linked_experience_reservation = experience_reservation
             reservation.save(update_fields=['linked_experience_reservation'])
@@ -412,6 +419,11 @@ class ReservationHandler:
         """Create AccommodationReservation from checkout_data and link to WhatsAppReservationRequest."""
         from datetime import date as date_type
 
+        from apps.accommodations.services.pricing import (
+            calculate_accommodation_pricing,
+            AccommodationPricingError,
+        )
+
         checkout_data = code_obj.checkout_data
         accommodation = reservation.accommodation
         if not accommodation:
@@ -432,9 +444,30 @@ class ReservationHandler:
         if not check_in or not check_out:
             return None
 
-        pricing = checkout_data.get("pricing", {}) or {}
-        total = float(pricing.get("total", 0) or 0)
-        currency = pricing.get("currency", "CLP")
+        guests = int(checkout_data.get("guests", 1) or 1)
+        if guests < 1:
+            guests = 1
+        selected_options = checkout_data.get("selected_options") or []
+
+        # Single source of truth: recalculate pricing in backend (cobros adicionales v1.5)
+        total = 0
+        currency = accommodation.currency or "CLP"
+        pricing_snapshot = None
+        try:
+            snapshot = calculate_accommodation_pricing(
+                accommodation_id=accommodation.id,
+                check_in=check_in,
+                check_out=check_out,
+                guests=guests,
+                selected_options=selected_options,
+            )
+            total = float(snapshot["total"])
+            currency = snapshot["currency"]
+            pricing_snapshot = snapshot
+        except AccommodationPricingError as e:
+            logger.warning("Accommodation pricing error when creating reservation: %s", e)
+            return None
+
         contact = dict(checkout_data.get("contact") or checkout_data.get("customer") or {})
         name = (contact.get("name") or "").strip()
         if name and not contact.get("first_name"):
@@ -471,13 +504,14 @@ class ReservationHandler:
                 status="pending",
                 check_in=check_in,
                 check_out=check_out,
-                guests=int(checkout_data.get("guests", 1)),
+                guests=guests,
                 first_name=contact.get("first_name", ""),
                 last_name=contact.get("last_name", ""),
                 email=contact.get("email", ""),
                 phone=reservation.whatsapp_message.phone or "",
                 total=total,
                 currency=currency,
+                pricing_snapshot=pricing_snapshot,
                 flow=flow.flow if flow and flow.flow else None,
             )
             reservation.linked_accommodation_reservation = acc_res

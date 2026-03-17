@@ -29,8 +29,29 @@ CODE_PREFIX = "ERAS"
 CODE_EXPIRY_HOURS = 24
 LINK_EXPIRY_HOURS = 48
 
-# The Tuki WhatsApp number students message (without + prefix, digits only)
+# The Tuki WhatsApp number students message (without + prefix, digits only).
+# Fallback when no WhatsApp session is connected (e.g. wa.me link, config).
 TUKI_WHATSAPP_NUMBER = getattr(settings, "TUKI_WHATSAPP_NUMBER", "56947884342")
+
+
+def get_erasmus_whatsapp_number() -> str:
+    """
+    Return the WhatsApp number to use for Erasmus (wa.me link and sending).
+    Uses the connected session number so the link always points to the number
+    that is actually connected; fallback to TUKI_WHATSAPP_NUMBER if none.
+    """
+    from apps.whatsapp.models import WhatsAppSession
+
+    session = (
+        WhatsAppSession.objects.filter(status="connected")
+        .exclude(phone_number="")
+        .first()
+    )
+    if session and session.phone_number:
+        digits = "".join(c for c in session.phone_number if c.isdigit())
+        if digits:
+            return digits
+    return TUKI_WHATSAPP_NUMBER
 
 # Main WhatsApp group link (used in welcome message)
 WHATSAPP_MAIN_GROUP_URL = "https://chat.whatsapp.com/JguF1qVYRGaIwm2ss7QKp1?mode=gi_t"
@@ -38,8 +59,9 @@ WHATSAPP_MAIN_GROUP_URL = "https://chat.whatsapp.com/JguF1qVYRGaIwm2ss7QKp1?mode
 # Supported form locales for welcome message (same as frontend selector)
 WELCOME_LOCALES = ("es", "en", "pt", "de", "it", "fr")
 
-# Welcome message template per locale. Placeholders: {first_name}, {link_plataforma}, {magic_link_url}, {email}
-WELCOME_MESSAGES = {
+# Default welcome message template per locale (fallback when DB has no custom template).
+# Placeholders: {first_name}, {link_plataforma}, {magic_link_url}, {email}
+WELCOME_MESSAGES_DEFAULT = {
     "es": (
         "Hola {first_name},\n\n"
         "Soy Tatán (Sebastián), creador de Tuki 🙌\n\n"
@@ -157,6 +179,27 @@ WELCOME_MESSAGES = {
 }
 
 
+def get_welcome_template(locale: str) -> str:
+    """
+    Return the welcome message template for the given locale.
+    Uses ErasmusWelcomeMessageConfig from DB if present and non-empty for that locale;
+    otherwise falls back to WELCOME_MESSAGES_DEFAULT.
+    """
+    from apps.erasmus.models import ErasmusWelcomeMessageConfig
+
+    if locale not in WELCOME_LOCALES:
+        locale = "es"
+    try:
+        config = ErasmusWelcomeMessageConfig.objects.filter(config_key=ErasmusWelcomeMessageConfig.CONFIG_KEY).first()
+        if config and config.messages_by_locale:
+            custom = (config.messages_by_locale or {}).get(locale)
+            if custom and (custom or "").strip():
+                return (custom or "").strip()
+    except Exception as e:
+        logger.warning("[ErasmusAccess] Failed to load welcome config from DB: %s; using default template.", e)
+    return WELCOME_MESSAGES_DEFAULT.get(locale) or WELCOME_MESSAGES_DEFAULT["es"]
+
+
 def _generate_verification_code() -> str:
     """Generate a unique ERAS-XXXXXXXX code."""
     from apps.erasmus.models import ErasmusMagicLink
@@ -209,7 +252,9 @@ def generate_access_code(lead, target: str) -> dict:
     )
 
     import urllib.parse
-    whatsapp_url = f"https://wa.me/{TUKI_WHATSAPP_NUMBER}?text={urllib.parse.quote(pre_fill)}"
+
+    wa_number = get_erasmus_whatsapp_number()
+    whatsapp_url = f"https://wa.me/{wa_number}?text={urllib.parse.quote(pre_fill)}"
 
     logger.info(
         "[ErasmusAccess] Generated code %s for lead %s target=%s",
@@ -326,7 +371,7 @@ def get_welcome_message_text(lead, magic_link_url: str) -> str:
     if not email:
         email = {"es": "tu correo", "en": "your email", "pt": "o teu email", "de": "deine E-Mail", "it": "la tua email", "fr": "ton email"}.get(locale, "tu correo")
     first_name = (lead.first_name or "").strip() or {"es": "Erasmus", "en": "there", "pt": "Erasmus", "de": "Erasmus", "it": "Erasmus", "fr": "Erasmus"}.get(locale, "Erasmus")
-    template = WELCOME_MESSAGES.get(locale) or WELCOME_MESSAGES["es"]
+    template = get_welcome_template(locale)
     return template.format(
         first_name=first_name,
         link_grupos=magic_link_url,

@@ -85,6 +85,9 @@ class ContextBuilder:
 
         # Checkout data
         checkout = code_obj.checkout_data if code_obj else {}
+        guide_context = checkout.get('travel_guide_context') if isinstance(checkout, dict) else {}
+        if not isinstance(guide_context, dict):
+            guide_context = {}
 
         # Date and time (for accommodation: check_in/check_out)
         date_str = checkout.get('date', '')
@@ -102,24 +105,63 @@ class ContextBuilder:
         context['pickup_time'] = checkout.get('pickup_time', '')
         context['return_time'] = checkout.get('return_time', '')
         context['guests'] = checkout.get('guests', 1)
+
+        # Accommodation: override with linked_accommodation_reservation when present (source of truth for total and dates)
+        acc_res = getattr(reservation, 'linked_accommodation_reservation', None)
+        if acc_res is not None:
+            context['precio'] = cls.format_price(
+                getattr(acc_res, 'total', 0) or 0,
+                getattr(acc_res, 'currency', None) or 'CLP'
+            )
+            if getattr(acc_res, 'check_in', None):
+                context['check_in'] = acc_res.check_in.isoformat() if hasattr(acc_res.check_in, 'isoformat') else str(acc_res.check_in)
+                try:
+                    from datetime import date
+                    d = acc_res.check_in if isinstance(acc_res.check_in, date) else cls.parse_datetime(context['check_in'])
+                    context['fecha'] = cls.format_date(d) if d else context['check_in']
+                except Exception:
+                    context['fecha'] = context['check_in']
+            if getattr(acc_res, 'check_out', None):
+                context['check_out'] = acc_res.check_out.isoformat() if hasattr(acc_res.check_out, 'isoformat') else str(acc_res.check_out)
+                context['hora'] = context['check_out']
+            if getattr(acc_res, 'guests', None) is not None:
+                context['guests'] = int(acc_res.guests)
+                context['pasajeros'] = str(acc_res.guests)
+            # Optional: formatted breakdown for templates (e.g. comprobante con desglose)
+            snapshot = getattr(acc_res, 'pricing_snapshot', None)
+            if isinstance(snapshot, dict) and snapshot.get('extras'):
+                lines = []
+                base = snapshot.get('base', {})
+                if base:
+                    lines.append(f"Alojamiento ({snapshot.get('nights', 0)} noches): {cls.format_price(base.get('subtotal', 0), snapshot.get('currency', 'CLP'))}")
+                for e in snapshot.get('extras', []):
+                    lines.append(f"{e.get('name', e.get('code', ''))}: {cls.format_price(e.get('total', 0), snapshot.get('currency', 'CLP'))}")
+                context['desglose_precio'] = '\n'.join(lines)
+            else:
+                context['desglose_precio'] = ''
         
-        # Participants
-        participants = checkout.get('participants', {})
-        adults = participants.get('adults', reservation.passengers or 1)
-        children = participants.get('children', 0)
-        infants = participants.get('infants', 0)
-        
-        context['pasajeros'] = str(adults + children + infants)
-        context['adultos'] = str(adults)
-        context['ninos'] = str(children)
-        context['infantes'] = str(infants)
-        
-        # Pricing
-        pricing = checkout.get('pricing', {})
-        context['precio'] = cls.format_price(
-            pricing.get('total', 0),
-            pricing.get('currency', 'CLP')
-        )
+        if not acc_res:
+            # Participants (experience/car) from checkout
+            participants = checkout.get('participants', {})
+            adults = participants.get('adults', reservation.passengers or 1)
+            children = participants.get('children', 0)
+            infants = participants.get('infants', 0)
+            context['pasajeros'] = str(adults + children + infants)
+            context['adultos'] = str(adults)
+            context['ninos'] = str(children)
+            context['infantes'] = str(infants)
+        else:
+            context['adultos'] = context.get('pasajeros', '0')
+            context['ninos'] = '0'
+            context['infantes'] = '0'
+
+        # Pricing (only when not overridden by accommodation)
+        if acc_res is None:
+            pricing = checkout.get('pricing', {})
+            context['precio'] = cls.format_price(
+                pricing.get('total', 0),
+                pricing.get('currency', 'CLP')
+            )
         
         # Customer info
         customer = checkout.get('customer', {})
@@ -129,6 +171,10 @@ class ContextBuilder:
         
         # Code
         context['codigo'] = reservation.tour_code
+        context['guia_viaje'] = str(guide_context.get('guide_title') or '').strip()
+        context['slot_guia'] = str(guide_context.get('slot_label') or '').strip()
+        if context['guia_viaje']:
+            context['experiencia'] = f"[Guía {context['guia_viaje']}] {context['experiencia']}"
         
         # Payment
         if payment_link:
@@ -140,11 +186,11 @@ class ContextBuilder:
 
         # Pasos siguientes (for availability_confirmed)
         try:
-            total = float(
-                pricing.get('total') or
-                checkout.get('total_price') or
-                0
-            )
+            if acc_res is not None:
+                total = float(getattr(acc_res, 'total', 0) or 0)
+            else:
+                pricing = checkout.get('pricing', {})
+                total = float(pricing.get('total') or checkout.get('total_price') or 0)
         except (TypeError, ValueError):
             total = 0
         if total > 0:

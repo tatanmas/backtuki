@@ -1119,6 +1119,28 @@ class Order(BaseModel):
     currency = models.CharField(_("currency"), max_length=3, default='CLP')
     payment_method = models.CharField(_("payment method"), max_length=50, blank=True)
     payment_id = models.CharField(_("payment id"), max_length=100, blank=True)
+    # 🚀 ENTERPRISE: Sandbox payments are not real money — exclude from revenue and show clearly in UI
+    is_sandbox = models.BooleanField(
+        _("sandbox"),
+        default=False,
+        db_index=True,
+        help_text=_("True if payment was made in sandbox mode; do not count in revenue."),
+    )
+    # 🚀 ENTERPRISE: Soft delete — orders in "trash" are excluded from lists and revenue until restored or permanently deleted
+    deleted_at = models.DateTimeField(
+        _("deleted at"),
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=_("When set, order is in trash and excluded from revenue and default lists."),
+    )
+    # 🚀 ENTERPRISE: Manual exclude — test, sandbox not detected, historical, cortesía; excluded from revenue and payables
+    exclude_from_revenue = models.BooleanField(
+        _("exclude from revenue"),
+        default=False,
+        db_index=True,
+        help_text=_("If True, this order is excluded from revenue, analytics and organizer payables (test, sandbox, cortesía, historical)."),
+    )
     coupon = models.ForeignKey(
         'Coupon',
         on_delete=models.SET_NULL,
@@ -1168,6 +1190,28 @@ class Order(BaseModel):
         decimal_places=2,
         validators=[MinValueValidator(0)],
         default=0
+    )
+
+    booking_date = models.DateTimeField(_("booking date"), null=True, blank=True, db_index=True)
+    payment_date = models.DateTimeField(_("payment date"), null=True, blank=True, db_index=True)
+    service_date = models.DateField(_("service date"), null=True, blank=True, db_index=True)
+    completion_date = models.DateTimeField(_("completion date"), null=True, blank=True)
+    settlement_date = models.DateTimeField(_("settlement date"), null=True, blank=True)
+    posting_date = models.DateField(_("posting date"), null=True, blank=True)
+    commercial_policy_snapshot = models.JSONField(_("commercial policy snapshot"), default=dict, blank=True)
+    cancellation_reason = models.CharField(_("cancellation reason"), max_length=255, blank=True)
+    cancellation_date = models.DateTimeField(_("cancellation date"), null=True, blank=True)
+    cancellation_policy_snapshot = models.JSONField(_("cancellation policy snapshot"), default=dict, blank=True)
+    processor_fee_loss_amount = models.DecimalField(
+        _("processor fee loss amount"), max_digits=10, decimal_places=2, default=0,
+    )
+    REFUND_RESPONSIBILITY_CHOICES = (
+        ('tuki', _('Tuki')),
+        ('organizer', _('Organizer')),
+    )
+    refund_responsibility = models.CharField(
+        _("refund responsibility"), max_length=20,
+        choices=REFUND_RESPONSIBILITY_CHOICES, blank=True,
     )
     
     # 🚀 ENTERPRISE: Platform Flow Tracking
@@ -1260,6 +1304,21 @@ class Order(BaseModel):
     def is_refunded(self):
         """Return True if order is refunded."""
         return self.status == 'refunded'
+
+    @property
+    def is_deleted(self):
+        """Return True if order is soft-deleted (in trash)."""
+        return self.deleted_at is not None
+
+    @property
+    def counts_for_revenue(self):
+        """True if this order should be included in revenue (paid, not sandbox, not deleted, not excluded)."""
+        return (
+            self.status == 'paid'
+            and not self.is_sandbox
+            and self.deleted_at is None
+            and not self.exclude_from_revenue
+        )
     
     @property
     def is_failed(self):

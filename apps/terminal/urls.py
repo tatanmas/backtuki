@@ -3,6 +3,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
+    TerminalMeView,
     TerminalCompanyViewSet,
     TerminalRouteViewSet,
     TerminalTripViewSet,
@@ -24,6 +25,7 @@ router.register(r'advertising-spaces', TerminalAdvertisingSpaceViewSet, basename
 router.register(r'destination-experiences', TerminalDestinationExperienceConfigViewSet, basename='terminal-destination-experience')
 
 urlpatterns = [
+    path('me/', TerminalMeView.as_view(), name='terminal-me'),
     path('', include(router.urls)),
     # Public endpoints (no authentication required)
     path('public/advertising-spaces/', PublicAdvertisingSpacesView.as_view(), name='public-advertising-spaces'),

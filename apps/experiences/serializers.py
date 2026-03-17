@@ -24,12 +24,24 @@ class ExperienceSerializer(serializers.ModelSerializer):
     🚀 ENTERPRISE: Serializer for Experience model with robust validation.
     
     Includes comprehensive field validation with clear, actionable error messages.
+    Slug is editable on update so organizers can fix the URL path (e.g. camino -> carretera).
+    Price fields are serialized as strings to avoid float rounding in JSON (e.g. 59990 -> 59989.99).
     """
     
     organizer_name = serializers.CharField(source='organizer.name', read_only=True)
     country_name = serializers.SerializerMethodField()
     reviews_count = serializers.SerializerMethodField()
     average_rating = serializers.SerializerMethodField()
+    # Serialize decimals as string to avoid float rounding (59990 displayed as 59989.99)
+    price = serializers.DecimalField(
+        max_digits=10, decimal_places=2, min_value=0, coerce_to_string=True, required=False
+    )
+    child_price = serializers.DecimalField(
+        max_digits=10, decimal_places=2, min_value=0, coerce_to_string=True, required=False
+    )
+    infant_price = serializers.DecimalField(
+        max_digits=10, decimal_places=2, min_value=0, coerce_to_string=True, required=False
+    )
 
     def get_country_name(self, obj):
         """Get country name, returning None if country is not set."""
@@ -64,9 +76,26 @@ class ExperienceSerializer(serializers.ModelSerializer):
             'country', 'country_name', 'duration_minutes', 'max_participants', 'min_participants', 'included', 'not_included',
             'requirements', 'itinerary', 'images', 'categories', 'tags', 'views_count',
             'is_active', 'deleted_at', 'created_at', 'updated_at',
-            'reviews_count', 'average_rating',
+            'reviews_count', 'average_rating', 'notify_whatsapp_group_on_booking',
+            'auto_approve_free_tour_reservations',
         ]
-        read_only_fields = ['id', 'slug', 'organizer', 'created_at', 'updated_at', 'views_count', 'deleted_at']
+        read_only_fields = ['id', 'organizer', 'created_at', 'updated_at', 'views_count', 'deleted_at']
+    
+    def validate_slug(self, value):
+        """Validate slug: normalize, unique, max 50 chars. Allows editing URL path from editor."""
+        if not value or not str(value).strip():
+            raise serializers.ValidationError("El slug no puede estar vacío.")
+        raw = slugify(str(value).strip())
+        if not raw:
+            raise serializers.ValidationError("El slug debe contener al menos un carácter válido (letras, números, guiones).")
+        if len(raw) > 50:
+            raw = raw[:50]
+        qs = Experience.objects.filter(slug=raw)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(f"Ya existe otra experiencia con la ruta '{raw}'.")
+        return raw
     
     def validate_title(self, value):
         """Validate title is not empty and has reasonable length."""
@@ -158,8 +187,12 @@ class ExperienceSerializer(serializers.ModelSerializer):
                         "El crédito por persona es requerido para tours gratuitos y debe ser mayor a 0."
                     ]
         
-        # Validate pricing for paid tours
-        if not is_free_tour:
+        # Validate pricing for paid tours only. Skip when existing instance is free tour
+        # and request doesn't explicitly set is_free_tour to False (e.g. PATCH only organizer).
+        require_price = not is_free_tour
+        if self.instance and getattr(self.instance, 'is_free_tour', False) and attrs.get('is_free_tour') is not False:
+            require_price = False
+        if require_price:
             price = attrs.get('price')
             if price is None and self.instance:
                 # Partial update: use existing value from instance
@@ -273,6 +306,7 @@ class TourInstanceSerializer(serializers.ModelSerializer):
             'id', 'experience', 'experience_title', 'start_datetime', 'end_datetime',
             'language', 'status', 'max_capacity', 'override_adult_price', 'override_child_price',
             'override_infant_price', 'notes', 'current_bookings_count', 'available_spots',
+            'is_publicly_listed', 'origin_travel_guide', 'origin_block_key',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'current_bookings_count', 'available_spots']
@@ -407,6 +441,22 @@ class TourBookingCreateSerializer(serializers.Serializer):
                 amount=credit_amount,
                 is_billed=False
             )
+            # Notify WhatsApp group if enabled
+            try:
+                from apps.whatsapp.services.group_notification_service import GroupNotificationService
+                GroupNotificationService.send_free_tour_booking_notification(
+                    experience=tour_instance.experience,
+                    first_name=validated_data['first_name'],
+                    last_name=validated_data['last_name'],
+                    email=email,
+                    phone=validated_data.get('phone', '') or '',
+                    participants_count=validated_data['participants_count'],
+                    instance_start_datetime=tour_instance.start_datetime,
+                    language=tour_instance.language or 'es',
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).exception("Failed to send free tour booking notification: %s", e)
         
         return booking
 
@@ -474,6 +524,7 @@ class ExperienceReservationSerializer(serializers.ModelSerializer):
             'id', 'reservation_id', 'experience', 'experience_title', 'instance', 'instance_info',
             'status', 'adult_count', 'child_count', 'infant_count', 'first_name', 'last_name',
             'email', 'phone', 'user', 'flow', 'creator', 'creator_commission_amount', 'creator_commission_status',
+            'source_type', 'travel_guide', 'travel_guide_block_key', 'travel_guide_context',
             'subtotal', 'service_fee', 'discount', 'total', 'currency',
             'pricing_details', 'selected_resources', 'capacity_count_rule', 'expires_at', 'paid_at',
             'attended_at', 'notes', 'created_at', 'updated_at'

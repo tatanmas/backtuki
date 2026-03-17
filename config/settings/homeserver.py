@@ -144,6 +144,7 @@ REST_FRAMEWORK['DEFAULT_THROTTLE_CLASSES'] = [
 REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] = {
     'anon': '500/hour',
     'user': '3000/hour',
+    'login': '10/min',  # POST /auth/token/ brute-force protection
 }
 
 # Logging configuration

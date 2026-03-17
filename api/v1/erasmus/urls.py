@@ -13,6 +13,7 @@ from .views import (
     ErasmusRegisterView,
     ErasmusCommunityListView,
     ErasmusCommunityProfileUpdateView,
+    ErasmusMyCommunityProfileView,
     ErasmusRequestWhatsAppApprovalView,
     ErasmusExpressInterestView,
     ErasmusMyActivitiesView,
@@ -27,6 +28,9 @@ from .views import (
 from .public_views import (
     ErasmusPublicViewInscritosView,
     ErasmusPublicViewMarkPaidView,
+    ErasmusPublicViewUnmarkPaidView,
+    ErasmusPublicViewMarkLinkSentView,
+    ErasmusPublicViewInscriptionMessageView,
     ErasmusPublicViewGeneratePaymentLinkView,
     ErasmusPublicPaymentLinkByTokenView,
     ErasmusPublicEditActivityView,
@@ -56,6 +60,7 @@ urlpatterns = [
     # Community
     path("community/", ErasmusCommunityListView.as_view(), name="erasmus-community-list"),
     path("community-profile/", ErasmusCommunityProfileUpdateView.as_view(), name="erasmus-community-profile-update"),
+    path("my-community-profile/", ErasmusMyCommunityProfileView.as_view(), name="erasmus-my-community-profile"),
     # Lead actions
     path("leads/<str:lead_id>/request-whatsapp-approval/", ErasmusRequestWhatsAppApprovalView.as_view(), name="erasmus-request-whatsapp-approval"),
     path("express-interest/", ErasmusExpressInterestView.as_view(), name="erasmus-express-interest"),
@@ -68,6 +73,9 @@ urlpatterns = [
     path("magic-login/", ErasmusMagicLoginView.as_view(), name="erasmus-magic-login"),
     # Public links (no auth): view inscritos + full edit by token
     path("public/view/<str:view_token>/mark-paid/", ErasmusPublicViewMarkPaidView.as_view(), name="erasmus-public-view-mark-paid"),
+    path("public/view/<str:view_token>/unmark-paid/", ErasmusPublicViewUnmarkPaidView.as_view(), name="erasmus-public-view-unmark-paid"),
+    path("public/view/<str:view_token>/mark-link-sent/", ErasmusPublicViewMarkLinkSentView.as_view(), name="erasmus-public-view-mark-link-sent"),
+    path("public/view/<str:view_token>/inscription-message/", ErasmusPublicViewInscriptionMessageView.as_view(), name="erasmus-public-view-inscription-message"),
     path("public/view/<str:view_token>/generate-payment-link/", ErasmusPublicViewGeneratePaymentLinkView.as_view(), name="erasmus-public-view-generate-payment-link"),
     path("public/view/<str:view_token>/", ErasmusPublicViewInscritosView.as_view(), name="erasmus-public-view-inscritos"),
     path("public/payment-link/<str:token>/", ErasmusPublicPaymentLinkByTokenView.as_view(), name="erasmus-public-payment-link-by-token"),

@@ -534,12 +534,12 @@ class EventViewSet(viewsets.ModelViewSet):
         # Calculate start_date: if days=0, get from first order, otherwise use days
         show_all_sales = (days == 0)
         
+        from core.revenue_system import order_revenue_eligible_q
         if show_all_sales:
-            # Get all orders to find the first one
+            # Get all revenue-eligible orders to find the first one
             base_orders = Order.objects.filter(
                 event__organizer=organizer,
-                status='paid'
-            )
+            ).filter(order_revenue_eligible_q())
             if event_id:
                 base_orders = base_orders.filter(event_id=event_id)
             
@@ -560,19 +560,16 @@ class EventViewSet(viewsets.ModelViewSet):
         
         print(f"🔍 [ANALYTICS DEBUG] days={days}, event_id={event_id}, start_date={start_date}, show_all_sales={show_all_sales}")
         
-        # Base queryset for PAID orders only (effective sales)
+        # Base queryset for revenue-eligible orders only (paid, not sandbox, not deleted, not excluded)
         if show_all_sales:
-            # Use all orders (no date filter)
             orders_queryset = Order.objects.filter(
                 event__organizer=organizer,
-                status='paid'
-            ).select_related('event')
+            ).filter(order_revenue_eligible_q()).select_related('event')
         else:
             orders_queryset = Order.objects.filter(
                 event__organizer=organizer,
-                status='paid',  # Only count actually paid orders
-                created_at__gte=start_date
-            ).select_related('event')
+                created_at__gte=start_date,
+            ).filter(order_revenue_eligible_q()).select_related('event')
         
         print(f"🔍 [ANALYTICS DEBUG] Base orders count: {orders_queryset.count()}")
         
@@ -682,11 +679,10 @@ class EventViewSet(viewsets.ModelViewSet):
                 # Get orders that have this tier
                 tier_orders_filter = {
                     'items__ticket_tier': tier,
-                    'status': 'paid'
                 }
                 if not show_all_sales:
                     tier_orders_filter['created_at__gte'] = start_date
-                tier_orders = Order.objects.filter(**tier_orders_filter).distinct()
+                tier_orders = Order.objects.filter(**tier_orders_filter).filter(order_revenue_eligible_q()).distinct()
                 
                 # Calculate totals for orders with this tier
                 tier_order_stats = tier_orders.aggregate(
@@ -714,7 +710,10 @@ class EventViewSet(viewsets.ModelViewSet):
                 
                 tier_items_filter = {
                     'ticket_tier': tier,
-                    'order__status': 'paid'
+                    'order__status': 'paid',
+                    'order__is_sandbox': False,
+                    'order__deleted_at__isnull': True,
+                    'order__exclude_from_revenue': False,
                 }
                 if not show_all_sales:
                     tier_items_filter['order__created_at__gte'] = start_date
@@ -742,7 +741,10 @@ class EventViewSet(viewsets.ModelViewSet):
             
             order_items_filter = {
                 'order__event__organizer': organizer,
-                'order__status': 'paid'
+                'order__status': 'paid',
+                'order__is_sandbox': False,
+                'order__deleted_at__isnull': True,
+                'order__exclude_from_revenue': False,
             }
             if not show_all_sales:
                 order_items_filter['order__created_at__gte'] = start_date
@@ -3088,23 +3090,22 @@ class OrderViewSet(viewsets.ModelViewSet):
     # ✅ SOLUCIÓN ROBUSTA: Paginación personalizada para órdenes
     def get_paginated_response(self, data):
         """
-        Personalizar respuesta paginada para incluir estadísticas completas
+        Personalizar respuesta paginada para incluir estadísticas completas.
+        Revenue y total_orders en statistics solo cuentan órdenes revenue-eligible (no sandbox, no excluidas).
         """
+        from core.revenue_system import order_revenue_eligible_q
         # Si no hay paginación activa, devolver respuesta normal
         if not hasattr(self, 'paginator') or self.paginator is None:
             return Response(data)
             
-        # Calcular estadísticas sobre TODOS los pedidos (no solo la página actual)
         all_orders = self.filter_queryset(self.get_queryset())
-        
-        # Estadísticas completas
-        total_orders = all_orders.count()
-        total_revenue = all_orders.aggregate(
+        revenue_eligible_orders = all_orders.filter(order_revenue_eligible_q())
+        total_orders = revenue_eligible_orders.count()
+        total_revenue = revenue_eligible_orders.aggregate(
             total=models.Sum('total'),
             service_fees=models.Sum('service_fee')
         )
         
-        # Respuesta paginada con estadísticas completas
         return self.paginator.get_paginated_response({
             'results': data,
             'statistics': {
@@ -3121,20 +3122,18 @@ class OrderViewSet(viewsets.ModelViewSet):
         """
         # ✅ SOLUCIÓN ROBUSTA: Permitir desactivar paginación con parámetro
         if request.query_params.get('no_pagination') == 'true':
-            # Sin paginación - devolver todas las órdenes
+            from core.revenue_system import order_revenue_eligible_q
             queryset = self.filter_queryset(self.get_queryset())
             serializer = self.get_serializer(queryset, many=True)
-            
-            # Incluir estadísticas
-            total_orders = queryset.count()
-            total_revenue = queryset.aggregate(
+            revenue_eligible = queryset.filter(order_revenue_eligible_q())
+            total_orders = revenue_eligible.count()
+            total_revenue = revenue_eligible.aggregate(
                 total=models.Sum('total'),
                 service_fees=models.Sum('service_fee')
             )
-            
             return Response({
                 'results': serializer.data,
-                'count': total_orders,
+                'count': queryset.count(),
                 'statistics': {
                     'total_orders': total_orders,
                     'total_revenue': total_revenue['total'] or 0,
@@ -5397,6 +5396,33 @@ def generate_ticket_qr(request, ticket_number):
         }
     }
 )
+
+
+def _erasmus_activity_image_url(request, act):
+    """
+    Build absolute image URL for ErasmusActivity (activity.images or linked experience).
+    Uses same effective image as public activity page (get_activity_display_data) so
+    reservation detail and Superadmin show the same photo.
+    """
+    if not act:
+        return None
+    try:
+        from apps.erasmus.activity_display import get_activity_display_data
+        display = get_activity_display_data(act)
+        img_url = (display.get("image") or "").strip() or None
+    except Exception:
+        img_url = None
+    if not img_url:
+        return None
+    if img_url.startswith("http://") or img_url.startswith("https://"):
+        return img_url
+    if request:
+        return request.build_absolute_uri(img_url if img_url.startswith("/") else "/" + img_url)
+    from django.conf import settings
+    base = (getattr(settings, "PUBLIC_BASE_URL", None) or getattr(settings, "FRONTEND_URL", "") or "https://tuki.cl").rstrip("/")
+    return base + (img_url if img_url.startswith("/") else "/" + img_url)
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def get_order_tickets(request, order_number):
@@ -5440,7 +5466,14 @@ def get_order_tickets(request, order_number):
                     'event__organizer',
                     'experience_reservation',
                     'experience_reservation__experience',
-                    'experience_reservation__instance'
+                    'experience_reservation__instance',
+                    'accommodation_reservation',
+                    'accommodation_reservation__accommodation',
+                    'erasmus_activity_payment_link',
+                    'erasmus_activity_payment_link__lead',
+                    'erasmus_activity_payment_link__instance',
+                    'erasmus_activity_payment_link__instance__activity',
+                    'erasmus_activity_payment_link__instance__activity__experience',
                 ).prefetch_related(
                     'items__tickets',
                     'items__ticket_tier',
@@ -5453,6 +5486,82 @@ def get_order_tickets(request, order_number):
                     'message': 'Order not found'
                 }, status=status.HTTP_404_NOT_FOUND)
             
+            # 🚀 ENTERPRISE: Erasmus activity orders - reservation-style response for PostPurchase page
+            if getattr(order, 'order_kind', None) == 'erasmus_activity':
+                link = getattr(order, 'erasmus_activity_payment_link', None)
+                erasmus_reservation = None
+                if link:
+                    act = link.instance.activity
+                    inst = link.instance
+                    lead = link.lead
+                    instance_label = getattr(inst, 'scheduled_label_es', None) or (
+                        inst.scheduled_date.strftime('%d/%m/%Y') if getattr(inst, 'scheduled_date', None) else str(inst.id)
+                    )
+                    img_url = _erasmus_activity_image_url(request, act)
+                    erasmus_reservation = {
+                        'activity_id': str(act.id),
+                        'activity_title': getattr(act, 'title_es', None) or getattr(act, 'title_en', None) or 'Actividad Erasmus',
+                        'instance_id': str(inst.id),
+                        'instance_label': instance_label,
+                        'scheduled_date': inst.scheduled_date.isoformat() if getattr(inst, 'scheduled_date', None) else None,
+                        'first_name': (lead.first_name or '').strip(),
+                        'last_name': (lead.last_name or '').strip(),
+                        'email': (lead.email or '').strip(),
+                        'total': float(order.total),
+                        'currency': getattr(order, 'currency', 'CLP') or 'CLP',
+                        'image_url': img_url,
+                    }
+                return Response({
+                    'success': True,
+                    'order_number': order.order_number,
+                    'order_kind': 'erasmus_activity',
+                    'order_created_at': order.created_at.isoformat(),
+                    'event': None,
+                    'tickets': [],
+                    'ticket_count': 0,
+                    'experience_reservation': None,
+                    'erasmus_activity_reservation': erasmus_reservation,
+                }, status=status.HTTP_200_OK)
+
+            # 🚀 ENTERPRISE: Accommodation orders - return reservation data with pricing_snapshot for desglose
+            if getattr(order, 'order_kind', None) == 'accommodation':
+                acc_res = getattr(order, 'accommodation_reservation', None)
+                accommodation_reservation = None
+                if acc_res:
+                    acc = acc_res.accommodation
+                    event_image = None
+                    if acc and getattr(acc, 'images', None) and len(acc.images or []) > 0:
+                        img = (acc.images or [])[0]
+                        event_image = img if isinstance(img, str) else (img.get('url') if isinstance(img, dict) else None)
+                    accommodation_reservation = {
+                        'reservation_id': acc_res.reservation_id,
+                        'accommodation_title': acc.title if acc else 'Alojamiento',
+                        'accommodation_id': str(acc.id) if acc else None,
+                        'check_in': acc_res.check_in.isoformat() if acc_res.check_in else None,
+                        'check_out': acc_res.check_out.isoformat() if acc_res.check_out else None,
+                        'guests': acc_res.guests,
+                        'image_url': event_image,
+                        'first_name': acc_res.first_name,
+                        'last_name': acc_res.last_name,
+                        'email': acc_res.email,
+                        'phone': acc_res.phone or '',
+                        'total': float(acc_res.total) if acc_res.total is not None else float(order.total),
+                        'currency': getattr(acc_res, 'currency', None) or order.currency or 'CLP',
+                        'pricing_snapshot': getattr(acc_res, 'pricing_snapshot', None),
+                    }
+                return Response({
+                    'success': True,
+                    'order_number': order.order_number,
+                    'order_kind': 'accommodation',
+                    'order_created_at': order.created_at.isoformat(),
+                    'event': None,
+                    'tickets': [],
+                    'ticket_count': 0,
+                    'experience_reservation': None,
+                    'erasmus_activity_reservation': None,
+                    'accommodation_reservation': accommodation_reservation,
+                }, status=status.HTTP_200_OK)
+
             # 🚀 ENTERPRISE: Experience orders - return reservation data
             if getattr(order, 'order_kind', 'event') == 'experience' or order.event is None:
                 exp_res = getattr(order, 'experience_reservation', None)
@@ -5526,7 +5635,14 @@ def get_order_tickets(request, order_number):
                     'event__organizer',
                     'experience_reservation',
                     'experience_reservation__experience',
-                    'experience_reservation__instance'
+                    'experience_reservation__instance',
+                    'accommodation_reservation',
+                    'accommodation_reservation__accommodation',
+                    'erasmus_activity_payment_link',
+                    'erasmus_activity_payment_link__lead',
+                    'erasmus_activity_payment_link__instance',
+                    'erasmus_activity_payment_link__instance__activity',
+                    'erasmus_activity_payment_link__instance__activity__experience',
                 ).prefetch_related(
                     'items__tickets',
                     'items__ticket_tier',
@@ -5538,6 +5654,82 @@ def get_order_tickets(request, order_number):
                     'error': 'INVALID_TOKEN_OR_ORDER',
                     'message': 'Invalid access token or order not found'
                 }, status=status.HTTP_404_NOT_FOUND)
+        
+        # 🚀 ENTERPRISE: Erasmus activity orders - reservation-style for PostPurchase / My Account
+        if getattr(order, 'order_kind', None) == 'erasmus_activity':
+            link = getattr(order, 'erasmus_activity_payment_link', None)
+            erasmus_reservation = None
+            if link:
+                act = link.instance.activity
+                inst = link.instance
+                lead = link.lead
+                instance_label = getattr(inst, 'scheduled_label_es', None) or (
+                    inst.scheduled_date.strftime('%d/%m/%Y') if getattr(inst, 'scheduled_date', None) else str(inst.id)
+                )
+                img_url = _erasmus_activity_image_url(request, act)
+                erasmus_reservation = {
+                    'activity_id': str(act.id),
+                    'activity_title': getattr(act, 'title_es', None) or getattr(act, 'title_en', None) or 'Actividad Erasmus',
+                    'instance_id': str(inst.id),
+                    'instance_label': instance_label,
+                    'scheduled_date': inst.scheduled_date.isoformat() if getattr(inst, 'scheduled_date', None) else None,
+                    'first_name': (lead.first_name or '').strip(),
+                    'last_name': (lead.last_name or '').strip(),
+                    'email': (lead.email or '').strip(),
+                    'total': float(order.total),
+                    'currency': getattr(order, 'currency', 'CLP') or 'CLP',
+                    'image_url': img_url,
+                }
+            return Response({
+                'success': True,
+                'order_number': order.order_number,
+                'order_kind': 'erasmus_activity',
+                'order_created_at': order.created_at.isoformat(),
+                'event': None,
+                'tickets': [],
+                'ticket_count': 0,
+                'experience_reservation': None,
+                'erasmus_activity_reservation': erasmus_reservation,
+            }, status=status.HTTP_200_OK)
+        
+        # 🚀 ENTERPRISE: Accommodation orders - return reservation data with pricing_snapshot (public token access)
+        if getattr(order, 'order_kind', None) == 'accommodation':
+            acc_res = getattr(order, 'accommodation_reservation', None)
+            accommodation_reservation = None
+            if acc_res:
+                acc = acc_res.accommodation
+                event_image = None
+                if acc and getattr(acc, 'images', None) and len(acc.images or []) > 0:
+                    img = (acc.images or [])[0]
+                    event_image = img if isinstance(img, str) else (img.get('url') if isinstance(img, dict) else None)
+                accommodation_reservation = {
+                    'reservation_id': acc_res.reservation_id,
+                    'accommodation_title': acc.title if acc else 'Alojamiento',
+                    'accommodation_id': str(acc.id) if acc else None,
+                    'check_in': acc_res.check_in.isoformat() if acc_res.check_in else None,
+                    'check_out': acc_res.check_out.isoformat() if acc_res.check_out else None,
+                    'guests': acc_res.guests,
+                    'image_url': event_image,
+                    'first_name': acc_res.first_name,
+                    'last_name': acc_res.last_name,
+                    'email': acc_res.email,
+                    'phone': acc_res.phone or '',
+                    'total': float(acc_res.total) if acc_res.total is not None else float(order.total),
+                    'currency': getattr(acc_res, 'currency', None) or order.currency or 'CLP',
+                    'pricing_snapshot': getattr(acc_res, 'pricing_snapshot', None),
+                }
+            return Response({
+                'success': True,
+                'order_number': order.order_number,
+                'order_kind': 'accommodation',
+                'order_created_at': order.created_at.isoformat(),
+                'event': None,
+                'tickets': [],
+                'ticket_count': 0,
+                'experience_reservation': None,
+                'erasmus_activity_reservation': None,
+                'accommodation_reservation': accommodation_reservation,
+            }, status=status.HTTP_200_OK)
         
         # 🚀 ENTERPRISE: Experience orders - return reservation data for confirmation page
         if getattr(order, 'order_kind', 'event') == 'experience' or order.event is None:
@@ -5895,6 +6087,11 @@ def send_order_email_sync(request, order_number):
             from api.v1.experiences.views import send_experience_email_sync
             raw_request = getattr(request, '_request', request)
             return send_experience_email_sync(raw_request, order_number)
+        # 🚀 ENTERPRISE: Route Erasmus activity orders to Erasmus email flow (same API, flow registration, sync send)
+        if getattr(order, 'order_kind', 'event') == 'erasmus_activity':
+            from api.v1.erasmus.email_sync_views import send_erasmus_activity_email_sync
+            raw_request = getattr(request, '_request', request)
+            return send_erasmus_activity_email_sync(raw_request, order_number)
         
         # 3. Get flow for logging and idempotency check
         flow_obj = None

@@ -206,7 +206,13 @@ class ReservationCodeProcessor:
             code_obj.save()
             ReservationHandler.ensure_flow_and_log_request(reservation)
             ReservationHandler.mark_operator_notified(reservation)
-            ReservationCodeProcessor._send_waiting_to_customer(message, reservation)
+            if getattr(experience, 'auto_approve_free_tour_reservations', False):
+                reservation.status = 'availability_confirmed'
+                reservation.save(update_fields=['status'])
+                ReservationHandler.confirm_reservation(reservation)
+                logger.info("Auto-approved free tour reservation %s (no operator, experience %s)", reservation.id, experience.id)
+            else:
+                ReservationCodeProcessor._send_waiting_to_customer(message, reservation)
             return reservation
 
         parsed = MessageParser.parse_message(message.content)
@@ -224,7 +230,14 @@ class ReservationCodeProcessor:
         code_obj.save()
         ReservationHandler.mark_operator_notified(reservation)
         logger.info("Notified operator for reservation %s", reservation.id)
-        ReservationCodeProcessor._send_waiting_to_customer(message, reservation)
+        # Free tour auto-approve: confirm immediately and send confirmation to customer (no "responde SI" step)
+        if getattr(experience, 'auto_approve_free_tour_reservations', False):
+            reservation.status = 'availability_confirmed'
+            reservation.save(update_fields=['status'])
+            ReservationHandler.confirm_reservation(reservation)
+            logger.info("Auto-approved free tour reservation %s (experience %s)", reservation.id, experience.id)
+        else:
+            ReservationCodeProcessor._send_waiting_to_customer(message, reservation)
         return reservation
 
     @staticmethod

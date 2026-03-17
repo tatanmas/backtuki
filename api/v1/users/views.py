@@ -369,6 +369,7 @@ class ReservationDetailView(APIView):
             },
             'checkIn': acc_res.check_in.isoformat() if acc_res.check_in else None,
             'checkOut': acc_res.check_out.isoformat() if acc_res.check_out else None,
+            'pricing_snapshot': getattr(acc_res, 'pricing_snapshot', None),
         }
 
     def _build_experience_reservation(self, order):

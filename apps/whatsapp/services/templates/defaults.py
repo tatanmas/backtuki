@@ -30,7 +30,7 @@ Fecha: {{fecha}}
 Hora: {{hora}}
 Pasajeros: {{pasajeros}}
 Total: {{precio}}
-
+{{desglose_precio}}
 Codigo: {{codigo}}
 {{link_pago_mensaje}}""",
 

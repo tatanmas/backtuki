@@ -13,6 +13,9 @@ from ..schema_utils import (
     ENTITY_INSTRUCTIONS,
     ERASMUS_LEAD_SCHEMA,
     ERASMUS_TIMELINE_ITEM_SCHEMA,
+    BANK_STATEMENT_SCHEMA,
+    VENDOR_BILL_SCHEMA,
+    EXTERNAL_REVENUE_SCHEMA,
 )
 from ..serializers import (
     JsonExperienceCreateSerializer,
@@ -27,6 +30,9 @@ VALID_ENTITIES = {
     "destination",
     "erasmus_lead",
     "erasmus_timeline_item",
+    "bank_statement",
+    "vendor_bill",
+    "external_revenue",
 }
 
 
@@ -59,6 +65,12 @@ def schema_for_entity(request, entity):
         schema = ERASMUS_LEAD_SCHEMA
     elif entity == "erasmus_timeline_item":
         schema = get_serializer_schema(JsonErasmusTimelineItemSerializer)
+    elif entity == "bank_statement":
+        schema = BANK_STATEMENT_SCHEMA
+    elif entity == "vendor_bill":
+        schema = VENDOR_BILL_SCHEMA
+    elif entity == "external_revenue":
+        schema = EXTERNAL_REVENUE_SCHEMA
     else:
         schema = {"type": "object", "fields": {}}
 

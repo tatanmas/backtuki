@@ -9,7 +9,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse
 from django.utils.safestring import mark_safe
-from core.models import PlatformFlow, PlatformFlowEvent, CeleryTaskLog, Country
+from core.models import PlatformFlow, PlatformFlowEvent, CeleryTaskLog, Country, AuthBackgroundSlide
 
 
 @admin.register(PlatformFlow)
@@ -432,6 +432,15 @@ class CeleryTaskLogAdmin(admin.ModelAdmin):
             return "No traceback"
         return format_html('<pre style="background: #ffebee; padding: 10px; color: #c62828; font-size: 11px;">{}</pre>', obj.traceback)
     traceback_display.short_description = 'Traceback'
+
+
+@admin.register(AuthBackgroundSlide)
+class AuthBackgroundSlideAdmin(admin.ModelAdmin):
+    """Fondo de login/registro: imágenes que rotan en pantallas de auth. Gestión principal en SuperAdmin > Sliders."""
+    list_display = ['id', 'order', 'asset', 'created_at']
+    list_editable = ['order']
+    ordering = ['order', 'id']
+    raw_id_fields = ['asset']
 
 
 @admin.register(Country)

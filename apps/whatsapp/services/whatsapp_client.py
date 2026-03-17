@@ -76,10 +76,21 @@ class WhatsAppWebService:
                 logger.debug(f"Sending to phone: {phone_number} -> {clean_phone}")
             
             response = requests.post(url, json=payload, timeout=self.timeout)
-            response.raise_for_status()
+            if not response.ok:
+                try:
+                    body = response.json()
+                    service_error = body.get("error") or body.get("message") or response.text
+                except Exception:
+                    service_error = response.text or response.reason
+                msg = (service_error or response.reason or "Unknown error").strip()
+                logger.error("Error sending WhatsApp message: %s %s", response.status_code, msg)
+                raise requests.exceptions.HTTPError(
+                    f"{response.status_code} {response.reason}: {msg}",
+                    response=response,
+                )
             return response.json()
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error sending WhatsApp message: {e}")
+            logger.error("Error sending WhatsApp message: %s", e)
             raise
 
     def send_media(

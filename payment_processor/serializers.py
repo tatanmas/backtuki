@@ -181,7 +181,8 @@ class PaymentSerializer(serializers.ModelSerializer):
     order_id = serializers.UUIDField(source='order.id', read_only=True)
     order_total = serializers.DecimalField(source='order.total', max_digits=10, decimal_places=2, read_only=True)
     order_number = serializers.CharField(source='order.order_number', read_only=True)
-    
+    order_access_token = serializers.CharField(source='order.access_token', read_only=True)
+
     # Event information for frontend
     event_info = serializers.SerializerMethodField()
     
@@ -268,6 +269,11 @@ class PaymentSerializer(serializers.ModelSerializer):
                     'image': event_image,
                     'ticket_holders': self._get_accommodation_holders(order)
                 }
+            # Erasmus activity order (order_kind='erasmus_activity') – same event_info shape for reservation redirect
+            if getattr(order, 'order_kind', None) == 'erasmus_activity':
+                link = getattr(order, 'erasmus_activity_payment_link', None)
+                if link:
+                    return self._get_erasmus_activity_event_info(order, link)
             return None
         except Exception as e:
             import logging
@@ -303,6 +309,61 @@ class PaymentSerializer(serializers.ModelSerializer):
                     'tier_name': 'Alojamiento',
                     'ticket_number': acc_res.reservation_id or order.order_number,
                     'ticket_id': str(acc_res.id),
+                })
+        except Exception:
+            pass
+        return holders
+
+    def _get_erasmus_activity_event_info(self, order, link):
+        """Build event_info shape for erasmus_activity orders (reservation redirect + PostPurchase page)."""
+        try:
+            if not link:
+                return None
+            act = link.instance.activity
+            inst = link.instance
+            lead = link.lead
+            event_image = None
+            if getattr(act, 'images', None) and isinstance(act.images, list) and len(act.images) > 0:
+                img = (act.images or [])[0]
+                img_url = img if isinstance(img, str) else (img.get('url') or img.get('image') or '') if isinstance(img, dict) else ''
+                if img_url:
+                    event_image = self._build_absolute_image_url(img_url)
+            location_info = {
+                'name': getattr(act, 'location_name', None) or getattr(act, 'location', None) or 'Ubicación no disponible',
+                'address': getattr(act, 'location_address', None) or ''
+            }
+            date_val = inst.scheduled_date.isoformat() if getattr(inst, 'scheduled_date', None) else None
+            if not date_val and (getattr(inst, 'scheduled_month', None) and getattr(inst, 'scheduled_year', None)):
+                date_val = f"{inst.scheduled_year}-{inst.scheduled_month:02d}-01"
+            return {
+                'id': str(act.id),
+                'title': getattr(act, 'title_es', None) or getattr(act, 'title_en', None) or 'Actividad Erasmus',
+                'date': date_val,
+                'location': location_info,
+                'image': event_image,
+                'ticket_holders': self._get_erasmus_holders(order),
+                'type': 'erasmus_activity',
+                'instance_label': getattr(inst, 'scheduled_label_es', None) or (inst.scheduled_date.strftime('%d/%m/%Y') if getattr(inst, 'scheduled_date', None) else str(inst.id)),
+            }
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception("Error getting erasmus_activity event info: %s", e)
+            return None
+
+    def _get_erasmus_holders(self, order):
+        """Get participant info for erasmus_activity orders (lead from payment link)."""
+        holders = []
+        try:
+            link = getattr(order, 'erasmus_activity_payment_link', None)
+            if link and link.lead:
+                lead = link.lead
+                name = f"{(lead.first_name or '').strip()} {(lead.last_name or '').strip()}".strip() or 'Participante'
+                holders.append({
+                    'name': name,
+                    'email': (lead.email or '').strip() or '',
+                    'tier_name': 'Inscripción actividad',
+                    'ticket_number': order.order_number,
+                    'ticket_id': str(link.id),
                 })
         except Exception:
             pass
@@ -392,7 +453,7 @@ class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
         fields = [
-            'id', 'paymentId', 'order_id', 'order_total', 'order_number', 'payment_method',
+            'id', 'paymentId', 'order_id', 'order_total', 'order_number', 'order_access_token', 'payment_method',
             'amount', 'paymentAmount', 'currency', 'status', 'paymentStatus',
             'buy_order', 'buyOrder', 'orderNumber', 'external_id', 'externalId', 'token',
             'created_at', 'createdAt', 'authorized_at', 'authorizedAt', 

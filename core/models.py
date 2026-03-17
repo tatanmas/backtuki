@@ -67,6 +67,17 @@ class PlatformFlow(BaseModel):
         ('accommodation_booking', 'Accommodation Booking'),
         ('tour_booking', 'Tour Booking'),
         ('erasmus_registration', 'Erasmus Registration'),
+        ('erasmus_activity_inscription', 'Erasmus Activity Inscription (paid)'),
+        # OTP flows (non-order email delivery observability)
+        ('otp_login', 'OTP Login'),
+        ('otp_organizer_login', 'OTP Login Organizador'),
+        ('otp_password_reset', 'OTP Recuperación de contraseña'),
+        ('otp_ticket_access', 'OTP Acceso a tickets'),
+        ('otp_event_creation', 'OTP Creación de evento'),
+        ('otp_email_verification', 'OTP Verificación de email'),
+        ('otp_account_creation', 'OTP Creación de cuenta'),
+        ('creator_application', 'Solicitud cuenta Creator/Influencer'),
+        ('contest_registration', 'Inscripción concurso / sorteo'),
     ]
     
     STATUS_CHOICES = [
@@ -150,6 +161,14 @@ class PlatformFlow(BaseModel):
         on_delete=models.SET_NULL,
         related_name='flows',
         help_text="Accommodation associated with this flow (if applicable)",
+    )
+    erasmus_activity = models.ForeignKey(
+        'erasmus.ErasmusActivity',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='flows',
+        help_text="Erasmus activity (paid inscription) associated with this flow (if applicable)",
     )
 
     # Timing
@@ -264,6 +283,13 @@ class PlatformFlowEvent(BaseModel):
         ('CUSTOMER_MESSAGE_CONFIRMATION_SENT', 'Customer Message: Reservation confirmed'),
         ('CUSTOMER_MESSAGE_REJECTION_SENT', 'Customer Message: Rejection'),
         ('CUSTOMER_MESSAGE_PAYMENT_SUCCESS_SENT', 'Customer Message: Payment success / comprobante'),
+        # WhatsApp send failures (Erasmus link, post-purchase, etc.) - full audit
+        ('WHATSAPP_MESSAGE_FAILED', 'WhatsApp Message Send Failed'),
+        # OTP flows
+        ('OTP_REQUESTED', 'OTP Requested'),
+        # Erasmus registration: WhatsApp guides after submit
+        ('ERASMUS_WHATSAPP_GUIDES_SENT', 'Erasmus WhatsApp Guides Sent'),
+        ('ERASMUS_WHATSAPP_GUIDES_FAILED', 'Erasmus WhatsApp Guides Failed'),
     ]
 
     SOURCE_CHOICES = [
@@ -524,6 +550,74 @@ class PlatformUptimeHeartbeat(models.Model):
 
     def __str__(self):
         return f"Heartbeat @ {self.recorded_at}"
+
+
+class PlatformDeploy(models.Model):
+    """
+    Registro de cada deploy del backend. Se crea al arrancar si DEPLOYED_AT está definido
+    (o desde script de deploy). Permite ver historial y cantidad de deploys en Super Admin.
+    """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    deployed_at = models.DateTimeField(
+        _("Deployed at"),
+        db_index=True,
+        help_text="Momento del deploy (coincide con DEPLOYED_AT o registro manual)",
+    )
+    version = models.CharField(
+        _("Version"),
+        max_length=80,
+        blank=True,
+        default="",
+        help_text="APP_VERSION o commit/tag del deploy",
+    )
+    source = models.CharField(
+        _("Source"),
+        max_length=50,
+        default="startup",
+        blank=True,
+        help_text="Origen: startup, cloud_build, manual",
+    )
+
+    class Meta:
+        verbose_name = _("Platform Deploy")
+        verbose_name_plural = _("Platform Deploys")
+        ordering = ["-deployed_at"]
+        indexes = [
+            models.Index(fields=["-deployed_at"]),
+        ]
+
+    def __str__(self):
+        return f"Deploy {self.version or '—'} @ {self.deployed_at}"
+
+
+class AuthBackgroundSlide(BaseModel):
+    """
+    Ordered images for the login/auth flow background (login, register, organizer login, etc.).
+    Managed from SuperAdmin (Sliders y Banners > Fondo de login). Shown as cycling background
+    with dark overlay so text and logo stay legible. Public API returns URLs for unauthenticated use.
+    """
+
+    asset = models.ForeignKey(
+        "media.MediaAsset",
+        on_delete=models.SET_NULL,
+        related_name="auth_background_slides",
+        verbose_name=_("asset"),
+        null=True,
+        blank=True,
+    )
+    order = models.PositiveIntegerField(_("order"), default=0)
+
+    class Meta:
+        verbose_name = _("Auth background slide")
+        verbose_name_plural = _("Auth background slides")
+        ordering = ["order", "id"]
+
+    def __str__(self):
+        return f"Auth background #{self.order} -> {self.asset_id or 'sin imagen'}"
 
 
 class Country(TimeStampedModel):

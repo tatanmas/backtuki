@@ -2,9 +2,10 @@
 Open Graph (and Twitter Card) meta tags for shareable frontend routes.
 
 When nginx proxies requests for /erasmus/actividades/entry/<id>, /alojamientos/<id>,
-/events/<id>, /experiences/<id> to Django, this view returns the SPA index.html with
-dynamic og:title, og:description, og:image (and twitter:*) so WhatsApp/Facebook show
-rich link previews. Crawlers do not execute JavaScript, so meta must be server-rendered.
+/events/<id>, /experiences/<id>, /guias/<slug> to Django, this view returns the SPA
+index.html with dynamic og:title, og:description, og:image (and twitter:*) so
+WhatsApp/Facebook show rich link previews. Crawlers do not execute JavaScript, so
+meta must be server-rendered.
 """
 
 import re
@@ -31,6 +32,7 @@ OG_PATH_PATTERNS = [
     (re.compile(r"^/alojamientos/([^/]+)/?$"), "accommodation"),
     (re.compile(r"^/events/([^/]+)/?$"), "event"),
     (re.compile(r"^/experiences/([^/]+)/?$"), "experience"),
+    (re.compile(r"^/guias/([^/]+)/?$"), "travel_guide"),
 ]
 
 
@@ -174,34 +176,108 @@ def _get_og_data_experience(request, slug_or_id):
     return {"title": title, "description": desc, "image": image_url}
 
 
+def _get_og_data_travel_guide(request, slug):
+    """Fetch OG data for published travel guide by slug (or draft when preview_token matches). Image: og_image, else first hero slide, else hero."""
+    from apps.travel_guides.models import TravelGuide
+    from apps.travel_guides.serializers import _resolve_hero_url, _resolve_hero_slides
+
+    try:
+        preview_token = (request.GET.get("preview_token") or "").strip()
+        qs = TravelGuide.objects.filter(
+            slug=slug,
+            deleted_at__isnull=True,
+        )
+        guide = qs.first()
+        if not guide:
+            return None
+        if guide.status != "published":
+            if not (preview_token and getattr(guide, "preview_token", None) and guide.preview_token == preview_token):
+                return None
+        # Safe string coercion (model can have null/empty in edge cases)
+        raw_title = getattr(guide, "meta_title", None) or getattr(guide, "title", None) or "Guía de viaje"
+        title = (raw_title if isinstance(raw_title, str) else str(raw_title or "")).strip() or "Guía de viaje"
+        raw_desc = getattr(guide, "meta_description", None) or getattr(guide, "excerpt", None) or ""
+        desc = (raw_desc if isinstance(raw_desc, str) else str(raw_desc or "")).strip()
+        if len(desc) > 160:
+            desc = desc[:157] + "..."
+        if not desc:
+            desc = title
+        image_url = ""
+        og_image = getattr(guide, "og_image", None)
+        if og_image and isinstance(og_image, str) and og_image.strip():
+            image_url = og_image.strip()
+            if not image_url.startswith(("http://", "https://")):
+                image_url = _absolute_uri(request, image_url)
+        if not image_url:
+            try:
+                slides = _resolve_hero_slides(guide, request)
+                if slides and isinstance(slides, list):
+                    first = slides[0]
+                    if isinstance(first, dict):
+                        image_url = (first.get("image") or "").strip()
+            except Exception as e:
+                logger.warning("OG travel_guide: _resolve_hero_slides failed for slug=%s: %s", slug, e)
+            if not image_url:
+                try:
+                    image_url = (_resolve_hero_url(guide, request) or "").strip()
+                except Exception as e:
+                    logger.warning("OG travel_guide: _resolve_hero_url failed for slug=%s: %s", slug, e)
+        if image_url and not image_url.startswith(("http://", "https://")):
+            try:
+                image_url = request.build_absolute_uri(image_url)
+            except Exception:
+                image_url = ""
+        return {"title": title, "description": desc, "image": image_url}
+    except Exception as e:
+        logger.exception("OG travel_guide: failed for slug=%s: %s", slug, e)
+        return None
+
+
 def get_og_data_for_path(request):
     """
     Resolve request.path to OG data dict: title, description, image (absolute URL).
-    Returns None if path does not match or resource not found.
+    Returns None if path does not match, resource not found, or any error (never raises).
     """
-    path = (request.path or "").strip()
-    type_key, identifier = _parse_path(path)
-    if not type_key or not identifier:
+    try:
+        path = (request.path or "").strip()
+        type_key, identifier = _parse_path(path)
+        if not type_key or not identifier:
+            return None
+        if type_key == "erasmus_entry":
+            return _get_og_data_erasmus_entry(request, identifier)
+        if type_key == "accommodation":
+            return _get_og_data_accommodation(request, identifier)
+        if type_key == "event":
+            return _get_og_data_event(request, identifier)
+        if type_key == "experience":
+            return _get_og_data_experience(request, identifier)
+        if type_key == "travel_guide":
+            return _get_og_data_travel_guide(request, identifier)
         return None
-    if type_key == "erasmus_entry":
-        return _get_og_data_erasmus_entry(request, identifier)
-    if type_key == "accommodation":
-        return _get_og_data_accommodation(request, identifier)
-    if type_key == "event":
-        return _get_og_data_event(request, identifier)
-    if type_key == "experience":
-        return _get_og_data_experience(request, identifier)
-    return None
+    except Exception as e:
+        logger.exception("OG get_og_data_for_path failed: path=%s %s", getattr(request, "path", ""), e)
+        return None
+
+
+def _safe_meta_str(s, default=""):
+    """Escape for HTML attribute content: strip and escape <, >, quotes."""
+    if s is None:
+        s = default
+    s = (s if isinstance(s, str) else str(s))[:500]
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").strip() or default
 
 
 def inject_meta_into_html(html, meta, canonical_url, default_image_absolute=""):
     """
     Inject or replace Open Graph and Twitter Card meta tags in HTML string.
-    meta: dict with title, description, image (optional).
+    meta: dict with title, description, image (optional). Never raises.
     """
-    title = (meta.get("title") or DEFAULT_OG_TITLE).replace("<", "&lt;").replace(">", "&gt;")
-    description = (meta.get("description") or DEFAULT_OG_DESCRIPTION).replace("<", "&lt;").replace(">", "&gt;")
-    image = meta.get("image") or default_image_absolute or ""
+    meta = meta or {}
+    title = _safe_meta_str(meta.get("title"), DEFAULT_OG_TITLE)
+    description = _safe_meta_str(meta.get("description"), DEFAULT_OG_DESCRIPTION)
+    image = (meta.get("image") or default_image_absolute or "")
+    if image and not isinstance(image, str):
+        image = str(image)[:2000]
 
     # Replace <title>...</title>
     html = re.sub(r"<title>[^<]*</title>", f"<title>{title}</title>", html, count=1)
@@ -285,17 +361,21 @@ class OGPreviewView(View):
     """
     Serves the SPA index.html with injected Open Graph (and Twitter) meta tags
     for shareable routes. Nginx should proxy /erasmus/actividades/entry/*,
-    /alojamientos/*, /events/*, /experiences/* to this view.
+    /alojamientos/*, /events/*, /experiences/*, /guias/* to this view.
     """
 
     def get(self, request, *args, **kwargs):
         path = (request.path or "").strip()
-        canonical_url = request.build_absolute_uri(path)
-        default_image_absolute = request.build_absolute_uri(DEFAULT_OG_IMAGE_RELATIVE)
+        try:
+            canonical_url = request.build_absolute_uri(path)
+            default_image_absolute = request.build_absolute_uri(DEFAULT_OG_IMAGE_RELATIVE)
+        except Exception as e:
+            logger.warning("OG preview: build_absolute_uri failed: %s", e)
+            canonical_url = ""
+            default_image_absolute = ""
 
         meta = get_og_data_for_path(request)
         if not meta:
-            # Fallback to default meta so the page still loads (SPA will show 404 if needed)
             meta = {
                 "title": DEFAULT_OG_TITLE,
                 "description": DEFAULT_OG_DESCRIPTION,
@@ -308,5 +388,9 @@ class OGPreviewView(View):
                 "OG preview: frontend index not found. Set FRONTEND_INDEX_PATH to the SPA index.html path."
             )
 
-        html = inject_meta_into_html(html, meta, canonical_url, default_image_absolute)
+        try:
+            html = inject_meta_into_html(html, meta, canonical_url, default_image_absolute)
+        except Exception as e:
+            logger.exception("OG preview: inject_meta_into_html failed, serving index without injection: %s", e)
+
         return HttpResponse(html, content_type="text/html; charset=utf-8")

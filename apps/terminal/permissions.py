@@ -1,27 +1,20 @@
-"""Permissions for terminal app."""
+"""Permissions for terminal app. 401 = not authenticated; 403 = no terminal admin role."""
 
 from rest_framework import permissions
+from rest_framework.exceptions import NotAuthenticated, PermissionDenied
 
 
 class IsTerminalAdmin(permissions.BasePermission):
     """Permission to check if user is a terminal admin or superadmin."""
-    
+
     def has_permission(self, request, view):
-        """Check if user has terminal admin permissions."""
         if not request.user or not request.user.is_authenticated:
-            return False
-        
-        # Superadmin has access
+            raise NotAuthenticated('Credenciales no proporcionadas o inválidas.')
         if request.user.is_superuser:
             return True
-        
-        # Check if user has terminal_admin role
-        # Assuming User model has a role field or similar
-        # Adjust based on your User model structure
-        if hasattr(request.user, 'role'):
-            return request.user.role in ['terminal_admin', 'superadmin']
-        
-        # Fallback: check if user is staff (for now)
-        # For testing, allow staff users
-        return request.user.is_staff
+        if hasattr(request.user, 'role') and request.user.role in ['terminal_admin', 'superadmin']:
+            return True
+        if request.user.is_staff:
+            return True
+        raise PermissionDenied('No tiene permisos de administrador del terminal.')
 

@@ -100,6 +100,20 @@ class CreatorApplyView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         creator = serializer.save()
+
+        # Track creator application flow for observability (non-order flow)
+        try:
+            from core.flow_logger import FlowLogger
+            flow = FlowLogger.start_flow(
+                "creator_application",
+                user=request.user,
+                metadata={"creator_id": str(creator.id)},
+            )
+            if flow and flow.flow:
+                flow.complete(message="Creator application submitted")
+        except Exception as e:
+            logger.warning("Creator application flow log failed (non-blocking): %s", e)
+
         return Response(
             CreatorProfileMeSerializer(creator).data,
             status=status.HTTP_201_CREATED
@@ -441,6 +455,8 @@ class CreatorPerformanceView(APIView):
                 {'error': 'No creator profile for this user.'},
                 status=status.HTTP_404_NOT_FOUND
             )
+        from apps.finance.services import get_or_create_creator_payee, payout_totals_for_payee, sync_creator_payables
+
         reservations = ExperienceReservation.objects.filter(creator=creator)
         paid = reservations.filter(status='paid')
         total_earnings = paid.aggregate(s=Sum('creator_commission_amount'))['s'] or Decimal('0')
@@ -453,12 +469,18 @@ class CreatorPerformanceView(APIView):
         available_for_withdrawal = paid.filter(creator_commission_status='earned').aggregate(
             s=Sum('creator_commission_amount')
         )['s'] or Decimal('0')
+        sync_creator_payables()
+        payee = get_or_create_creator_payee(creator)
+        totals = payout_totals_for_payee(payee)
+
         return Response({
             'total_earnings': float(total_earnings),
             'bookings_count': bookings_count,
             'pending_experience': float(pending_experience),
             'available_for_withdrawal': float(available_for_withdrawal),
             'pending_withdrawal': float(available_for_withdrawal),  # legacy alias
+            'paid_total': totals['paid_amount'],
+            'next_payment_date': payee.schedule.next_payment_date.isoformat() if hasattr(payee, 'schedule') and payee.schedule.next_payment_date else None,
             'currency': 'CLP',
         })
 
@@ -477,11 +499,15 @@ class CreatorEarningsView(APIView):
                 {'error': 'No creator profile for this user.'},
                 status=status.HTTP_404_NOT_FOUND
             )
+        from apps.finance.services import get_or_create_creator_payee, sync_creator_payables
+
         reservations = (
             ExperienceReservation.objects.filter(creator=creator, status='paid')
             .select_related('experience')
             .order_by('-created_at')[:50]
         )
+        sync_creator_payables()
+        payee = get_or_create_creator_payee(creator)
         items = []
         for r in reservations:
             items.append({
@@ -491,4 +517,24 @@ class CreatorEarningsView(APIView):
                 'status': r.creator_commission_status or 'pending',
                 'created_at': r.created_at.isoformat() if r.created_at else None,
             })
-        return Response({'results': items})
+        payouts = [
+            {
+                'id': str(payout.id),
+                'amount': float(payout.amount),
+                'status': payout.status,
+                'reference': payout.reference,
+                'partner_message': payout.partner_message,
+                'paid_at': payout.paid_at.isoformat() if payout.paid_at else None,
+                'attachments': [
+                    {
+                        'id': str(attachment.id),
+                        'label': attachment.label,
+                        'original_name': attachment.original_name,
+                        'file_url': attachment.file.url if attachment.file else None,
+                    }
+                    for attachment in payout.attachments.all()
+                ],
+            }
+            for payout in payee.payouts.prefetch_related('attachments').order_by('-created_at')[:20]
+        ]
+        return Response({'results': items, 'payouts': payouts})

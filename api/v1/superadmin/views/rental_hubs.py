@@ -12,6 +12,7 @@ from rest_framework.response import Response
 
 from django.utils.text import slugify
 
+from apps.accommodations.helpers import bathrooms_from_data
 from apps.accommodations.models import RentalHub, Accommodation
 from ..permissions import IsSuperUser
 
@@ -70,6 +71,9 @@ class RentalHubSerializer(serializers.ModelSerializer):
             "meta_title",
             "meta_description",
             "is_active",
+            "min_nights",
+            "units_section_title",
+            "units_section_subtitle",
             "accommodations_count",
             "created_at",
             "updated_at",
@@ -238,7 +242,8 @@ class RentalHubViewSet(viewsets.ModelViewSet):
             city=(data.get("city") or "").strip()[:255],
             guests=max(1, int(data.get("guests", 2))),
             bedrooms=max(0, int(data.get("bedrooms", 1))),
-            bathrooms=max(0, int(data.get("bathrooms", 1))),
+            full_bathrooms=bathrooms_from_data(data)[0],
+            half_bathrooms=bathrooms_from_data(data)[1],
             beds=max(0, int(data.get("beds", 1))) if data.get("beds") is not None else 1,
             price=Decimal(str(data.get("price", 0))) if data.get("price") is not None else Decimal("0"),
             currency=(data.get("currency") or "CLP")[:3],

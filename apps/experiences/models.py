@@ -278,7 +278,17 @@ class Experience(BaseModel):
         decimal_places=4,
         null=True,
         blank=True,
-        help_text=_("Creator share of platform fee (e.g., 0.5 = 50%). If null, uses platform default.")
+        help_text=_("Creator share: if basis=pct_tuki_commission then % of platform fee (e.g. 0.5=50%%); if basis=pct_total then % of sale total (e.g. 0.06=6%%).")
+    )
+    creator_commission_basis = models.CharField(
+        _("creator commission basis"),
+        max_length=30,
+        choices=[
+            ('pct_tuki_commission', _('Percentage of Tuki commission')),
+            ('pct_total', _('Percentage of sale total')),
+        ],
+        default='pct_tuki_commission',
+        help_text=_("Base for commission: pct_tuki_commission = %% of what Tuki charges; pct_total = %% of total sold."),
     )
     
     # Payment model (migration 0011): full_upfront = Tuki cobra todo; deposit_only = Tuki cobra comisión, resto en destino
@@ -331,7 +341,33 @@ class Experience(BaseModel):
         db_index=True,
         help_text=_("When managed by Tuki (organizer = Tuki), the real operator identifier e.g. molantours for future transfer")
     )
-    
+
+    # Free tour: send a WhatsApp message to the linked group for each new reservation
+    notify_whatsapp_group_on_booking = models.BooleanField(
+        _("notify WhatsApp group on booking"),
+        default=False,
+        help_text=_("If True and a WhatsApp group is linked, send a message to the group for each new free tour booking")
+    )
+
+    # Free tour: auto-approve reservations (no operator confirmation step; customer gets confirmation immediately)
+    auto_approve_free_tour_reservations = models.BooleanField(
+        _("auto approve free tour reservations"),
+        default=False,
+        help_text=_("If True, new free tour reservations are confirmed immediately and the customer receives the confirmation message without waiting for operator approval. Operator still receives the notification.")
+    )
+
+    # Override platform WhatsApp reservation message templates per experience (message_type -> template text)
+    whatsapp_message_templates = models.JSONField(
+        _("WhatsApp message templates"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            'Optional overrides for reservation flow messages. Keys: reservation_request, customer_waiting, '
+            'customer_confirmation, customer_rejection, payment_link, payment_confirmed, ticket_info, reminder, '
+            'customer_availability_confirmed, customer_confirm_free. Empty = use platform/operator default.'
+        ),
+    )
+
     class Meta:
         verbose_name = _("experience")
         verbose_name_plural = _("experiences")
@@ -469,6 +505,30 @@ class TourInstance(BaseModel):
     
     # Notes for organizer
     notes = models.TextField(_("notes"), blank=True)
+
+    # Travel guides: hidden guide-only instances should not appear in generic public calendars.
+    is_publicly_listed = models.BooleanField(
+        _("is publicly listed"),
+        default=True,
+        db_index=True,
+        help_text=_("If False, the instance is only exposed through a specific travel guide flow."),
+    )
+    origin_travel_guide = models.ForeignKey(
+        'travel_guides.TravelGuide',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='generated_experience_instances',
+        verbose_name=_("origin travel guide"),
+        help_text=_("Travel guide that created this hidden/custom instance."),
+    )
+    origin_block_key = models.CharField(
+        _("origin block key"),
+        max_length=64,
+        blank=True,
+        db_index=True,
+        help_text=_("Stable block key inside the guide body that owns this custom instance."),
+    )
     
     class Meta:
         verbose_name = _("tour instance")
@@ -478,18 +538,25 @@ class TourInstance(BaseModel):
             models.Index(fields=['experience', 'start_datetime']),
             models.Index(fields=['status', 'start_datetime']),
             models.Index(fields=['language', 'status']),
+            models.Index(fields=['experience', 'is_publicly_listed', 'status']),
+            models.Index(fields=['origin_travel_guide', 'origin_block_key']),
         ]
     
     def __str__(self):
         return f"{self.experience.title} - {self.start_datetime.strftime('%Y-%m-%d %H:%M')} ({self.get_language_display()})"
     
     def get_current_bookings_count(self):
-        """Get current number of confirmed bookings."""
+        """Get current reserved units across legacy and reservation-based flows."""
         from django.db.models import Sum
-        result = self.bookings.filter(status='confirmed').aggregate(
+
+        legacy_total = self.bookings.filter(status='confirmed').aggregate(
             total=Sum('participants_count')
+        )['total'] or 0
+        reservation_total = sum(
+            reservation.get_capacity_units()
+            for reservation in self.reservations.filter(status__in=('pending', 'paid'))
         )
-        return result['total'] or 0
+        return legacy_total + reservation_total
     
     def get_available_spots(self):
         """Calculate available spots."""
@@ -868,6 +935,41 @@ class ExperienceReservation(BaseModel):
         null=True,
         blank=True,
     )
+
+    SOURCE_TYPE_CHOICES = (
+        ('direct', _('Direct')),
+        ('travel_guide', _('Travel guide')),
+    )
+    source_type = models.CharField(
+        _("source type"),
+        max_length=30,
+        choices=SOURCE_TYPE_CHOICES,
+        default='direct',
+        db_index=True,
+        help_text=_("Whether the reservation started directly on the experience or from a travel guide."),
+    )
+    travel_guide = models.ForeignKey(
+        'travel_guides.TravelGuide',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='experience_reservations',
+        verbose_name=_("travel guide"),
+        help_text=_("Travel guide that originated this reservation, when applicable."),
+    )
+    travel_guide_block_key = models.CharField(
+        _("travel guide block key"),
+        max_length=64,
+        blank=True,
+        db_index=True,
+        help_text=_("Stable block key of the embed_experience block inside the travel guide."),
+    )
+    travel_guide_context = models.JSONField(
+        _("travel guide context"),
+        default=dict,
+        blank=True,
+        help_text=_("Snapshot of guide-specific booking context (guide title, slot label, campaign data, etc.)."),
+    )
     
     # Pricing snapshot (at time of reservation)
     subtotal = models.DecimalField(
@@ -966,6 +1068,8 @@ class ExperienceReservation(BaseModel):
             models.Index(fields=['email']),
             models.Index(fields=['user']),
             models.Index(fields=['status', 'expires_at']),
+            models.Index(fields=['source_type', 'travel_guide']),
+            models.Index(fields=['travel_guide_block_key']),
         ]
     
     def __str__(self):

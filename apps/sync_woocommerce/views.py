@@ -11,8 +11,9 @@ from django.db.models import Count, Q, Avg
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, AllowAny
 from django_filters.rest_framework import DjangoFilterBackend
+
+from core.permissions import IsSuperAdmin
 from rest_framework.filters import SearchFilter, OrderingFilter
 
 from .models import SyncConfiguration, SyncExecution, SyncCredentials
@@ -46,8 +47,7 @@ class SyncConfigurationViewSet(viewsets.ModelViewSet):
     """
     
     queryset = SyncConfiguration.objects.all()
-    permission_classes = [AllowAny]  # 🚀 Sin autenticación para Super Admin
-    throttle_classes = []  # 🚀 Sin rate limiting para sincronización WooCommerce
+    permission_classes = [IsSuperAdmin]  # Security: only superusers (was AllowAny)
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['status', 'frequency', 'organizer_email']
     search_fields = ['name', 'event_name', 'organizer_email']
@@ -62,9 +62,7 @@ class SyncConfigurationViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         """Asignar usuario creador al crear configuración"""
-        # Para Super Admin sin autenticación, usar None si es usuario anónimo
-        created_by = None if self.request.user.is_anonymous else self.request.user
-        serializer.save(created_by=created_by)
+        serializer.save(created_by=self.request.user)
     
     @action(detail=True, methods=['post'])
     def trigger(self, request, pk=None):
@@ -97,7 +95,7 @@ class SyncConfigurationViewSet(viewsets.ModelViewSet):
         task = sync_woocommerce_event.delay(
             str(config.id),
             trigger='manual',
-            user_id=request.user.id
+            user_id=request.user.id  # Always set: IsSuperAdmin ensures authenticated
         )
         
         logger.info(f"✅ Tarea Celery creada - Task ID: {task.id}")
@@ -221,8 +219,7 @@ class SyncExecutionViewSet(viewsets.ReadOnlyModelViewSet):
     
     queryset = SyncExecution.objects.all()
     serializer_class = SyncExecutionSerializer
-    permission_classes = [AllowAny]  # 🚀 Sin autenticación para Super Admin
-    throttle_classes = []  # 🚀 Sin rate limiting
+    permission_classes = [IsSuperAdmin]  # Security: only superusers (was AllowAny)
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['status', 'trigger', 'configuration']
     search_fields = ['configuration__name', 'error_message']
@@ -264,7 +261,7 @@ class SyncCredentialsViewSet(viewsets.ModelViewSet):
     
     queryset = SyncCredentials.objects.all()
     serializer_class = SyncCredentialsSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdmin]  # Security: only superusers
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['is_active', 'is_default']
     search_fields = ['name', 'ssh_host', 'mysql_database']
@@ -283,8 +280,7 @@ class SyncManagementViewSet(viewsets.ViewSet):
     - POST /api/v1/sync-woocommerce/management/cleanup/ - Limpiar ejecuciones antiguas
     """
     
-    permission_classes = [AllowAny]  # 🚀 Sin autenticación para Super Admin
-    throttle_classes = []  # 🚀 Sin rate limiting
+    permission_classes = [IsSuperAdmin]  # Security: only superusers (was AllowAny)
     
     @action(detail=False, methods=['get'])
     def stats(self, request):
@@ -387,10 +383,8 @@ class SyncManagementViewSet(viewsets.ViewSet):
         POST /api/v1/sync-woocommerce/management/trigger-all/
         """
         active_configs = SyncConfiguration.objects.filter(status='active')
-        
-        # Manejar usuario anónimo para Super Admin
-        user_id = None if request.user.is_anonymous else request.user.id
-        username = 'SuperAdmin' if request.user.is_anonymous else request.user.username
+        user_id = request.user.id  # IsSuperAdmin ensures authenticated
+        username = request.user.username
         
         logger.info(f"🔵 TRIGGER ALL recibido por {username}")
         logger.info(f"   - Configs activas encontradas: {active_configs.count()}")

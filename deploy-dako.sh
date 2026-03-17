@@ -10,6 +10,7 @@
 #   --skip-git-pull   Omitir git pull (útil cuando el código llegó por rsync)
 #   --no-cache        Reconstruir imágenes sin caché; además recrea WhatsApp (habrá que escanear QR de nuevo)
 #   --force-recreate-frontend  Recrear contenedor nginx (breve caída; solo si cambiaste montajes o config nginx)
+#   DEPLOY_MSG        Si está definido (el wrapper pasa -m "mensaje"), se usa como APP_VERSION para el listado en Super Admin.
 #
 # Por defecto: build con caché (menos RAM/tiempo). WhatsApp no se recrea → la sesión se mantiene entre deploys.
 # Usa --no-cache solo si cambiaste requirements/Dockerfile o si necesitas refrescar el servicio WhatsApp (QR).
@@ -246,9 +247,14 @@ else
 fi
 echo "   📍 Live actual: tuki-backend-${CURRENT_LIVE} → nuevo: tuki-backend-${IDLE}"
 
-export APP_VERSION=$(cd backtuki && git rev-parse --short HEAD 2>/dev/null || echo "norepo")
+# Referencia del deploy: -m "mensaje" (desde deploy-dako con -m) o hash git
+if [ -n "${DEPLOY_MSG:-}" ]; then
+    export APP_VERSION="${DEPLOY_MSG:0:80}"
+else
+    export APP_VERSION=$(cd backtuki && git rev-parse --short HEAD 2>/dev/null || echo "norepo")
+fi
 export DEPLOYED_AT=$(TZ=America/Santiago date -Iseconds)
-echo "   📌 APP_VERSION=$APP_VERSION"
+echo "   📌 APP_VERSION=$APP_VERSION  DEPLOYED_AT=$DEPLOYED_AT"
 
 # Asegurar que el live actual está arriba (por si es el primer deploy con este script)
 docker-compose up -d "tuki-backend-${CURRENT_LIVE}" 2>/dev/null || true
@@ -320,12 +326,17 @@ fi
 echo "   ✅ Migraciones completadas"
 
 echo ""
-echo "💳 Paso 6b: Activando medios de pago (Transbank WebPay Plus)..."
+echo "📒 Paso 6b: Seed cuentas contables (finance)..."
+_run_exec python manage.py seed_ledger_accounts 2>/dev/null || echo "   ⚠️ seed_ledger_accounts falló (puede estar ya ejecutado)"
+echo "   ✅ Cuentas contables listas"
+
+echo ""
+echo "💳 Paso 6c: Activando medios de pago (Transbank WebPay Plus)..."
 docker-compose exec -T "$LIVE_CONTAINER" python manage.py setup_payment_providers 2>/dev/null || echo "   ⚠️ setup_payment_providers falló (puede estar ya configurado)"
 echo "   ✅ Medios de pago configurados"
 
 echo ""
-echo "📁 Paso 7: Collectstatic..."
+echo "📁 Paso 7: Collectstatic (archivos estáticos)..."
 docker-compose exec -T "$LIVE_CONTAINER" python manage.py collectstatic --noinput
 echo "   ✅ Archivos estáticos recolectados"
 

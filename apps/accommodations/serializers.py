@@ -252,6 +252,7 @@ def _accommodation_to_public_dict(acc, request=None, include_photo_tour=False):
     images = _resolve_images(acc, request)
     lat = float(acc.latitude) if acc.latitude is not None else 0
     lng = float(acc.longitude) if acc.longitude is not None else 0
+    effective_min = acc.get_effective_min_nights() if hasattr(acc, "get_effective_min_nights") else None
     out = {
         "id": str(acc.id),
         "title": acc.title,
@@ -260,6 +261,7 @@ def _accommodation_to_public_dict(acc, request=None, include_photo_tour=False):
         "price": float(acc.price or 0),
         "rating": float(acc.rating_avg or 0),
         "reviews": acc.review_count or 0,
+        "min_nights": effective_min,
         "location": {
             "name": acc.location_name or acc.city or acc.country or "",
             "coordinates": {"lat": lat, "lng": lng},
@@ -270,11 +272,30 @@ def _accommodation_to_public_dict(acc, request=None, include_photo_tour=False):
         "propertyType": acc.property_type or "other",
         "bedrooms": acc.bedrooms,
         "beds": acc.beds,
-        "bathrooms": acc.bathrooms,
+        "full_bathrooms": acc.full_bathrooms,
+        "half_bathrooms": acc.half_bathrooms,
+        "bathrooms": (acc.full_bathrooms or 0) + (acc.half_bathrooms or 0),
         "guests": acc.guests,
         "country": acc.country or "Chile",
         "city": acc.city or "",
     }
+    # Extra charges (cobros adicionales v1.5) - active only, for public list/detail
+    extras_qs = acc.extra_charges.filter(is_active=True).order_by("display_order", "name")
+    out["extra_charges"] = [
+        {
+            "id": str(e.id),
+            "code": e.code,
+            "name": e.name,
+            "charge_type": e.charge_type,
+            "amount": float(e.amount),
+            "currency": e.currency or (acc.currency or "CLP"),
+            "is_optional": e.is_optional,
+            "default_quantity": e.default_quantity,
+            "max_quantity": e.max_quantity,
+            "display_order": e.display_order,
+        }
+        for e in extras_qs
+    ]
     if include_photo_tour:
         out["photo_tour"] = _build_photo_tour(acc, request)
     return out
@@ -317,6 +338,78 @@ def resolve_room_public_payload(acc, request=None, include_photo_tour=False):
     data = _accommodation_to_public_dict(acc, request, include_photo_tour=include_photo_tour)
     _apply_hotel_inheritance_to_public_dict(data, acc)
     return data
+
+
+def _other_rooms_for_hotel(hotel_id, exclude_accommodation_id, request=None, limit=10):
+    """
+    Return list of other rooms (same hotel) for "Otras habitaciones" section.
+    Each item includes card data: id, slug, title, image, price, guests, bedrooms, bathrooms,
+    short_description, rating, reviews, min_nights (same as central/hotel cards).
+    """
+    from apps.accommodations.models import Accommodation
+
+    qs = (
+        Accommodation.objects.filter(
+            hotel_id=hotel_id,
+            status="published",
+            deleted_at__isnull=True,
+        )
+        .exclude(id=exclude_accommodation_id)
+        .order_by("title")[:limit]
+    )
+    return [_accommodation_card_summary(room, request) for room in qs]
+
+
+def _accommodation_card_summary(acc, request=None):
+    """Build minimal dict for a unit/room card: image, price, guests, bedrooms, bathrooms, etc."""
+    images = _resolve_images(acc, request)
+    first_image = images[0] if images else None
+    if isinstance(first_image, dict) and first_image.get("url"):
+        first_image = first_image["url"]
+    effective_min = acc.get_effective_min_nights() if hasattr(acc, "get_effective_min_nights") else None
+    desc = (acc.short_description or "").strip()
+    if not desc and (acc.description or "").strip():
+        d = (acc.description or "").strip()
+        desc = (d[:200] + "…") if len(d) > 200 else d
+    return {
+        "id": str(acc.id),
+        "slug": acc.slug,
+        "title": acc.title,
+        "image": first_image,
+        "price": float(acc.price or 0),
+        "guests": acc.guests or 0,
+        "bedrooms": acc.bedrooms,
+        "full_bathrooms": acc.full_bathrooms,
+        "half_bathrooms": acc.half_bathrooms,
+        "bathrooms": (acc.full_bathrooms or 0) + (acc.half_bathrooms or 0),
+        "beds": acc.beds,
+        "short_description": desc or None,
+        "rating": float(acc.rating_avg or 0),
+        "reviews": acc.review_count or 0,
+        "min_nights": effective_min,
+        "square_meters": float(acc.square_meters) if getattr(acc, "square_meters", None) is not None and acc.square_meters is not None else None,
+        "unit_type": getattr(acc, "unit_type", None) or None,
+    }
+
+
+def _other_units_for_hub(rental_hub_id, exclude_accommodation_id, request=None, limit=10):
+    """
+    Return list of other units (same central de arrendamiento) for "Otras unidades" section.
+    Each item includes card data: id, slug, title, image, price, guests, bedrooms, bathrooms,
+    short_description, rating, reviews, min_nights, square_meters, unit_type (same as central cards).
+    """
+    from apps.accommodations.models import Accommodation
+
+    qs = (
+        Accommodation.objects.filter(
+            rental_hub_id=rental_hub_id,
+            status="published",
+            deleted_at__isnull=True,
+        )
+        .exclude(id=exclude_accommodation_id)
+        .order_by("title")[:limit]
+    )
+    return [_accommodation_card_summary(unit, request) for unit in qs]
 
 
 class PublicAccommodationListSerializer(serializers.BaseSerializer):

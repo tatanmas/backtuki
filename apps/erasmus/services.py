@@ -31,23 +31,26 @@ def get_guides_for_destinations(destination_slugs: List[str]) -> List[dict]:
     ]
 
 
-def send_erasmus_guides_whatsapp(lead: ErasmusLead) -> None:
+def send_erasmus_guides_whatsapp(lead: ErasmusLead) -> dict:
     """
     Send the lead a WhatsApp message with their travel guides (by destination).
     Uses lead.phone_country_code + lead.phone_number. No-op if no guides or no phone.
+
+    Returns:
+        dict: {'ok': bool, 'error': str|None} for flow observability.
     """
     destinations = list(lead.destinations or [])
     if not destinations:
-        return
+        return {"ok": True, "error": None}
     guides = get_guides_for_destinations(destinations)
     if not guides:
         logger.info("[Erasmus] No guides configured for destinations %s", destinations)
-        return
+        return {"ok": True, "error": None}
 
     phone = (lead.phone_country_code or "").replace(" ", "") + (lead.phone_number or "").replace(" ", "")
     if len(phone) < 10:
         logger.warning("[Erasmus] Lead %s has no valid phone for WhatsApp", lead.id)
-        return
+        return {"ok": False, "error": "No valid phone for WhatsApp"}
 
     from apps.whatsapp.services.whatsapp_client import WhatsAppWebService
     service = WhatsAppWebService()
@@ -82,5 +85,7 @@ def send_erasmus_guides_whatsapp(lead: ErasmusLead) -> None:
     try:
         service.send_message(clean_phone, message)
         logger.info("[Erasmus] Sent %s guides by WhatsApp to lead %s", len(guides), lead.id)
+        return {"ok": True, "error": None}
     except Exception as e:
         logger.exception("[Erasmus] Failed to send WhatsApp guides to lead %s: %s", lead.id, e)
+        return {"ok": False, "error": str(e)}

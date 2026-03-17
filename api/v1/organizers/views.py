@@ -99,6 +99,7 @@ class OrganizerViewSet(viewsets.ModelViewSet):
         from django.utils import timezone
         from datetime import timedelta, datetime
         from apps.events.models import Event, Order, OrderItem
+        from core.revenue_system import order_revenue_eligible_q
         
         if not request.user.is_authenticated:
             return Response(
@@ -132,21 +133,18 @@ class OrganizerViewSet(viewsets.ModelViewSet):
         # 🚀 ENTERPRISE: Get all events for this organizer
         organizer_events = Event.objects.filter(organizer=organizer)
         
-        # 🚀 ENTERPRISE: Calculate ROBUST revenue from actual paid orders
-        # This is the correct way: sum what customers actually paid
+        # 🚀 ENTERPRISE: Calculate ROBUST revenue from actual paid orders (exclude sandbox, deleted, excluded)
         current_period_orders = Order.objects.filter(
             event__organizer=organizer,
-            status='paid',
             created_at__gte=current_period_start,
             created_at__lte=now
-        )
+        ).filter(order_revenue_eligible_q())
         
         previous_period_orders = Order.objects.filter(
             event__organizer=organizer,
-            status='paid',
             created_at__gte=previous_period_start,
             created_at__lt=current_period_start
-        )
+        ).filter(order_revenue_eligible_q())
         
         # Calculate current period metrics
         current_metrics = current_period_orders.aggregate(
@@ -158,6 +156,9 @@ class OrganizerViewSet(viewsets.ModelViewSet):
         current_tickets_data = OrderItem.objects.filter(
             order__event__organizer=organizer,
             order__status='paid',
+            order__is_sandbox=False,
+            order__deleted_at__isnull=True,
+            order__exclude_from_revenue=False,
             order__created_at__gte=current_period_start,
             order__created_at__lte=now
         ).aggregate(
@@ -173,6 +174,9 @@ class OrganizerViewSet(viewsets.ModelViewSet):
         previous_tickets_data = OrderItem.objects.filter(
             order__event__organizer=organizer,
             order__status='paid',
+            order__is_sandbox=False,
+            order__deleted_at__isnull=True,
+            order__exclude_from_revenue=False,
             order__created_at__gte=previous_period_start,
             order__created_at__lt=current_period_start
         ).aggregate(
@@ -204,13 +208,12 @@ class OrganizerViewSet(viewsets.ModelViewSet):
             day_start = timezone.make_aware(datetime.combine(day_date, datetime.min.time()))
             day_end = timezone.make_aware(datetime.combine(day_date, datetime.max.time()))
             
-            # Get orders for this day
+            # Get orders for this day (revenue-eligible only)
             day_orders = Order.objects.filter(
                 event__organizer=organizer,
-                status='paid',
                 created_at__gte=day_start,
                 created_at__lte=day_end
-            )
+            ).filter(order_revenue_eligible_q())
             
             day_revenue = day_orders.aggregate(total=Sum('total'))['total'] or 0
             
@@ -218,6 +221,9 @@ class OrganizerViewSet(viewsets.ModelViewSet):
             day_tickets = OrderItem.objects.filter(
                 order__event__organizer=organizer,
                 order__status='paid',
+                order__is_sandbox=False,
+                order__deleted_at__isnull=True,
+                order__exclude_from_revenue=False,
                 order__created_at__gte=day_start,
                 order__created_at__lte=day_end
             ).aggregate(total=Sum('quantity'))['total'] or 0
@@ -504,6 +510,11 @@ class OrganizerFinancesView(APIView):
 
     def get(self, request):
         from apps.organizers.wallet_service import get_organizer_wallet
+        from apps.finance.services import (
+            get_or_create_organizer_payee,
+            payout_totals_for_payee,
+            sync_organizer_payables,
+        )
 
         try:
             organizer_user = request.user.organizer_roles.first()
@@ -520,12 +531,30 @@ class OrganizerFinancesView(APIView):
             )
 
         wallet = get_organizer_wallet(organizer)
-        payouts = list(organizer.payouts.order_by('-paid_at').values(
-            'id', 'amount', 'paid_at', 'reference'
-        ))
-        for p in payouts:
-            p['id'] = str(p['id'])
-            p['paid_at'] = p['paid_at'].isoformat() if p.get('paid_at') else None
+        sync_organizer_payables()
+        payee = get_or_create_organizer_payee(organizer)
+        totals = payout_totals_for_payee(payee)
+        payouts = [
+            {
+                'id': str(payout.id),
+                'amount': float(payout.amount),
+                'paid_at': payout.paid_at.isoformat() if payout.paid_at else None,
+                'reference': payout.reference,
+                'partner_message': payout.partner_message,
+                'status': payout.status,
+                'attachments_count': payout.attachments.count(),
+                'attachments': [
+                    {
+                        'id': str(attachment.id),
+                        'label': attachment.label,
+                        'original_name': attachment.original_name,
+                        'file_url': attachment.file.url if attachment.file else None,
+                    }
+                    for attachment in payout.attachments.all()
+                ],
+            }
+            for payout in payee.payouts.prefetch_related('attachments').order_by('-created_at')[:50]
+        ]
 
         return Response({
             'success': True,
@@ -536,6 +565,10 @@ class OrganizerFinancesView(APIView):
                 'pending_payments': max(0, wallet['balance']),
                 'balance': wallet['balance'],
                 'by_type': wallet['by_type'],
+                'gross_sales': totals['gross_sales'],
+                'platform_fees': totals['platform_fees'],
+                'pending_future_payments': totals['pending_future_amount'],
+                'next_payment_date': payee.schedule.next_payment_date.isoformat() if hasattr(payee, 'schedule') and payee.schedule.next_payment_date else None,
             },
             'payments': payouts,
             'breakdown': wallet.get('breakdown', {}),
@@ -562,6 +595,7 @@ class DashboardStatsView(APIView):
         from django.utils import timezone
         from datetime import timedelta, datetime
         from apps.events.models import Event, Order, OrderItem
+        from core.revenue_system import order_revenue_eligible_q
         
         # Get organizer
         try:
@@ -589,20 +623,18 @@ class DashboardStatsView(APIView):
         # 🚀 ENTERPRISE: Get all events for this organizer
         organizer_events = Event.objects.filter(organizer=organizer)
         
-        # 🚀 ENTERPRISE: Calculate ROBUST revenue from actual paid orders
+        # 🚀 ENTERPRISE: Calculate ROBUST revenue from actual paid orders (exclude sandbox, deleted, excluded)
         current_period_orders = Order.objects.filter(
             event__organizer=organizer,
-            status='paid',
             created_at__gte=current_period_start,
             created_at__lte=now
-        )
+        ).filter(order_revenue_eligible_q())
         
         previous_period_orders = Order.objects.filter(
             event__organizer=organizer,
-            status='paid',
             created_at__gte=previous_period_start,
             created_at__lt=current_period_start
-        )
+        ).filter(order_revenue_eligible_q())
         
         # Calculate current period metrics
         current_metrics = current_period_orders.aggregate(
@@ -614,6 +646,9 @@ class DashboardStatsView(APIView):
         current_tickets_data = OrderItem.objects.filter(
             order__event__organizer=organizer,
             order__status='paid',
+            order__is_sandbox=False,
+            order__deleted_at__isnull=True,
+            order__exclude_from_revenue=False,
             order__created_at__gte=current_period_start,
             order__created_at__lte=now
         ).aggregate(
@@ -629,6 +664,9 @@ class DashboardStatsView(APIView):
         previous_tickets_data = OrderItem.objects.filter(
             order__event__organizer=organizer,
             order__status='paid',
+            order__is_sandbox=False,
+            order__deleted_at__isnull=True,
+            order__exclude_from_revenue=False,
             order__created_at__gte=previous_period_start,
             order__created_at__lt=current_period_start
         ).aggregate(
@@ -660,13 +698,12 @@ class DashboardStatsView(APIView):
             day_start = timezone.make_aware(datetime.combine(day_date, datetime.min.time()))
             day_end = timezone.make_aware(datetime.combine(day_date, datetime.max.time()))
             
-            # Get orders for this day
+            # Get orders for this day (revenue-eligible only)
             day_orders = Order.objects.filter(
                 event__organizer=organizer,
-                status='paid',
                 created_at__gte=day_start,
                 created_at__lte=day_end
-            )
+            ).filter(order_revenue_eligible_q())
             
             day_revenue = day_orders.aggregate(total=Sum('total'))['total'] or 0
             
@@ -674,6 +711,9 @@ class DashboardStatsView(APIView):
             day_tickets = OrderItem.objects.filter(
                 order__event__organizer=organizer,
                 order__status='paid',
+                order__is_sandbox=False,
+                order__deleted_at__isnull=True,
+                order__exclude_from_revenue=False,
                 order__created_at__gte=day_start,
                 order__created_at__lte=day_end
             ).aggregate(total=Sum('quantity'))['total'] or 0

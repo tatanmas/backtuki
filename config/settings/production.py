@@ -19,6 +19,12 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_SSL_REDIRECT = True
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
+X_FRAME_OPTIONS = 'DENY'
+
+# CORS: production must use explicit origins only (no wildcard)
+_origins = CORS_ALLOWED_ORIGINS if isinstance(CORS_ALLOWED_ORIGINS, list) else list(CORS_ALLOWED_ORIGINS)
+if '*' in _origins:
+    raise ValueError("CORS_ALLOWED_ORIGINS must not contain '*' in production. Set explicit origins in env.")
 
 # Production databases - Use PostgreSQL
 DATABASES = {
@@ -69,6 +75,7 @@ REST_FRAMEWORK['DEFAULT_THROTTLE_CLASSES'] = [
 REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] = {
     'anon': '50/hour',
     'user': '1000/hour',
+    'login': '10/min',  # POST /auth/token/ brute-force protection
 }
 
 # Logging configuration

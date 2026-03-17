@@ -64,6 +64,9 @@ def _hub_to_public_dict(hub, request=None):
         "gallery": gallery_urls,
         "meta_title": hub.meta_title or "",
         "meta_description": hub.meta_description or "",
+        "min_nights": hub.min_nights,
+        "units_section_title": hub.units_section_title or "Nuestros Departamentos",
+        "units_section_subtitle": hub.units_section_subtitle or "Selecciona la unidad perfecta para tu estadía",
     }
 
 

@@ -58,6 +58,8 @@ urlpatterns = [
     path('otp/event-creation/', EventCreationOTPView.as_view(), name='otp_event_creation'),
     path('otp/login/', LoginOTPView.as_view(), name='otp_login'),
     path('otp/ticket-access/', TicketAccessOTPView.as_view(), name='otp_ticket_access'),
+    # Public travel guides (guías de viaje - blog Tuki)
+    path('public/travel-guides/', include('apps.travel_guides.urls')),
     # Public landing destinations (páginas /destinos, /destino/:slug)
     path('public/destinations/', PublicDestinationListView.as_view(), name='public-destination-list'),
     path('public/destinations/<str:slug>/', PublicDestinationBySlugView.as_view(), name='public-destination-by-slug'),

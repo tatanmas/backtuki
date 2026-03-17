@@ -176,13 +176,19 @@ class GroupNotificationService:
             True if notification sent successfully
         """
         car = getattr(reservation, 'car', None)
+        accommodation = getattr(reservation, 'accommodation', None)
         if car:
             from apps.whatsapp.services.car_operator_service import CarOperatorService
             group_info = CarOperatorService.get_car_whatsapp_group(car)
+        elif accommodation:
+            from apps.whatsapp.services.accommodation_operator_service import (
+                AccommodationOperatorService,
+            )
+            group_info = AccommodationOperatorService.get_accommodation_whatsapp_group(accommodation)
         else:
             experience = reservation.experience
             if not experience:
-                logger.warning(f"Reservation {reservation.id} has no experience")
+                logger.warning(f"Reservation {reservation.id} has no product target")
                 return False
             group_info = GroupNotificationService.get_group_for_experience(experience)
         
@@ -210,6 +216,52 @@ class GroupNotificationService:
             return True
         except Exception as e:
             logger.error(f"Error sending notification to group {group_id}: {e}")
+            return False
+
+    @staticmethod
+    def send_free_tour_booking_notification(
+        experience: Experience,
+        first_name: str,
+        last_name: str,
+        email: str,
+        phone: str,
+        participants_count: int,
+        instance_start_datetime,
+        language: str,
+    ) -> bool:
+        """
+        Send a short notification to the experience's WhatsApp group when a new free tour
+        booking is created. Only sends if experience.notify_whatsapp_group_on_booking is True
+        and a group is linked.
+        """
+        if not getattr(experience, 'notify_whatsapp_group_on_booking', False):
+            return False
+        if not experience.is_free_tour:
+            return False
+        group_info = ExperienceOperatorService.get_experience_whatsapp_group(experience)
+        if not group_info:
+            logger.debug(f"No WhatsApp group for experience {experience.id}, skip free tour booking notify")
+            return False
+        group_id = group_info.get('chat_id')
+        if not group_id:
+            return False
+        lang_label = 'Español' if language == 'es' else 'English'
+        dt_str = instance_start_datetime.strftime('%d/%m/%Y %H:%M') if hasattr(instance_start_datetime, 'strftime') else str(instance_start_datetime)
+        message = (
+            f"📋 Nueva reserva free tour: {experience.title}\n"
+            f"👤 {first_name} {last_name}\n"
+            f"📧 {email}\n"
+            f"📱 {phone or '—'}\n"
+            f"👥 {participants_count} persona(s)\n"
+            f"📅 {dt_str} ({lang_label})"
+        )
+        try:
+            service = WhatsAppWebService()
+            service.send_message('', message, group_id=group_id)
+            logger.info(f"✅ Sent free tour booking notification to group {group_id} for experience {experience.id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error sending free tour booking notification to group {group_id}: {e}")
             return False
     
     @staticmethod

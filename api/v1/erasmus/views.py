@@ -22,7 +22,9 @@ from apps.erasmus.models import (
     ErasmusRegistroBackgroundSlide,
     ErasmusSlideConfig,
     ErasmusActivity,
+    ErasmusActivityExtraField,
     ErasmusActivityInstance,
+    ErasmusActivityInstanceRegistration,
     ErasmusActivityReview,
     ErasmusLocalPartner,
     ErasmusMagicLink,
@@ -192,9 +194,9 @@ class ErasmusActivityDetailView(APIView):
 
 
 def _activity_detail_payload(act, instance_list):
-    """Build the same payload for activity detail (by id or by slug). Uses display data when activity is linked to an Experience."""
+    """Build the same payload for activity detail (by id or by slug). Uses display data when activity is linked to an Experience. Includes extra_fields for inscription form."""
     display = get_activity_display_data(act)
-    return {
+    payload = {
         "id": str(act.id),
         "slug": act.slug,
         "experienceId": str(act.experience_id) if act.experience_id else None,
@@ -214,6 +216,10 @@ def _activity_detail_payload(act, instance_list):
         "detailLayout": getattr(act, "detail_layout", "default") or "default",
         "instances": instance_list,
     }
+    extra_fields = _serialize_activity_extra_fields(act)
+    if extra_fields:
+        payload["extra_fields"] = extra_fields
+    return payload
 
 
 class ErasmusActivityDetailBySlugView(APIView):
@@ -338,6 +344,7 @@ class ErasmusActivityInstanceDetailView(APIView):
             "capacity": getattr(inst, "capacity", None),
             "is_agotado": getattr(inst, "is_agotado", False),
             "isPast": inst.is_past,
+            "extra_fields": _serialize_activity_extra_fields(act),
         })
 
 
@@ -552,6 +559,18 @@ class ErasmusRegisterView(APIView):
     def post(self, request):
         payload = request.data.copy()
         flow_id = payload.pop("flow_id", None)
+        # Ensure every registration has a flow for observability (e.g. WhatsApp result)
+        if flow_id is None:
+            try:
+                flow = FlowLogger.start_flow(
+                    "erasmus_registration",
+                    user=None,
+                    metadata={"source": "register_no_flow_id"},
+                )
+                if flow and flow.flow_id:
+                    flow_id = flow.flow_id
+            except Exception as e:
+                logger.warning("Erasmus: start_flow when no flow_id failed (non-blocking): %s", e)
         source = request.query_params.get("source") or payload.get("source_slug")
         if source and not payload.get("source_slug"):
             payload["source_slug"] = source
@@ -732,6 +751,121 @@ class ErasmusCommunityProfileUpdateView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+def _lead_profile_photo_url(request, lead):
+    """Build absolute URL for lead's profile_photo if set."""
+    if not lead or not lead.profile_photo:
+        return None
+    raw = lead.profile_photo.url
+    return request.build_absolute_uri(raw) if raw and not raw.startswith(("http://", "https://")) else raw
+
+
+class ErasmusMyCommunityProfileView(APIView):
+    """
+    GET/POST /api/v1/erasmus/my-community-profile/
+    Authenticated user's Erasmus community profile (from linked lead).
+    GET: return current profile. POST: update (multipart: photo + form fields).
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def _get_lead(self, request):
+        lead = getattr(request.user, "erasmus_leads", None)
+        if lead is None:
+            return None
+        return lead.order_by("-created_at").first()
+
+    def get(self, request):
+        lead = self._get_lead(request)
+        if not lead:
+            return Response(
+                {"detail": "No tienes un perfil Erasmus vinculado."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response({
+            "lead_id": str(lead.id),
+            "opt_in_community": bool(lead.opt_in_community),
+            "profile_photo_url": _lead_profile_photo_url(request, lead),
+            "community_bio": (lead.community_bio or "").strip(),
+            "instagram": (lead.instagram or "").strip().replace("@", ""),
+            "languages_spoken": list(lead.languages_spoken) if lead.languages_spoken else [],
+            "community_show_dates": bool(lead.community_show_dates),
+            "community_show_age": bool(lead.community_show_age),
+            "community_show_whatsapp": bool(lead.community_show_whatsapp),
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        lead = self._get_lead(request)
+        if not lead:
+            return Response(
+                {"detail": "No tienes un perfil Erasmus vinculado."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        update_fields = ["updated_at"]
+
+        # opt_in_community
+        opt_in = request.data.get("opt_in_community")
+        if opt_in is not None:
+            lead.opt_in_community = bool(opt_in) if not isinstance(opt_in, str) else opt_in.lower() in ("true", "1", "yes")
+            update_fields.append("opt_in_community")
+
+        # community_bio
+        bio = request.data.get("community_bio") or request.data.get("bio")
+        if bio is not None:
+            lead.community_bio = (bio if isinstance(bio, str) else str(bio))[:2000]
+            update_fields.append("community_bio")
+
+        # instagram (without @)
+        instagram = request.data.get("instagram")
+        if instagram is not None:
+            lead.instagram = (instagram if isinstance(instagram, str) else str(instagram)).strip().replace("@", "")[:100]
+            update_fields.append("instagram")
+
+        # profile_photo
+        photo = request.FILES.get("profile_photo")
+        if photo:
+            if photo.size > 5 * 1024 * 1024:
+                return Response({"detail": "La imagen no debe superar 5 MB."}, status=status.HTTP_400_BAD_REQUEST)
+            lead.profile_photo = photo
+            update_fields.append("profile_photo")
+
+        # languages_spoken
+        languages_spoken = request.data.get("languages_spoken")
+        if languages_spoken is not None:
+            if isinstance(languages_spoken, str):
+                import json
+                try:
+                    languages_spoken = json.loads(languages_spoken)
+                except (TypeError, ValueError):
+                    languages_spoken = []
+            if isinstance(languages_spoken, list):
+                lead.languages_spoken = [str(x) for x in languages_spoken if x][:20]
+            update_fields.append("languages_spoken")
+
+        # visibility flags
+        for field, key in [
+            ("community_show_dates", "community_show_dates"),
+            ("community_show_age", "community_show_age"),
+            ("community_show_whatsapp", "community_show_whatsapp"),
+        ]:
+            val = request.data.get(key)
+            if val is not None:
+                setattr(lead, field, bool(val) if not isinstance(val, str) else val.lower() in ("true", "1", "yes"))
+                update_fields.append(field)
+
+        lead.save(update_fields=update_fields)
+        return Response({
+            "success": True,
+            "opt_in_community": lead.opt_in_community,
+            "community_bio": lead.community_bio or "",
+            "instagram": (lead.instagram or "").strip(),
+            "profile_photo_url": _lead_profile_photo_url(request, lead),
+            "languages_spoken": lead.languages_spoken or [],
+            "community_show_dates": lead.community_show_dates,
+            "community_show_age": lead.community_show_age,
+            "community_show_whatsapp": lead.community_show_whatsapp,
+        }, status=status.HTTP_200_OK)
+
+
 class ErasmusRequestWhatsAppApprovalView(APIView):
     """POST /api/v1/erasmus/leads/<lead_id>/request-whatsapp-approval/ – marca que el lead pidió aprobación en el grupo."""
     permission_classes = [AllowAny]
@@ -821,17 +955,65 @@ class ErasmusExpressInterestView(APIView):
                     {"success": False, "detail": "No quedan cupos para esta fecha."},
                     status=status.HTTP_200_OK,
                 )
+        activity = instance.activity
+        extra_fields = list(
+            ErasmusActivityExtraField.objects.filter(activity=activity, is_active=True).order_by("order", "id")
+        )
+        raw_extra = request.data.get("extra_data")
+        if not isinstance(raw_extra, dict):
+            raw_extra = {}
+        # Validate required activity extra fields
+        for ef in extra_fields:
+            if ef.required:
+                val = raw_extra.get(ef.field_key)
+                if val is None:
+                    return Response(
+                        {"detail": f"Falta el campo requerido: {ef.label}."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if isinstance(val, list):
+                    if len(val) == 0:
+                        return Response(
+                            {"detail": f"Falta el campo requerido: {ef.label}."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                elif isinstance(val, str) and not val.strip():
+                    return Response(
+                        {"detail": f"Falta el campo requerido: {ef.label}."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+        allowed_keys = {ef.field_key for ef in extra_fields}
+        extra_data = {k: v for k, v in raw_extra.items() if k in allowed_keys and v is not None}
+        # Normalize values (e.g. list for multiselect, str for others)
+        for k in list(extra_data.keys()):
+            v = extra_data[k]
+            if isinstance(v, list):
+                extra_data[k] = v
+            else:
+                extra_data[k] = str(v).strip() if v is not None else ""
         experiences = list(lead.interested_experiences or [])
         if activity_id not in experiences:
             experiences.append(activity_id)
             lead.interested_experiences = experiences
             lead.save(update_fields=["interested_experiences", "updated_at"])
+        reg, _ = ErasmusActivityInstanceRegistration.objects.update_or_create(
+            lead=lead,
+            instance=instance,
+            defaults={"extra_data": extra_data},
+        )
+        # Free activities: create order+link so WhatsApp send is tracked and "Ver pedido" is available
+        if not getattr(activity, "is_paid", False) or not (getattr(activity, "price", None) and activity.price > 0):
             try:
-                from apps.erasmus.partner_notifications import notify_activity_inscription, send_activity_instance_whatsapp_to_lead
-                notify_activity_inscription(lead, instance)
-                send_activity_instance_whatsapp_to_lead(lead, instance)
+                from apps.erasmus.payment_link_service import get_or_create_order_for_free_inscription
+                get_or_create_order_for_free_inscription(lead, instance)
             except Exception as e:
-                logger.exception("Erasmus: notify_activity_inscription / send_whatsapp_to_lead failed: %s", e)
+                logger.exception("Erasmus: get_or_create_order_for_free_inscription failed: %s", e)
+        try:
+            from apps.erasmus.partner_notifications import notify_activity_inscription, send_activity_instance_whatsapp_to_lead
+            notify_activity_inscription(lead, instance)
+            send_activity_instance_whatsapp_to_lead(lead, instance)
+        except Exception as e:
+            logger.exception("Erasmus: notify_activity_inscription / send_whatsapp_to_lead failed: %s", e)
         return Response(
             {
                 "success": True,
@@ -839,6 +1021,46 @@ class ErasmusExpressInterestView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+def _serialize_activity_extra_fields(activity):
+    """List of extra field definitions for public form (activity inscription).
+    Options may have optional cutoff_iso (ISO datetime in server timezone, or legacy UTC with Z).
+    Options past cutoff are excluded. All comparisons use server timezone (America/Santiago).
+    """
+    from django.utils.dateparse import parse_datetime
+
+    server_tz = timezone.get_current_timezone()
+    qs = ErasmusActivityExtraField.objects.filter(activity=activity, is_active=True).order_by("order", "id")
+    now = timezone.now()
+    result = []
+    for ef in qs:
+        raw_options = ef.options or []
+        options = []
+        for opt in raw_options:
+            if not isinstance(opt, dict):
+                continue
+            cutoff_iso = opt.get("cutoff_iso")
+            if cutoff_iso:
+                cutoff_dt = parse_datetime(cutoff_iso)
+                if cutoff_dt:
+                    if timezone.is_naive(cutoff_dt):
+                        cutoff_dt = timezone.make_aware(cutoff_dt, server_tz)
+                    else:
+                        cutoff_dt = cutoff_dt.astimezone(server_tz)
+                    if now >= cutoff_dt:
+                        continue
+            options.append({"value": opt.get("value", ""), "label": opt.get("label", "")})
+        result.append({
+            "field_key": ef.field_key,
+            "label": ef.label,
+            "type": ef.type,
+            "required": ef.required,
+            "placeholder": ef.placeholder or "",
+            "help_text": ef.help_text or "",
+            "options": options,
+        })
+    return result
 
 
 def _get_timeline_entry_payload(entry_id):
@@ -892,6 +1114,7 @@ def _get_timeline_entry_payload(entry_id):
         "instructions_en": getattr(inst, "instructions_en", "") or "",
         "whatsapp_message_es": getattr(inst, "whatsapp_message_es", "") or "",
         "whatsapp_message_en": getattr(inst, "whatsapp_message_en", "") or "",
+        "extra_fields": _serialize_activity_extra_fields(act),
     }
 
 

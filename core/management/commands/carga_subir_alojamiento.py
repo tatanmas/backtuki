@@ -18,6 +18,8 @@ from django.db import transaction
 from django.contrib.auth import get_user_model
 from django.utils.text import slugify
 
+from apps.accommodations.public_code_service import ensure_public_code_on_publish
+
 User = get_user_model()
 
 
@@ -50,6 +52,31 @@ def _parse_review_date(value):
             except (ValueError, TypeError, IndexError):
                 pass
     return None
+
+
+def _bathrooms_from_payload(payload):
+    """
+    Resolve (full_bathrooms, half_bathrooms) from payload.
+    Accepts full_bathrooms + half_bathrooms, or legacy bathrooms (int or float 4.5 → 4 full + 1 half).
+    """
+    if "full_bathrooms" in payload or "half_bathrooms" in payload:
+        full = max(0, int(payload.get("full_bathrooms", 1)))
+        half = max(0, int(payload.get("half_bathrooms", 0)))
+        return full, half
+    b = payload.get("bathrooms", 1)
+    if b is None:
+        return 1, 0
+    try:
+        b = float(b)
+    except (TypeError, ValueError):
+        return 1, 0
+    if b <= 0:
+        return 0, 0
+    if b == int(b):
+        return max(0, int(b)), 0
+    full = int(b)
+    half = 1
+    return max(0, full), max(0, half)
 
 
 class Command(BaseCommand):
@@ -213,7 +240,7 @@ class Command(BaseCommand):
         city = (payload.get("city") or "")[:255]
         guests = max(1, int(payload.get("guests") or 2))
         bedrooms = max(0, int(payload.get("bedrooms") or 1))
-        bathrooms = max(0, int(payload.get("bathrooms") or 1))
+        full_bathrooms, half_bathrooms = _bathrooms_from_payload(payload)
         beds = payload.get("beds")
         if beds is not None:
             beds = max(0, int(beds))
@@ -253,7 +280,8 @@ class Command(BaseCommand):
                 acc.city = city
                 acc.guests = guests
                 acc.bedrooms = bedrooms
-                acc.bathrooms = bathrooms
+                acc.full_bathrooms = full_bathrooms
+                acc.half_bathrooms = half_bathrooms
                 acc.beds = beds
                 acc.price = price
                 acc.currency = currency
@@ -264,6 +292,10 @@ class Command(BaseCommand):
                 acc.rating_avg = rating_avg
                 acc.review_count = review_count
                 acc.save()
+                if publish and acc.status == "published":
+                    pub_fields = ensure_public_code_on_publish(acc)
+                    if pub_fields:
+                        acc.save(update_fields=pub_fields)
                 self.stdout.write(self.style.SUCCESS(f"Alojamiento actualizado: {acc.title} (id={acc.id}, slug={acc.slug})"))
             else:
                 acc = Accommodation(
@@ -282,7 +314,8 @@ class Command(BaseCommand):
                     city=city,
                     guests=guests,
                     bedrooms=bedrooms,
-                    bathrooms=bathrooms,
+                    full_bathrooms=full_bathrooms,
+                    half_bathrooms=half_bathrooms,
                     beds=beds,
                     price=price,
                     currency=currency,
@@ -294,6 +327,10 @@ class Command(BaseCommand):
                     review_count=review_count,
                 )
                 acc.save()
+                if publish and acc.status == "published":
+                    pub_fields = ensure_public_code_on_publish(acc)
+                    if pub_fields:
+                        acc.save(update_fields=pub_fields)
                 self.stdout.write(self.style.SUCCESS(f"Alojamiento creado: {acc.title} (id={acc.id}, slug={acc.slug})"))
 
             # Reseñas solo al crear (con --update no se vuelven a crear)

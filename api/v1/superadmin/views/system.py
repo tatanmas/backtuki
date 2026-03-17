@@ -14,14 +14,18 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
-from core.models import CeleryTaskLog
+from core.models import CeleryTaskLog, PlatformDeploy
 from core.uptime import get_uptime_seconds
 from core.uptime_service import (
     get_uptime_report,
     get_last_heartbeat,
+    get_last_heartbeat_source,
     get_current_run_start,
+    record_heartbeat_if_throttled,
     DOWNTIME_GAP_SECONDS,
 )
+
+from core.email_health import check_smtp_connection, check_email_send
 
 from ..permissions import IsSuperUser
 
@@ -64,6 +68,7 @@ def _platform_uptime_payload():
         return {
             "uptime_from_db": True,
             "last_heartbeat_at": last_hb.isoformat() if last_hb else None,
+            "last_heartbeat_source": get_last_heartbeat_source(),
             "is_currently_up": is_currently_up,
             "current_run_started_at": current_run_start.isoformat() if current_run_start else None,
             "current_run_seconds": round(current_run_seconds, 1) if current_run_seconds is not None else None,
@@ -77,6 +82,7 @@ def _platform_uptime_payload():
         return {
             "uptime_from_db": False,
             "last_heartbeat_at": None,
+            "last_heartbeat_source": None,
             "is_currently_up": None,
             "current_run_started_at": None,
             "current_run_seconds": None,
@@ -116,6 +122,16 @@ def platform_status(request):
         except Exception:
             redis_ok = False
 
+        # Email: quick SMTP connection check (no send) so dashboard shows if mail is reachable
+        email_ok = None
+        email_message = None
+        try:
+            email_ok, email_message = check_smtp_connection()
+        except Exception as e:
+            logger.debug("Email connection check failed: %s", e)
+            email_ok = False
+            email_message = str(e)
+
         payload = {
             "ok": True,
             "version": version,
@@ -124,8 +140,30 @@ def platform_status(request):
             "uptime_display": _format_uptime(uptime_seconds) if uptime_seconds is not None else "—",
             "database_ok": db_ok,
             "redis_ok": redis_ok,
+            "email_ok": email_ok,
+            "email_message": email_message,
         }
         payload.update(_platform_uptime_payload())
+
+        # Fallback heartbeat: si no hay heartbeats recientes (Celery/health no escribieron), registrar uno (máx 1 cada 5 min)
+        if db_ok and payload.get("is_currently_up") is False:
+            try:
+                if record_heartbeat_if_throttled(min_interval_seconds=300, source="platform_status"):
+                    payload.update(_platform_uptime_payload())
+            except Exception as e:
+                logger.debug("Heartbeat fallback failed: %s", e)
+
+        # Deploy stats desde BD
+        try:
+            deploys_count = PlatformDeploy.objects.count()
+            last_deploy = PlatformDeploy.objects.order_by("-deployed_at").first()
+            payload["deploys_count"] = deploys_count
+            payload["last_deploy_at"] = last_deploy.deployed_at.isoformat() if last_deploy else None
+        except Exception as e:
+            logger.debug("Deploy stats failed: %s", e)
+            payload["deploys_count"] = 0
+            payload["last_deploy_at"] = None
+
         return Response(payload)
     except Exception as e:
         logger.exception("platform_status error")
@@ -180,6 +218,70 @@ def platform_uptime_report(request):
             {"ok": False, "message": str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+
+@api_view(['GET'])
+@permission_classes([IsSuperUser])
+def deploys_list(request):
+    """
+    Lista de deploys registrados en BD (paginated).
+    GET /api/v1/superadmin/deploys/?page=1&page_size=20
+    """
+    try:
+        page = max(1, int(request.GET.get("page", 1)))
+        page_size = max(1, min(100, int(request.GET.get("page_size", 20))))
+        offset = (page - 1) * page_size
+
+        qs = PlatformDeploy.objects.order_by("-deployed_at")
+        total = qs.count()
+        items = list(qs[offset : offset + page_size])
+
+        return Response({
+            "ok": True,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "results": [
+                {
+                    "id": str(d.id),
+                    "deployed_at": d.deployed_at.isoformat(),
+                    "version": d.version or "",
+                    "source": d.source or "startup",
+                }
+                for d in items
+            ],
+        })
+    except Exception as e:
+        logger.exception("deploys_list error")
+        return Response(
+            {"ok": False, "message": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperUser])
+def email_health_check(request):
+    """
+    Check if the backend can send email (SMTP connect + optional test send).
+    GET /api/v1/superadmin/email-health-check/
+    Query params:
+      - skip_send=1: only test SMTP connection (faster, no email sent).
+      - recipient=email: send test email to this address (default: same as FROM, e.g. noreply@tuki.cl).
+    Returns: ok, message, detail, recipient_used. Same account can then verify in webmail.
+    """
+    try:
+        skip_send = request.GET.get("skip_send", "").strip().lower() in ("1", "true", "yes")
+        recipient = request.GET.get("recipient", "").strip() or None
+        result = check_email_send(recipient=recipient, skip_send=skip_send)
+        status_code = status.HTTP_200_OK if result["ok"] else status.HTTP_503_SERVICE_UNAVAILABLE
+        return Response(result, status=status_code)
+    except Exception as e:
+        logger.exception("email_health_check error")
+        return Response(
+            {"ok": False, "message": "Check failed", "detail": str(e), "recipient_used": None},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
 
 @api_view(['GET'])
 @permission_classes([IsSuperUser])  # ENTERPRISE: Solo superusers

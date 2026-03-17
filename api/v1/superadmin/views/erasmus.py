@@ -8,6 +8,8 @@ from datetime import date, datetime, timedelta
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.http import HttpResponse
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework import status, viewsets
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -22,13 +24,16 @@ from apps.erasmus.models import (
     ErasmusLocalPartner,
     ErasmusTimelineItem,
     ErasmusActivity,
+    ErasmusActivityExtraField,
     ErasmusActivityInstance,
+    ErasmusActivityInstanceRegistration,
     ErasmusActivityPublicLink,
     ErasmusActivityReview,
     ErasmusActivityInscriptionPayment,
     ErasmusWhatsAppGroup,
     ErasmusPartnerNotificationConfig,
     ErasmusActivityNotificationConfig,
+    ErasmusWelcomeMessageConfig,
 )
 from apps.whatsapp.models import WhatsAppChat
 from apps.media.models import MediaAsset
@@ -183,6 +188,8 @@ def _lead_to_dict(lead):
         "community_show_dates": getattr(lead, "community_show_dates", True),
         "community_show_age": getattr(lead, "community_show_age", True),
         "community_show_whatsapp": getattr(lead, "community_show_whatsapp", False),
+        "user_id": str(lead.user_id) if lead.user_id else None,
+        "is_activated": bool(lead.user_id),
     }
 
 
@@ -421,7 +428,14 @@ class ErasmusLeadDetailView(APIView):
             lead = ErasmusLead.objects.get(id=lead_id)
         except (ErasmusLead.DoesNotExist, ValueError):
             return Response({"detail": "Lead no encontrado."}, status=status.HTTP_404_NOT_FOUND)
-        return Response(_lead_to_dict(lead))
+        extra_fields_meta = list(
+            ErasmusExtraField.objects.filter(is_active=True).order_by("order", "id").values("field_key", "label")
+        )
+        for key, label in FIXED_EXTRA_KEYS_META:
+            extra_fields_meta.append({"field_key": key, "label": label})
+        payload = _lead_to_dict(lead)
+        payload["extra_fields_meta"] = extra_fields_meta
+        return Response(payload)
 
     def patch(self, request, lead_id):
         try:
@@ -490,6 +504,20 @@ class ErasmusLeadDetailView(APIView):
             lead.consent_whatsapp = bool(data["consent_whatsapp"])
         if "consent_share_providers" in data:
             lead.consent_share_providers = bool(data["consent_share_providers"])
+        if "form_locale" in data:
+            lead.form_locale = (data["form_locale"] or "").strip()[:10] or "es"
+        if "opt_in_community" in data:
+            lead.opt_in_community = bool(data["opt_in_community"])
+        if "community_bio" in data:
+            lead.community_bio = (data["community_bio"] or "").strip()
+        if "languages_spoken" in data and isinstance(data["languages_spoken"], list):
+            lead.languages_spoken = [str(x)[:20] for x in data["languages_spoken"]]
+        if "community_show_dates" in data:
+            lead.community_show_dates = bool(data["community_show_dates"])
+        if "community_show_age" in data:
+            lead.community_show_age = bool(data["community_show_age"])
+        if "community_show_whatsapp" in data:
+            lead.community_show_whatsapp = bool(data["community_show_whatsapp"])
         lead.completion_status = "complete"
         update_fields = [
             "first_name", "last_name", "nickname", "birth_date", "country", "city", "email",
@@ -499,6 +527,8 @@ class ErasmusLeadDetailView(APIView):
             "has_accommodation_in_chile", "wants_rumi4students_contact",
             "destinations", "interested_experiences", "interests", "extra_data",
             "accept_tc_erasmus", "accept_privacy_erasmus", "consent_email", "consent_whatsapp", "consent_share_providers",
+            "form_locale", "opt_in_community", "community_bio", "languages_spoken",
+            "community_show_dates", "community_show_age", "community_show_whatsapp",
             "completion_status", "updated_at",
         ]
         if "is_suspended" in data:
@@ -553,6 +583,93 @@ class ErasmusLeadWelcomeMessageView(APIView):
             "message": message,
             "magic_link_url": magic_link_url,
             "phone": phone or "",
+        })
+
+
+# Placeholders available in welcome message templates (same as in access_code_service)
+ERASMUS_WELCOME_PLACEHOLDERS = [
+    {"key": "first_name", "description": "Nombre del lead"},
+    {"key": "link_plataforma", "description": "URL del enlace mágico para acceder a la cuenta"},
+    {"key": "magic_link_url", "description": "Igual que link_plataforma"},
+    {"key": "email", "description": "Correo del lead"},
+]
+
+
+class ErasmusWelcomeMessageTemplatesView(APIView):
+    """
+    GET /api/v1/superadmin/erasmus/welcome-message-templates/
+    Returns current templates by locale (from DB or default) and list of placeholders.
+
+    PATCH /api/v1/superadmin/erasmus/welcome-message-templates/
+    Body: { "messages": { "es": "...", "en": "...", ... } }
+    Updates stored templates. Only provided locales are updated; empty string clears that locale (fallback to default).
+    """
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        from apps.erasmus.access_code_service import WELCOME_LOCALES, WELCOME_MESSAGES_DEFAULT
+
+        config = ErasmusWelcomeMessageConfig.objects.filter(
+            config_key=ErasmusWelcomeMessageConfig.CONFIG_KEY
+        ).first()
+        stored = (config.messages_by_locale if config else None) or {}
+        # Merge: for each locale return stored if non-empty, else default
+        messages = {}
+        for loc in WELCOME_LOCALES:
+            custom = (stored.get(loc) or "").strip()
+            if custom:
+                messages[loc] = custom
+            else:
+                messages[loc] = WELCOME_MESSAGES_DEFAULT.get(loc) or WELCOME_MESSAGES_DEFAULT.get("es") or ""
+
+        return Response({
+            "messages": messages,
+            "locales": list(WELCOME_LOCALES),
+            "placeholders": ERASMUS_WELCOME_PLACEHOLDERS,
+        })
+
+    def patch(self, request):
+        from apps.erasmus.access_code_service import WELCOME_LOCALES
+
+        data = request.data or {}
+        messages_input = data.get("messages")
+        if not isinstance(messages_input, dict):
+            return Response(
+                {"detail": "Se requiere 'messages' (objeto locale -> texto)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        config, _ = ErasmusWelcomeMessageConfig.objects.get_or_create(
+            config_key=ErasmusWelcomeMessageConfig.CONFIG_KEY,
+            defaults={"messages_by_locale": {}},
+        )
+        current = dict(config.messages_by_locale or {})
+        for loc in WELCOME_LOCALES:
+            if loc in messages_input:
+                val = messages_input[loc]
+                if isinstance(val, str):
+                    if val.strip():
+                        current[loc] = val.strip()
+                    else:
+                        current.pop(loc, None)
+        config.messages_by_locale = current
+        config.save(update_fields=["messages_by_locale", "updated_at"])
+
+        # Return same shape as GET
+        stored = config.messages_by_locale or {}
+        messages = {}
+        from apps.erasmus.access_code_service import WELCOME_MESSAGES_DEFAULT
+        for loc in WELCOME_LOCALES:
+            custom = (stored.get(loc) or "").strip()
+            if custom:
+                messages[loc] = custom
+            else:
+                messages[loc] = WELCOME_MESSAGES_DEFAULT.get(loc) or WELCOME_MESSAGES_DEFAULT.get("es") or ""
+
+        return Response({
+            "messages": messages,
+            "locales": list(WELCOME_LOCALES),
+            "placeholders": ERASMUS_WELCOME_PLACEHOLDERS,
         })
 
 
@@ -1101,6 +1218,16 @@ def create_erasmus_activity_from_json(request):
         )
     experience_id = validated.pop("experience_id", None)
     images = _normalize_images(validated.get("images") or [])
+    from decimal import Decimal as Dec
+    price_val = validated.get("price")
+    if price_val is not None and str(price_val).strip() != "":
+        try:
+            price_decimal = Dec(str(price_val))
+        except Exception:
+            price_decimal = None
+    else:
+        price_decimal = None
+
     act = ErasmusActivity(
         title_es=validated["title_es"],
         title_en=validated.get("title_en", ""),
@@ -1120,6 +1247,8 @@ def create_erasmus_activity_from_json(request):
         display_order=validated.get("display_order", 0),
         is_active=validated.get("is_active", True),
         detail_layout=validated.get("detail_layout", "default") or "default",
+        is_paid=validated.get("is_paid", False),
+        price=price_decimal,
     )
     if experience_id:
         act.experience_id = experience_id
@@ -1444,19 +1573,37 @@ class ErasmusActivityInstanceDetailView(APIView):
 
 
 class ErasmusActivityInstanceInscriptionsView(APIView):
-    """GET /api/v1/superadmin/erasmus/activities/<activity_id>/instances/<instance_id>/inscriptions/ – list leads inscribed for this instance."""
+    """GET /api/v1/superadmin/erasmus/activities/<activity_id>/instances/<instance_id>/inscriptions/ – list leads inscribed for this instance. ?format=csv for CSV export (includes extra_fields columns)."""
     permission_classes = [IsSuperUser]
 
     def get(self, request, activity_id, instance_id):
         try:
-            inst = ErasmusActivityInstance.objects.get(id=instance_id, activity_id=activity_id)
+            inst = ErasmusActivityInstance.objects.select_related("activity").get(
+                id=instance_id, activity_id=activity_id
+            )
         except ErasmusActivityInstance.DoesNotExist:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        leads = ErasmusLead.objects.filter(
-            interested_experiences__contains=[str(inst.id)]
-        ).order_by("-updated_at")
-        result = [
-            {
+            return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
+        act = inst.activity
+        extra_field_defs = list(
+            ErasmusActivityExtraField.objects.filter(activity=act, is_active=True).order_by("order", "id")
+        )
+        lead_ids = list(
+            ErasmusLead.objects.filter(
+                interested_experiences__contains=[str(inst.id)]
+            ).values_list("id", flat=True)
+        )
+        registrations_by_lead = {
+            r.lead_id: r
+            for r in ErasmusActivityInstanceRegistration.objects.filter(
+                instance=inst, lead_id__in=lead_ids
+            ).select_related("lead")
+        }
+        leads = ErasmusLead.objects.filter(id__in=lead_ids).order_by("-updated_at")
+        result = []
+        for lead in leads:
+            reg = registrations_by_lead.get(lead.id)
+            extra_data = (reg.extra_data if reg else None) or {}
+            result.append({
                 "id": str(lead.id),
                 "first_name": lead.first_name or "",
                 "last_name": lead.last_name or "",
@@ -1465,9 +1612,41 @@ class ErasmusActivityInstanceInscriptionsView(APIView):
                 "phone_number": lead.phone_number or "",
                 "instagram": lead.instagram or "",
                 "updated_at": lead.updated_at.isoformat() if lead.updated_at else None,
-            }
-            for lead in leads
-        ]
+                "extra_data": extra_data,
+            })
+        if request.query_params.get("format") == "csv":
+            response = HttpResponse(content_type="text/csv; charset=utf-8")
+            response["Content-Disposition"] = (
+                f'attachment; filename="inscritos_{act.slug}_{inst.id}_{date.today().isoformat()}.csv"'
+            )
+            response.write("\ufeff")
+            writer = csv.writer(response)
+            header = [
+                "Nombre", "Apellido", "Email", "Código teléfono", "Teléfono", "Instagram", "Fecha actualización"
+            ]
+            for ef in extra_field_defs:
+                header.append(ef.label)
+            writer.writerow(header)
+            for item in result:
+                row = [
+                    item["first_name"],
+                    item["last_name"],
+                    item["email"],
+                    item["phone_country_code"],
+                    item["phone_number"],
+                    item["instagram"] or "",
+                    item["updated_at"] or "",
+                ]
+                ed = item.get("extra_data") or {}
+                for ef in extra_field_defs:
+                    val = ed.get(ef.field_key)
+                    if isinstance(val, list):
+                        val = ", ".join(str(x) for x in val) if val else ""
+                    else:
+                        val = str(val).strip() if val is not None else ""
+                    row.append(val)
+                writer.writerow(row)
+            return response
         return Response({"inscriptions": result, "count": len(result)})
 
 
@@ -2047,6 +2226,120 @@ class ErasmusExtraFieldViewSet(viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
 
+class ErasmusActivityExtraFieldViewSet(viewsets.ModelViewSet):
+    """CRUD for activity-specific extra fields (inscription form): /api/v1/superadmin/erasmus/activities/<activity_id>/extra-fields/"""
+    permission_classes = [IsSuperUser]
+    lookup_url_kwarg = "pk"
+
+    def get_queryset(self):
+        activity_id = self.kwargs.get("activity_id")
+        if not activity_id:
+            return ErasmusActivityExtraField.objects.none()
+        return ErasmusActivityExtraField.objects.filter(activity_id=activity_id).order_by("order", "id")
+
+    @staticmethod
+    def _normalize_options_cutoff_server_tz(options):
+        """Return options with cutoff_iso in server timezone (YYYY-MM-DDTHH:mm:ss) for form display."""
+        if not options or not isinstance(options, list):
+            return options or []
+        server_tz = timezone.get_current_timezone()
+        result = []
+        for opt in options:
+            if not isinstance(opt, dict):
+                result.append(opt)
+                continue
+            out = dict(opt)
+            cutoff_iso = opt.get("cutoff_iso")
+            if cutoff_iso:
+                dt = parse_datetime(cutoff_iso)
+                if dt:
+                    if timezone.is_naive(dt):
+                        dt = timezone.make_aware(dt, server_tz)
+                    else:
+                        dt = dt.astimezone(server_tz)
+                    out["cutoff_iso"] = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            result.append(out)
+        return result
+
+    def _payload(self, obj):
+        return {
+            "id": obj.id,
+            "field_key": obj.field_key,
+            "label": obj.label,
+            "type": obj.type,
+            "required": obj.required,
+            "placeholder": obj.placeholder or "",
+            "help_text": obj.help_text or "",
+            "order": obj.order,
+            "is_active": obj.is_active,
+            "options": self._normalize_options_cutoff_server_tz(obj.options or []),
+        }
+
+    def list(self, request, *args, **kwargs):
+        activity_id = self.kwargs.get("activity_id")
+        try:
+            ErasmusActivity.objects.get(id=activity_id)
+        except ErasmusActivity.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        items = [self._payload(obj) for obj in self.get_queryset()]
+        return Response(items)
+
+    def create(self, request, *args, **kwargs):
+        activity_id = self.kwargs.get("activity_id")
+        try:
+            activity = ErasmusActivity.objects.get(id=activity_id)
+        except ErasmusActivity.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        data = request.data
+        field_key = (data.get("field_key") or "").strip().lower().replace(" ", "_")
+        if not field_key:
+            return Response({"detail": "field_key required"}, status=status.HTTP_400_BAD_REQUEST)
+        if ErasmusActivityExtraField.objects.filter(activity=activity, field_key=field_key).exists():
+            return Response({"detail": "field_key already exists for this activity"}, status=status.HTTP_400_BAD_REQUEST)
+        obj = ErasmusActivityExtraField.objects.create(
+            activity=activity,
+            label=(data.get("label") or field_key).strip(),
+            field_key=field_key,
+            type=data.get("type", "text"),
+            required=bool(data.get("required", False)),
+            placeholder=(data.get("placeholder") or "")[:255],
+            help_text=(data.get("help_text") or "").strip(),
+            order=int(data.get("order", 0)),
+            is_active=bool(data.get("is_active", True)),
+            options=data.get("options") or [],
+        )
+        return Response(self._payload(obj), status=status.HTTP_201_CREATED)
+
+    def retrieve(self, request, *args, **kwargs):
+        obj = self.get_object()
+        return Response(self._payload(obj))
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        for key in ("label", "type", "required", "placeholder", "help_text", "order", "is_active", "options"):
+            if key in request.data:
+                if key == "order":
+                    obj.order = int(request.data[key])
+                elif key == "is_active":
+                    obj.is_active = bool(request.data[key])
+                elif key == "options":
+                    obj.options = request.data[key] if isinstance(request.data[key], list) else []
+                elif key == "required":
+                    obj.required = bool(request.data[key])
+                else:
+                    setattr(obj, key, request.data[key] if key != "placeholder" else (request.data[key] or "")[:255])
+        if "field_key" in request.data and request.data["field_key"]:
+            fk = request.data["field_key"].strip().lower().replace(" ", "_")
+            if ErasmusActivityExtraField.objects.filter(activity=obj.activity, field_key=fk).exclude(id=obj.id).exists():
+                return Response({"detail": "field_key already exists for this activity"}, status=status.HTTP_400_BAD_REQUEST)
+            obj.field_key = fk
+        obj.save()
+        return Response(self._payload(obj))
+
+    def destroy(self, request, *args, **kwargs):
+        return super().destroy(request, *args, **kwargs)
+
+
 def _local_partner_payload(partner):
     """Build API dict for one ErasmusLocalPartner (includes asset_id, asset_url for media library)."""
     asset_url = None
@@ -2136,3 +2429,52 @@ class ErasmusLocalPartnerViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         return super().destroy(request, *args, **kwargs)
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperUser])
+def erasmus_inscription_payment_exclude_from_revenue(request, payment_id):
+    """
+    POST /api/v1/superadmin/erasmus/inscription-payments/<payment_id>/exclude_from_revenue/
+    Body: { "exclude": true } or { "exclude": false }
+    Marks an Erasmus activity inscription payment as excluded from revenue (cortesía) or included.
+    """
+    try:
+        payment = ErasmusActivityInscriptionPayment.objects.get(id=payment_id)
+    except ErasmusActivityInscriptionPayment.DoesNotExist:
+        return Response(
+            {"success": False, "detail": "Pago de inscripción no encontrado."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    data = request.data or {}
+    exclude = data.get("exclude")
+    if exclude is None:
+        return Response(
+            {"success": False, "detail": "Indica 'exclude': true o false en el body."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    exclude = bool(exclude)
+    if payment.exclude_from_revenue == exclude:
+        return Response(
+            {
+                "success": True,
+                "message": "El pago ya tiene ese estado.",
+                "exclude_from_revenue": payment.exclude_from_revenue,
+            },
+            status=status.HTTP_200_OK,
+        )
+    payment.exclude_from_revenue = exclude
+    payment.save(update_fields=["exclude_from_revenue", "updated_at"])
+    logger.info(
+        "SuperAdmin ErasmusActivityInscriptionPayment id=%s exclude_from_revenue=%s",
+        payment.id,
+        payment.exclude_from_revenue,
+    )
+    return Response(
+        {
+            "success": True,
+            "message": "Excluido del revenue." if exclude else "Incluido en revenue.",
+            "exclude_from_revenue": payment.exclude_from_revenue,
+        },
+        status=status.HTTP_200_OK,
+    )

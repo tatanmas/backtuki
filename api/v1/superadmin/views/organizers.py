@@ -9,7 +9,9 @@ from rest_framework.response import Response
 from decimal import Decimal
 import logging
 
-from apps.organizers.models import Organizer
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from apps.organizers.models import Organizer, OrganizerUser
 
 from ..permissions import IsSuperUser
 
@@ -224,3 +226,67 @@ def update_organizer_service_fee(request, organizer_id):
             'success': False,
             'message': f'Error updating service fee: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperUser])
+def impersonate_organizer(request, organizer_id):
+    """
+    👤 Generar token para impersonar organizador (acceder como el organizador).
+
+    POST /api/v1/superadmin/organizers/{id}/impersonate/
+
+    Returns:
+        access_token, refresh_token y datos del organizador para redirigir al dashboard correcto.
+    """
+    try:
+        organizer = Organizer.objects.get(id=organizer_id)
+    except Organizer.DoesNotExist:
+        return Response({
+            'success': False,
+            'message': 'Organizador no encontrado'
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    org_user = (
+        OrganizerUser.objects.filter(organizer=organizer)
+        .select_related('user')
+        .order_by('-is_admin')
+        .first()
+    )
+    if not org_user or not org_user.user:
+        return Response({
+            'success': False,
+            'message': 'El organizador no tiene usuario asociado'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    user = org_user.user
+    if not user.is_active:
+        return Response({
+            'success': False,
+            'message': 'No se puede impersonar un organizador con usuario inactivo'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    refresh = RefreshToken.for_user(user)
+
+    logger.info(f"✅ [SuperAdmin] Token de impersonación generado para organizador {organizer.name} ({organizer.id})")
+
+    return Response({
+        'success': True,
+        'message': f'Token generado para impersonar a {organizer.name}',
+        'user': {
+            'id': user.id,
+            'email': user.email,
+            'full_name': user.get_full_name(),
+        },
+        'organizer': {
+            'id': str(organizer.id),
+            'name': organizer.name,
+            'has_events_module': organizer.has_events_module,
+            'has_experience_module': organizer.has_experience_module,
+            'has_accommodation_module': organizer.has_accommodation_module,
+        },
+        'tokens': {
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+        },
+    }, status=status.HTTP_200_OK)

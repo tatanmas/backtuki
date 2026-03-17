@@ -85,6 +85,38 @@ class AccommodationOperatorService:
                 "operator": op,
             }
 
+        # 4) Hotel default group (habitación pertenece a un hotel con grupo por defecto)
+        if accommodation.hotel_id:
+            hotel = accommodation.hotel
+            if hotel and getattr(hotel, "default_whatsapp_group_id", None):
+                group = hotel.default_whatsapp_group
+                if group:
+                    op = getattr(group, "assigned_operator", None)
+                    return {
+                        "id": str(group.id),
+                        "chat_id": group.chat_id,
+                        "name": group.name,
+                        "is_override": False,
+                        "source": "hotel_default",
+                        "operator": op,
+                    }
+
+        # 5) Rental hub default group (unidad pertenece a una central)
+        if accommodation.rental_hub_id:
+            hub = accommodation.rental_hub
+            if hub and getattr(hub, "default_whatsapp_group_id", None):
+                group = hub.default_whatsapp_group
+                if group:
+                    op = getattr(group, "assigned_operator", None)
+                    return {
+                        "id": str(group.id),
+                        "chat_id": group.chat_id,
+                        "name": group.name,
+                        "is_override": False,
+                        "source": "rental_hub_default",
+                        "operator": op,
+                    }
+
         return None
 
     @staticmethod
@@ -123,3 +155,20 @@ class AccommodationOperatorService:
             whatsapp_group.name,
         )
         return binding
+
+    @staticmethod
+    @transaction.atomic
+    def remove_accommodation_group_binding(accommodation: Accommodation, only_overrides: bool = True) -> bool:
+        """Deactivate group binding(s) for an accommodation (so it falls back to hotel/hub default)."""
+        if not accommodation:
+            raise ValueError("Accommodation is required")
+        if only_overrides:
+            bindings = accommodation.whatsapp_group_bindings.filter(is_active=True, is_override=True)
+        else:
+            bindings = accommodation.whatsapp_group_bindings.filter(is_active=True)
+        count = bindings.count()
+        if count > 0:
+            bindings.update(is_active=False)
+            logger.info("Removed %s group binding(s) for accommodation '%s'", count, accommodation.title)
+            return True
+        return False

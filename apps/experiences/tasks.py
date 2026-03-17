@@ -236,3 +236,52 @@ def send_review_invite_email(self, reservation_id: str):
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc, countdown=self.default_retry_delay * (2 ** self.request.retries))
         raise
+
+
+def send_tour_instance_cancellation_emails(instance):
+    """
+    Send cancellation email to each confirmed TourBooking for the given TourInstance.
+    Caller should have already set instance.status = 'cancelled' and saved.
+    Returns dict with sent_count and errors.
+    """
+    from django.core.mail import send_mail
+    from django.template.loader import render_to_string
+    from django.conf import settings
+    from django.utils import timezone
+
+    bookings = list(
+        instance.bookings.filter(status='confirmed').select_related('tour_instance', 'tour_instance__experience')
+    )
+    if not bookings:
+        return {'sent_count': 0, 'errors': []}
+    experience = instance.experience
+    experience_title = experience.title
+    start_datetime = timezone.localtime(instance.start_datetime).strftime('%d/%m/%Y a las %H:%M')
+    language_name = instance.get_language_display() if instance.language else 'Español'
+    sent_count = 0
+    errors = []
+    for booking in bookings:
+        try:
+            customer_name = f"{booking.first_name} {booking.last_name}".strip() or 'Cliente'
+            context = {
+                'customer_name': customer_name,
+                'experience_title': experience_title,
+                'start_datetime': start_datetime,
+                'language_name': language_name,
+            }
+            html = render_to_string('emails/experiences/cancellation.html', context)
+            subject = f"Tour cancelado: {experience_title} - Tuki"
+            send_mail(
+                subject=subject,
+                message=f"Hola {customer_name}, el tour '{experience_title}' del {start_datetime} ha sido cancelado.",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[booking.email],
+                html_message=html,
+                fail_silently=False,
+            )
+            sent_count += 1
+            logger.info(f"[CANCEL_NOTIFY] Cancellation email sent to {booking.email} for instance {instance.id}")
+        except Exception as e:
+            logger.exception(f"[CANCEL_NOTIFY] Failed to send to {booking.email}: {e}")
+            errors.append({'email': booking.email, 'error': str(e)})
+    return {'sent_count': sent_count, 'errors': errors}

@@ -92,17 +92,18 @@ class FlowLogger:
     
     @classmethod
     def start_flow(cls, flow_type: str, user=None, organizer=None, event=None,
-                   experience=None, accommodation=None, metadata=None):
+                   experience=None, accommodation=None, erasmus_activity=None, metadata=None):
         """
         Start a new platform flow.
 
         Args:
-            flow_type: Type of flow ('ticket_checkout', 'experience_booking', 'accommodation_booking', 'erasmus_registration', etc.)
+            flow_type: Type of flow ('ticket_checkout', 'experience_booking', 'accommodation_booking', 'erasmus_registration', 'erasmus_activity_inscription', etc.)
             user: User initiating the flow (optional)
             organizer: Organizer associated with the flow (optional)
             event: Event being purchased/booked (optional)
             experience: Experience being booked (optional)
             accommodation: Accommodation being booked (optional)
+            erasmus_activity: ErasmusActivity for inscription flows (optional)
             metadata: Additional flow-level data as dict (optional)
 
         Returns:
@@ -117,6 +118,7 @@ class FlowLogger:
                 event=event,
                 experience=experience,
                 accommodation=accommodation,
+                erasmus_activity=erasmus_activity,
                 metadata=_json_safe_metadata(metadata or {})
             )
             logger.info(

@@ -146,6 +146,7 @@ TOKEN_EXPIRED_AFTER_SECONDS = 60 * 60 * 24 * 30
 REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] = {
     'anon': '1000/day',
     'user': '10000/day',
+    'login': '10/min',  # POST /auth/token/ brute-force protection
 }
 
 # CSRF settings for development

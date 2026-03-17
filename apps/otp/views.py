@@ -70,9 +70,37 @@ class OTPGenerateView(APIView):
         
         if result['success'] and result.get('otp'):
             otp = result['otp']
+            flow_id = None
+            try:
+                from core.flow_logger import FlowLogger
+                flow_type = OTPService._get_otp_flow_type(purpose, metadata or {})
+                ip_address = OTPService._get_client_ip(request) if request else None
+                user_agent = (request.META.get('HTTP_USER_AGENT') or '')[:500] if request else None
+                flow = FlowLogger.start_flow(
+                    flow_type,
+                    user=user,
+                    metadata={
+                        'email': email,
+                        'purpose': purpose,
+                        'ip_address': ip_address,
+                        'user_agent': user_agent,
+                        **(metadata or {}),
+                    },
+                )
+                if flow and flow.flow:
+                    flow_id = str(flow.flow_id)
+                    flow.log_event(
+                        'OTP_REQUESTED',
+                        source='api',
+                        status='info',
+                        message=f"OTP solicitado para {email} (envío async)",
+                        metadata={'email': email, 'purpose': purpose},
+                    )
+            except Exception as e:
+                logger.warning("OTP flow start (async path) failed (non-blocking): %s", e)
             try:
                 from .tasks import send_otp_email_task
-                send_otp_email_task.delay(otp.pk)
+                send_otp_email_task.delay(otp.pk, flow_id=flow_id)
             except Exception as e:
                 logger.warning(f"OTP enqueue send task failed (email may still send via worker): {e}")
             response_data = {

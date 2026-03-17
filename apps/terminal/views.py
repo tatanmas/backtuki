@@ -7,8 +7,10 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 
@@ -40,6 +42,35 @@ from .permissions import IsTerminalAdmin
 from .pagination import TerminalTripPagination
 
 logger = logging.getLogger(__name__)
+
+
+def _terminal_role(user):
+    """Derive terminal role from user. Used for /me/ and permission checks."""
+    if not user or not user.is_authenticated:
+        return None
+    if user.is_superuser:
+        return 'superadmin'
+    role = getattr(user, 'role', None)
+    if role == 'company_admin':
+        return 'company_admin'
+    if role in ('terminal_admin', 'superadmin') or user.is_staff:
+        return 'terminal_admin'
+    return None
+
+
+class TerminalMeView(APIView):
+    """GET /api/v1/terminal/me/ - Current user and terminal role. Auth required; role from server only."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        role = _terminal_role(user)
+        return Response({
+            'id': str(user.id),
+            'email': user.email,
+            'name': user.get_full_name() or user.email or '',
+            'terminal_role': role,
+        }, status=status.HTTP_200_OK)
 
 
 class TerminalCompanyViewSet(viewsets.ModelViewSet):
@@ -94,11 +125,6 @@ class TerminalTripViewSet(viewsets.ModelViewSet):
     serializer_class = TerminalTripSerializer
     pagination_class = TerminalTripPagination
     
-    def get_permissions(self):
-        """Public read access, public write access temporarily."""
-        # TODO: Add proper authentication later
-        return []  # Temporary: allow public access to all operations
-    
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['trip_type', 'status', 'is_active', 'company', 'date', 'route__origin', 'route__destination']
     search_fields = ['route__origin', 'route__destination', 'license_plate', 'company__name']
@@ -126,13 +152,10 @@ class TerminalTripViewSet(viewsets.ModelViewSet):
         return queryset
     
     def get_permissions(self):
-        """Public read access, admin write access."""
+        """Public read for list/retrieve (active trips only). IsTerminalAdmin required for writes."""
         if self.action in ['list', 'retrieve']:
-            return []  # No authentication required for public trips
-        # For write operations (create, update, delete, sold_out), allow public temporarily
-        # TODO: Add proper authentication later
-        return []  # Temporary: allow public access to all operations
-        # return [IsTerminalAdmin()]  # Admin required for create/update/delete
+            return []  # Public: only active, non-sold_out trips (filtered in get_queryset)
+        return [IsTerminalAdmin()]  # create, update, partial_update, destroy, sold_out, bulk_delete
     
     @action(detail=True, methods=['patch'])
     def sold_out(self, request, pk=None):
@@ -184,10 +207,8 @@ class TerminalExcelUploadViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
     
     def get_permissions(self):
-        """Public access for upload_excel and preview_excel, admin for other actions."""
-        if self.action in ['upload_excel', 'preview_excel']:
-            return []  # No authentication required for upload (temporary)
-        return [IsTerminalAdmin()]  # Admin required for other actions
+        """IsTerminalAdmin required for all actions including upload_excel and preview_excel."""
+        return [IsTerminalAdmin()]
     
     @action(detail=False, methods=['post'])
     def preview_excel(self, request):

@@ -16,6 +16,7 @@ from threading import Lock
 
 from apps.events.models import Order, Event, Ticket
 from core.models import PlatformFlow, PlatformFlowEvent, CeleryTaskLog
+from core.revenue_system import order_revenue_eligible_q
 
 from ..permissions import IsSuperUser
 
@@ -46,11 +47,10 @@ def ticket_delivery_funnel(request):
         # Get flow type filter
         flow_type = request.GET.get('flow_type', 'ticket_checkout')
         
-        # Count paid orders
+        # Count paid orders (revenue-eligible only)
         paid_orders = Order.objects.filter(
-            status='paid',
             created_at__gte=start_date
-        ).count()
+        ).filter(order_revenue_eligible_q()).count()
         
         # Count flows
         flows = PlatformFlow.objects.filter(
@@ -140,24 +140,24 @@ def ticket_delivery_issues(request):
         limit = int(request.GET.get('limit', 20))
         start_date = timezone.now() - timedelta(days=days)
         
-        # Get failed flows
+        # Get failed flows (all product types)
         failed_flows = PlatformFlow.objects.filter(
             status='failed',
             created_at__gte=start_date
-        ).select_related('user', 'organizer', 'primary_order', 'event').order_by('-created_at')[:limit]
+        ).select_related('user', 'organizer', 'primary_order', 'event', 'experience', 'accommodation', 'erasmus_activity').order_by('-created_at')[:limit]
         
-        # Get flows with email failures
+        # Get flows with email or WhatsApp message failures
         flows_with_email_failures = PlatformFlow.objects.filter(
             created_at__gte=start_date,
-            events__step='EMAIL_FAILED'
-        ).distinct().select_related('user', 'organizer', 'primary_order', 'event').order_by('-created_at')[:limit]
+            events__step__in=['EMAIL_FAILED', 'EMAIL_MANUAL_RESEND_FAILED', 'WHATSAPP_MESSAGE_FAILED']
+        ).distinct().select_related('user', 'organizer', 'primary_order', 'event', 'experience', 'accommodation', 'erasmus_activity').order_by('-created_at')[:limit]
         
         # Get stuck flows (in progress for more than 1 hour)
         stuck_threshold = timezone.now() - timedelta(hours=1)
         stuck_flows = PlatformFlow.objects.filter(
             status='in_progress',
             created_at__lt=stuck_threshold
-        ).select_related('user', 'organizer', 'primary_order', 'event').order_by('-created_at')[:limit]
+        ).select_related('user', 'organizer', 'primary_order', 'event', 'experience', 'accommodation', 'erasmus_activity').order_by('-created_at')[:limit]
         
         def serialize_flow(flow):
             # Get last event
@@ -288,11 +288,11 @@ def all_flows(request):
         # Calculate date range
         start_date = timezone.now() - timedelta(days=days)
         
-        # Base queryset - Prefetch events with order; include experience & accommodation for WhatsApp flows
+        # Base queryset - Prefetch events with order; include all product types (event, experience, accommodation, erasmus_activity)
         queryset = PlatformFlow.objects.filter(
             created_at__gte=start_date
         ).select_related(
-            'user', 'organizer', 'primary_order', 'event', 'experience', 'accommodation'
+            'user', 'organizer', 'primary_order', 'event', 'experience', 'accommodation', 'erasmus_activity'
         ).prefetch_related('events__order')
         
         # Apply filters
@@ -365,12 +365,16 @@ def all_flows(request):
             # Combinar todos los IDs de órdenes que coinciden
             all_matching_order_ids = set(list(matching_order_ids) + list(matching_ticket_order_ids))
             
-            # Aplicar filtro en el queryset
+            # Aplicar filtro en el queryset (incl. flujos OTP/login con email en metadata)
             queryset = queryset.filter(
                 Q(primary_order_id__in=all_matching_order_ids) |
                 Q(user__email__icontains=search_term) |
+                Q(metadata__email__icontains=search_term) |
                 Q(event__title__icontains=search_term) |
-                # También buscar en eventos del flow que tengan order_id
+                Q(experience__title__icontains=search_term) |
+                Q(accommodation__title__icontains=search_term) |
+                Q(erasmus_activity__title_es__icontains=search_term) |
+                Q(erasmus_activity__title_en__icontains=search_term) |
                 Q(events__order_id__in=all_matching_order_ids)
             ).distinct()
         
@@ -459,6 +463,14 @@ def all_flows(request):
                 duration_delta = flow.failed_at - flow.created_at
                 duration = str(duration_delta)
             
+            # Para flujos OTP/login sin user (ej. email aún no registrado), mostrar email desde metadata
+            user_email = flow.user.email if flow.user else (flow.metadata or {}).get('email')
+            user_payload = None
+            if flow.user:
+                user_payload = {'id': str(flow.user.id), 'email': flow.user.email}
+            elif user_email:
+                user_payload = {'id': None, 'email': user_email}
+
             return {
                 'id': str(flow.id),
                 'flow_type': flow.flow_type,
@@ -467,10 +479,7 @@ def all_flows(request):
                 'completed_at': flow.completed_at.isoformat() if flow.completed_at else None,
                 'failed_at': flow.failed_at.isoformat() if flow.failed_at else None,
                 'duration': duration,
-                'user': {
-                    'id': str(flow.user.id) if flow.user else None,
-                    'email': flow.user.email if flow.user else None
-                } if flow.user else None,
+                'user': user_payload,
                 'organizer': {
                     'id': str(flow.organizer.id) if flow.organizer else None,
                     'name': flow.organizer.name if flow.organizer else None
@@ -494,6 +503,10 @@ def all_flows(request):
                     'id': str(flow.accommodation.id) if flow.accommodation else None,
                     'title': flow.accommodation.title if flow.accommodation else None
                 } if flow.accommodation else None,
+                'erasmus_activity': {
+                    'id': str(flow.erasmus_activity.id) if flow.erasmus_activity else None,
+                    'title': (flow.erasmus_activity.title_es or flow.erasmus_activity.title_en or str(flow.erasmus_activity.id)) if flow.erasmus_activity else None
+                } if flow.erasmus_activity else None,
                 'last_event': {
                     'step': last_event.step,
                     'status': last_event.status,
@@ -641,7 +654,7 @@ def flow_detail(request, flow_id):
         from apps.events.models import EmailLog
         
         flow = PlatformFlow.objects.select_related(
-            'user', 'organizer', 'primary_order', 'event', 'experience', 'accommodation'
+            'user', 'organizer', 'primary_order', 'event', 'experience', 'accommodation', 'erasmus_activity'
         ).prefetch_related('events__order').get(id=flow_id)
         
         # 🚀 ENTERPRISE: Buscar orden en primary_order o en eventos si no está en primary_order
@@ -672,6 +685,19 @@ def flow_detail(request, flow_id):
         if order:
             email_logs = EmailLog.objects.filter(order=order).order_by('created_at')
         
+        # Para flujos OTP/login sin user, mostrar email desde metadata en el payload de user
+        flow_metadata = flow.metadata or {}
+        user_email = flow.user.email if flow.user else flow_metadata.get('email')
+        user_payload = None
+        if flow.user:
+            user_payload = {
+                'id': str(flow.user.id),
+                'email': flow.user.email,
+                'name': f"{flow.user.first_name or ''} {flow.user.last_name or ''}".strip() or None
+            }
+        elif user_email:
+            user_payload = {'id': None, 'email': user_email, 'name': None}
+
         return Response({
             'success': True,
             'flow': {
@@ -681,12 +707,8 @@ def flow_detail(request, flow_id):
                 'created_at': flow.created_at.isoformat(),
                 'completed_at': flow.completed_at.isoformat() if flow.completed_at else None,
                 'failed_at': flow.failed_at.isoformat() if flow.failed_at else None,
-                'metadata': flow.metadata,
-                'user': {
-                    'id': str(flow.user.id) if flow.user else None,
-                    'email': flow.user.email if flow.user else None,
-                    'name': f"{flow.user.first_name} {flow.user.last_name}" if flow.user else None
-                } if flow.user else None,
+                'metadata': flow_metadata,
+                'user': user_payload,
                 'organizer': {
                     'id': str(flow.organizer.id) if flow.organizer else None,
                     'name': flow.organizer.name if flow.organizer else None
@@ -709,7 +731,11 @@ def flow_detail(request, flow_id):
                 'accommodation': {
                     'id': str(flow.accommodation.id) if flow.accommodation else None,
                     'title': flow.accommodation.title if flow.accommodation else None
-                } if flow.accommodation else None
+                } if flow.accommodation else None,
+                'erasmus_activity': {
+                    'id': str(flow.erasmus_activity.id) if flow.erasmus_activity else None,
+                    'title': (flow.erasmus_activity.title_es or flow.erasmus_activity.title_en or str(flow.erasmus_activity.id)) if flow.erasmus_activity else None
+                } if flow.erasmus_activity else None
             },
             'events': [{
                 'id': str(e.id),

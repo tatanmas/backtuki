@@ -117,7 +117,8 @@ class SuperAdminAccommodationDetailFullTests(APITestCase):
             country="Chile",
             guests=4,
             bedrooms=2,
-            bathrooms=2,
+            full_bathrooms=2,
+            half_bathrooms=0,
             beds=3,
             price=Decimal("90000"),
             currency="CLP",
@@ -169,6 +170,8 @@ class SuperAdminAccommodationDetailFullTests(APITestCase):
         self.assertEqual(data["country"], "Chile")
         self.assertEqual(data["guests"], 4)
         self.assertEqual(data["bedrooms"], 2)
+        self.assertEqual(data["full_bathrooms"], 2)
+        self.assertEqual(data["half_bathrooms"], 0)
         self.assertEqual(data["bathrooms"], 2)
         self.assertEqual(data["beds"], 3)
         self.assertAlmostEqual(float(data["price"]), 90000.0)
@@ -326,7 +329,8 @@ class SuperAdminAccommodationPatchTests(APITestCase):
         self.assertEqual(self.acc.location_name, "Valle de Elqui")
         self.assertEqual(self.acc.guests, 6)
         self.assertEqual(self.acc.bedrooms, 3)
-        self.assertEqual(self.acc.bathrooms, 2)
+        self.assertEqual(self.acc.full_bathrooms, 2)
+        self.assertEqual(self.acc.half_bathrooms, 0)
         self.assertEqual(self.acc.beds, 4)
         self.assertAlmostEqual(float(self.acc.latitude), -29.9)
         self.assertAlmostEqual(float(self.acc.longitude), -70.25)
@@ -577,7 +581,8 @@ class SuperAdminAccommodationCreateTests(APITestCase):
         self.assertEqual(acc.location_name, "Valle")
         self.assertEqual(acc.guests, 8)
         self.assertEqual(acc.bedrooms, 4)
-        self.assertEqual(acc.bathrooms, 3)
+        self.assertEqual(acc.full_bathrooms, 3)
+        self.assertEqual(acc.half_bathrooms, 0)
         self.assertEqual(acc.beds, 5)
         self.assertEqual(acc.price, Decimal("150000"))
         self.assertEqual(acc.amenities, ["WiFi", "Piscina"])

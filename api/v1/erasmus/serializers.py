@@ -201,7 +201,7 @@ class ErasmusRegisterSerializer(serializers.Serializer):
             **consent,
         )
 
-        # Complete Erasmus registration flow if flow_id was provided
+        # Erasmus registration flow: update metadata, log form submitted, then WhatsApp result, then complete
         flow_id = self.context.get("flow_id")
         if flow_id:
             try:
@@ -218,18 +218,36 @@ class ErasmusRegisterSerializer(serializers.Serializer):
                         message="Erasmus lead created",
                         metadata={"erasmus_lead_id": str(lead.id)},
                     )
+                    # Enviar guías por destino por WhatsApp y registrar resultado en el flow
+                    from apps.erasmus.services import send_erasmus_guides_whatsapp
+                    whatsapp_result = send_erasmus_guides_whatsapp(lead)
+                    if whatsapp_result.get("ok"):
+                        flow_logger.log_event(
+                            "ERASMUS_WHATSAPP_GUIDES_SENT",
+                            source="api",
+                            status="success",
+                            message="Guías enviadas por WhatsApp al lead",
+                        )
+                    else:
+                        flow_logger.log_event(
+                            "ERASMUS_WHATSAPP_GUIDES_FAILED",
+                            source="api",
+                            status="failure",
+                            message="Fallo envío guías por WhatsApp",
+                            metadata={"error": whatsapp_result.get("error") or "Unknown error"},
+                        )
                     flow_logger.complete(message="Erasmus registration completed")
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).exception("Erasmus: complete flow on lead create failed: %s", e)
-
-        # Enviar guías por destino por WhatsApp (al menos una guía por cada destino seleccionado)
-        try:
-            from apps.erasmus.services import send_erasmus_guides_whatsapp
-            send_erasmus_guides_whatsapp(lead)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).exception("Erasmus: send_erasmus_guides_whatsapp failed: %s", e)
+        else:
+            # No flow_id: still send WhatsApp (same as before) but no flow events
+            try:
+                from apps.erasmus.services import send_erasmus_guides_whatsapp
+                send_erasmus_guides_whatsapp(lead)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).exception("Erasmus: send_erasmus_guides_whatsapp failed: %s", e)
 
         # Notificar a Rumi (grupo configurado en SuperAdmin) si el lead pidió contacto para housing
         try:

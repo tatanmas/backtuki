@@ -133,6 +133,42 @@ class ExperienceViewSet(viewsets.ModelViewSet):
             else:
                 # For authenticated users, exclude both soft-deleted and inactive experiences
                 queryset = queryset.filter(deleted_at__isnull=True, is_active=True)
+
+        # Search: title, description, location, slug, country, organizer name (for Super Admin)
+        search = (self.request.query_params.get('search') or '').strip()
+        if search:
+            search_q = (
+                Q(title__icontains=search)
+                | Q(description__icontains=search)
+                | Q(short_description__icontains=search)
+                | Q(location_name__icontains=search)
+                | Q(slug__icontains=search)
+                | Q(organizer__name__icontains=search)
+            )
+            try:
+                search_q |= Q(country__name__icontains=search)
+            except Exception:
+                pass
+            queryset = queryset.filter(search_q)
+
+        # Filters: country (UUID), destination (location_name substring)
+        country_id = (self.request.query_params.get('country') or '').strip()
+        if country_id:
+            queryset = queryset.filter(country_id=country_id)
+        destination = (self.request.query_params.get('destination') or '').strip()
+        if destination:
+            queryset = queryset.filter(location_name__icontains=destination)
+
+        # Super Admin list filters: status (draft, published, cancelled), free_tour_only
+        status_filter = (self.request.query_params.get('status') or '').strip().lower()
+        if status_filter and status_filter in ('draft', 'published', 'cancelled'):
+            queryset = queryset.filter(status=status_filter)
+        free_tour_only = self.request.query_params.get('free_tour_only', 'false').lower() in ('1', 'true', 'yes')
+        if free_tour_only:
+            queryset = queryset.filter(is_free_tour=True)
+
+        # Order: alphabetical by title (enterprise list UX)
+        queryset = queryset.order_by('title')
         
         return queryset
     
@@ -875,7 +911,8 @@ class PublicExperienceInstancesView(APIView):
         queryset = TourInstance.objects.filter(
             experience=experience,
             status='active',
-            start_datetime__gte=timezone.now()
+            start_datetime__gte=timezone.now(),
+            is_publicly_listed=True,
         )
         
         # Date range filters

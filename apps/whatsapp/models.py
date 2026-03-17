@@ -954,6 +954,41 @@ class OperatorMessageTemplate(TimeStampedModel, UUIDModel):
         return result
 
 
+class WhatsAppReservationMessageConfig(TimeStampedModel):
+    """
+    Singleton config for platform-wide WhatsApp reservation flow message templates.
+    Editable from Super Admin. Keys = message_type (reservation_request, customer_waiting, etc.).
+    If a key is missing or empty, the code falls back to operator template then DEFAULT_TEMPLATES.
+    """
+    CONFIG_KEY = "default"
+
+    config_key = models.CharField(
+        _("config key"),
+        max_length=50,
+        unique=True,
+        default=CONFIG_KEY,
+        editable=False,
+    )
+    templates = models.JSONField(
+        _("templates"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            'Dict message_type -> template text, e.g. {"reservation_request": "Nueva solicitud...", '
+            '"customer_waiting": "Estimado/a {{nombre_cliente}}..."}. '
+            'Use {{variable}} for placeholders.'
+        ),
+    )
+
+    class Meta:
+        app_label = 'whatsapp'
+        verbose_name = _("WhatsApp reservation message config")
+        verbose_name_plural = _("WhatsApp reservation message configs")
+
+    def __str__(self):
+        return f"Reservation messages ({len(self.templates or {})} types)"
+
+
 class OperatorRequiredFields(TimeStampedModel, UUIDModel):
     """
     Campos requeridos por cada operador para completar una reserva.
@@ -1136,12 +1171,12 @@ class GroupOutreachConfig(TimeStampedModel, UUIDModel):
     min_delay_seconds = models.PositiveIntegerField(
         default=120,
         verbose_name=_('Min delay (seconds)'),
-        help_text=_('Minimum seconds between two sends.'),
+        help_text=_('Minimum seconds between two sends (e.g. 600 for 10 min base).'),
     )
     max_delay_seconds = models.PositiveIntegerField(
         default=300,
         verbose_name=_('Max delay (seconds)'),
-        help_text=_('Maximum seconds between two sends.'),
+        help_text=_('Maximum seconds between two sends (e.g. 660 = 10 min + 0–60 s jitter).'),
     )
     max_per_run = models.PositiveSmallIntegerField(
         default=1,
@@ -1158,6 +1193,30 @@ class GroupOutreachConfig(TimeStampedModel, UUIDModel):
         blank=True,
         db_index=True,
         verbose_name=_('Last run at'),
+    )
+    cached_eligible_count = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_('Cached eligible count'),
+        help_text=_('Last computed count of eligible participants; refreshed on demand.'),
+    )
+    cached_eligible_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Cached eligible at'),
+        help_text=_('When eligible_count was last computed.'),
+    )
+    cached_participants_total = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_('Cached participants total'),
+        help_text=_('Total participants in group when eligible count was computed.'),
+    )
+    cached_eligible_participants = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_('Cached eligible participants'),
+        help_text=_('List of {id, phone_normalized} for eligible participants; used for sending without re-fetching from Node.'),
     )
 
     class Meta:

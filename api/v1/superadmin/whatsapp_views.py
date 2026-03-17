@@ -6,13 +6,16 @@ from rest_framework import status
 from django.utils import timezone
 
 from apps.whatsapp.models import (
-    WhatsAppSession, WhatsAppReservationRequest, TourOperator, 
+    WhatsAppSession, WhatsAppReservationRequest, TourOperator,
     ExperienceOperatorBinding, WhatsAppMessage, WhatsAppChat,
     GroupOutreachConfig,
     GroupOutreachSent,
+    WhatsAppReservationMessageConfig,
 )
 from apps.whatsapp.services.whatsapp_client import WhatsAppWebService
+from apps.whatsapp.services.templates.defaults import DEFAULT_TEMPLATES
 from apps.experiences.models import Experience
+from apps.accommodations.models import Accommodation, Hotel, RentalHub
 
 
 @api_view(['GET'])
@@ -1019,9 +1022,18 @@ def whatsapp_groups(request):
         result = []
         # Ordenar por last_message_at descendente (más recientes primero)
         try:
-            ordered_groups = groups.order_by('-last_message_at', '-created_at')
+            ordered_groups = list(groups.order_by('-last_message_at', '-created_at'))
         except Exception:
-            ordered_groups = groups.order_by('-created_at')
+            ordered_groups = list(groups.order_by('-created_at'))
+
+        # Conteo de participantes desde outreach cache cuando exista (evita mostrar siempre 0)
+        from apps.whatsapp.models import GroupOutreachConfig
+        outreach_counts = dict(
+            GroupOutreachConfig.objects.filter(
+                group__in=ordered_groups,
+                cached_participants_total__isnull=False
+            ).values_list('group_id', 'cached_participants_total')
+        )
         
         for group in ordered_groups:
             # Obtener participantes de forma segura
@@ -1031,6 +1043,11 @@ def whatsapp_groups(request):
                     participants = group.participants
             except Exception:
                 pass
+
+            # Usar cache de outreach si existe; si no, len(participants) (suele ser 0 si Node no devuelve participantes)
+            participants_count = outreach_counts.get(group.id)
+            if participants_count is None:
+                participants_count = len(participants)
             
             # Obtener tags de forma segura
             tags = []
@@ -1048,7 +1065,7 @@ def whatsapp_groups(request):
                 'profile_picture_url': group.profile_picture_url or '',
                 'description': group.group_description or '',
                 'participants': participants,
-                'participants_count': len(participants),
+                'participants_count': participants_count,
                 'assigned_operator': {
                     'id': str(group.assigned_operator.id),
                     'name': group.assigned_operator.name
@@ -1199,7 +1216,7 @@ def whatsapp_group_outreach(request, group_id):
     """
     import logging
     from apps.whatsapp.services.whatsapp_client import WhatsAppWebService
-    from apps.whatsapp.services.group_outreach_service import get_eligible_participants
+    from apps.whatsapp.services.group_outreach_service import get_eligible_participants, _participant_phone_normalized
 
     logger = logging.getLogger(__name__)
 
@@ -1226,6 +1243,15 @@ def whatsapp_group_outreach(request, group_id):
         )
         sent_count = GroupOutreachSent.objects.filter(config=config).count()
 
+        # Lista persistente de envíos (últimos 200) para mostrar en la UI
+        sent_list = list(
+            GroupOutreachSent.objects.filter(config=config)
+            .order_by('-sent_at')
+            .values('participant_id', 'phone_normalized', 'sent_at', 'message_used', 'message_index')[:200]
+        )
+        for s in sent_list:
+            s['sent_at'] = s['sent_at'].isoformat() if s.get('sent_at') else None
+
         payload = {
             'id': str(config.id),
             'group_id': str(group.id),
@@ -1239,6 +1265,10 @@ def whatsapp_group_outreach(request, group_id):
             'skip_saved_contacts': config.skip_saved_contacts,
             'last_run_at': config.last_run_at.isoformat() if config.last_run_at else None,
             'sent_count': sent_count,
+            'eligible_count': config.cached_eligible_count,
+            'eligible_count_cached_at': config.cached_eligible_at.isoformat() if config.cached_eligible_at else None,
+            'participants_total': config.cached_participants_total,
+            'sent_list': sent_list,
         }
 
         if request.query_params.get('refresh'):
@@ -1250,12 +1280,27 @@ def whatsapp_group_outreach(request, group_id):
                     ids = [p.get('id') for p in group_info['participants'] if p.get('id')]
                     saved_map = service.check_saved_contacts(ids)
                 eligible = get_eligible_participants(config, group_info, saved_map)
-                payload['eligible_count'] = len(eligible)
-                payload['participants_total'] = len(group_info.get('participants') or [])
+                count = len(eligible)
+                total = len(group_info.get('participants') or [])
+                config.cached_eligible_count = count
+                config.cached_eligible_at = timezone.now()
+                config.cached_participants_total = total
+                config.cached_eligible_participants = [
+                    {'id': p.get('id'), 'phone_normalized': _participant_phone_normalized(p)}
+                    for p in eligible
+                ]
+                config.save(update_fields=[
+                    'cached_eligible_count', 'cached_eligible_at', 'cached_participants_total',
+                    'cached_eligible_participants',
+                ])
+                payload['eligible_count'] = count
+                payload['eligible_count_cached_at'] = config.cached_eligible_at.isoformat()
+                payload['participants_total'] = total
             except Exception as e:
                 logger.warning(f"Refresh eligible count failed: {e}")
-                payload['eligible_count'] = None
-                payload['participants_total'] = None
+                payload['eligible_count'] = getattr(config, 'cached_eligible_count', None)
+                payload['eligible_count_cached_at'] = config.cached_eligible_at.isoformat() if config.cached_eligible_at else None
+                payload['participants_total'] = getattr(config, 'cached_participants_total', None)
 
         return Response(payload)
 
@@ -1284,9 +1329,24 @@ def whatsapp_group_outreach(request, group_id):
         config.max_per_run = max(1, min(5, int(data.get('max_per_run', 1))))
     if 'skip_saved_contacts' in data:
         config.skip_saved_contacts = bool(data['skip_saved_contacts'])
+    # Invalidate eligible cache when filters change so next refresh recalculates
+    if 'message_templates' in data or 'exclude_numbers' in data or 'skip_saved_contacts' in data:
+        if config.cached_eligible_count is not None:
+            config.cached_eligible_count = None
+            config.cached_eligible_at = None
+            config.cached_participants_total = None
+            config.cached_eligible_participants = []
     config.save()
 
     sent_count = GroupOutreachSent.objects.filter(config=config).count()
+    sent_list = list(
+        GroupOutreachSent.objects.filter(config=config)
+        .order_by('-sent_at')
+        .values('participant_id', 'phone_normalized', 'sent_at', 'message_used', 'message_index')[:200]
+    )
+    for s in sent_list:
+        s['sent_at'] = s['sent_at'].isoformat() if s.get('sent_at') else None
+
     return Response({
         'success': True,
         'id': str(config.id),
@@ -1300,7 +1360,54 @@ def whatsapp_group_outreach(request, group_id):
         'skip_saved_contacts': config.skip_saved_contacts,
         'last_run_at': config.last_run_at.isoformat() if config.last_run_at else None,
         'sent_count': sent_count,
+        'eligible_count': config.cached_eligible_count,
+        'eligible_count_cached_at': config.cached_eligible_at.isoformat() if config.cached_eligible_at else None,
+        'participants_total': config.cached_participants_total,
+        'sent_list': sent_list,
     })
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperUser])
+def whatsapp_outreach_run_now(request):
+    """
+    Encola la tarea de Celery que ejecuta el outreach para todos los grupos con outreach activado.
+    Útil cuando Beat no está disparando la tarea o para ejecutar un ciclo "ahora" desde el panel.
+    Requiere que el Celery worker esté corriendo para que la tarea se ejecute.
+    Returns { "queued": true, "task_id": "..." }.
+    """
+    from apps.whatsapp.tasks import run_group_outreach
+
+    task = run_group_outreach.delay()
+    return Response({'queued': True, 'task_id': str(task.id)})
+
+
+@api_view(['POST'])
+@permission_classes([IsSuperUser])
+def whatsapp_group_outreach_send_one(request, group_id):
+    """
+    Send one outreach message now to a randomly chosen eligible participant.
+    Returns { "sent": true, "participant_id": "...", "phone_normalized": "..." } or
+    { "sent": false, "error": "..." }.
+    """
+    from apps.whatsapp.services.group_outreach_service import send_one_outreach_now
+
+    try:
+        group = WhatsAppChat.objects.get(id=group_id)
+    except WhatsAppChat.DoesNotExist:
+        return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if group.type != 'group':
+        return Response({'error': 'Chat is not a group'}, status=status.HTTP_400_BAD_REQUEST)
+
+    config = GroupOutreachConfig.objects.filter(group=group).first()
+    if not config:
+        return Response({'sent': False, 'error': 'No hay configuración de outreach'}, status=status.HTTP_400_BAD_REQUEST)
+
+    result = send_one_outreach_now(config)
+    if result.get('sent'):
+        return Response(result)
+    return Response(result, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['GET'])
@@ -1443,6 +1550,459 @@ def whatsapp_experience_group(request, experience_id):
             {'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+# ----- Accommodations: list + link group (hierarchy: room > hotel > rental_hub) -----
+
+from apps.whatsapp.services.accommodation_operator_service import AccommodationOperatorService
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperUser])
+def whatsapp_accommodations(request):
+    """List all accommodations with their resolved WhatsApp group (hierarchy-aware)."""
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        accommodations = Accommodation.objects.select_related(
+            'hotel', 'rental_hub', 'organizer'
+        ).prefetch_related(
+            'whatsapp_group_bindings__whatsapp_group',
+            'whatsapp_group_bindings__tour_operator',
+            'operator_bindings__tour_operator',
+        ).filter(
+            deleted_at__isnull=True
+        ).order_by('-created_at')
+
+        result = []
+        for acc in accommodations:
+            group_info = AccommodationOperatorService.get_accommodation_whatsapp_group(acc)
+            current_group = None
+            is_using_default = False
+            has_custom_binding = False
+            if group_info:
+                current_group = {
+                    'id': group_info['id'],
+                    'chat_id': group_info['chat_id'],
+                    'name': group_info['name'],
+                    'is_override': group_info.get('is_override', False),
+                    'source': group_info.get('source', ''),
+                }
+                is_using_default = not group_info.get('is_override', False)
+                has_custom_binding = group_info.get('is_override', False)
+
+            result.append({
+                'id': str(acc.id),
+                'title': acc.title,
+                'slug': acc.slug,
+                'organizer': {'id': str(acc.organizer.id), 'name': acc.organizer.name} if acc.organizer else None,
+                'hotel': {'id': str(acc.hotel.id), 'slug': acc.hotel.slug, 'name': acc.hotel.name} if acc.hotel else None,
+                'rental_hub': {'id': str(acc.rental_hub.id), 'slug': acc.rental_hub.slug, 'name': acc.rental_hub.name} if acc.rental_hub else None,
+                'current_whatsapp_group': current_group,
+                'is_using_default_group': is_using_default,
+                'has_custom_binding': has_custom_binding,
+            })
+
+        return Response({'accommodations': result, 'total': len(result)})
+    except Exception as e:
+        logger.exception("Error fetching accommodations for WhatsApp: %s", e)
+        return Response({'accommodations': [], 'total': 0})
+
+
+@api_view(['PATCH'])
+@permission_classes([IsSuperUser])
+def whatsapp_accommodation_group(request, accommodation_id):
+    """Link or unlink a WhatsApp group to an accommodation (room-level override)."""
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        acc = Accommodation.objects.get(id=accommodation_id)
+    except Accommodation.DoesNotExist:
+        return Response({'error': 'Accommodation not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    group_id = request.data.get('group_id')
+
+    if group_id:
+        try:
+            binding = AccommodationOperatorService.create_accommodation_group_binding(
+                accommodation=acc,
+                whatsapp_group_id=group_id,
+                is_override=True,
+            )
+            if not binding:
+                return Response(
+                    {'error': 'Could not create binding. Group may not exist.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            return Response({
+                'success': True,
+                'accommodation_id': str(acc.id),
+                'group': {
+                    'id': str(binding.whatsapp_group.id),
+                    'chat_id': binding.whatsapp_group.chat_id,
+                    'name': binding.whatsapp_group.name,
+                },
+                'is_override': True,
+            })
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    else:
+        removed = AccommodationOperatorService.remove_accommodation_group_binding(acc, only_overrides=True)
+        return Response({
+            'success': True,
+            'accommodation_id': str(acc.id),
+            'group': None,
+            'is_override': False,
+            'removed_binding': removed,
+        })
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperUser])
+def whatsapp_hotels(request):
+    """List hotels with their default WhatsApp group (for reservation coordination)."""
+    try:
+        hotels = Hotel.objects.select_related('default_whatsapp_group').filter(
+            is_active=True
+        ).order_by('name')
+        result = [
+            {
+                'id': str(h.id),
+                'slug': h.slug,
+                'name': h.name,
+                'current_whatsapp_group': {
+                    'id': str(h.default_whatsapp_group.id),
+                    'chat_id': h.default_whatsapp_group.chat_id,
+                    'name': h.default_whatsapp_group.name,
+                } if h.default_whatsapp_group else None,
+            }
+            for h in hotels
+        ]
+        return Response({'hotels': result, 'total': len(result)})
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("Error fetching hotels for WhatsApp")
+        return Response({'hotels': [], 'total': 0})
+
+
+@api_view(['PATCH'])
+@permission_classes([IsSuperUser])
+def whatsapp_hotel_group(request, hotel_id):
+    """Set or clear the default WhatsApp group for a hotel."""
+    try:
+        hotel = Hotel.objects.get(id=hotel_id)
+    except Hotel.DoesNotExist:
+        return Response({'error': 'Hotel not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    group_id = request.data.get('group_id')
+    if group_id:
+        try:
+            group = WhatsAppChat.objects.get(id=group_id, type='group')
+        except WhatsAppChat.DoesNotExist:
+            return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+        hotel.default_whatsapp_group = group
+        hotel.save(update_fields=['default_whatsapp_group', 'updated_at'])
+        return Response({
+            'success': True,
+            'hotel_id': str(hotel.id),
+            'group': {'id': str(group.id), 'chat_id': group.chat_id, 'name': group.name},
+        })
+    else:
+        hotel.default_whatsapp_group = None
+        hotel.save(update_fields=['default_whatsapp_group', 'updated_at'])
+        return Response({
+            'success': True,
+            'hotel_id': str(hotel.id),
+            'group': None,
+        })
+
+
+@api_view(['GET'])
+@permission_classes([IsSuperUser])
+def whatsapp_rental_hubs(request):
+    """List rental hubs (centrales) with their default WhatsApp group."""
+    try:
+        hubs = RentalHub.objects.select_related('default_whatsapp_group').filter(
+            is_active=True
+        ).order_by('name')
+        result = [
+            {
+                'id': str(h.id),
+                'slug': h.slug,
+                'name': h.name,
+                'current_whatsapp_group': {
+                    'id': str(h.default_whatsapp_group.id),
+                    'chat_id': h.default_whatsapp_group.chat_id,
+                    'name': h.default_whatsapp_group.name,
+                } if h.default_whatsapp_group else None,
+            }
+            for h in hubs
+        ]
+        return Response({'rental_hubs': result, 'total': len(result)})
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("Error fetching rental hubs for WhatsApp")
+        return Response({'rental_hubs': [], 'total': 0})
+
+
+@api_view(['PATCH'])
+@permission_classes([IsSuperUser])
+def whatsapp_rental_hub_group(request, rental_hub_id):
+    """Set or clear the default WhatsApp group for a rental hub (central)."""
+    try:
+        hub = RentalHub.objects.get(id=rental_hub_id)
+    except RentalHub.DoesNotExist:
+        return Response({'error': 'Rental hub not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    group_id = request.data.get('group_id')
+    if group_id:
+        try:
+            group = WhatsAppChat.objects.get(id=group_id, type='group')
+        except WhatsAppChat.DoesNotExist:
+            return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+        hub.default_whatsapp_group = group
+        hub.save(update_fields=['default_whatsapp_group', 'updated_at'])
+        return Response({
+            'success': True,
+            'rental_hub_id': str(hub.id),
+            'group': {'id': str(group.id), 'chat_id': group.chat_id, 'name': group.name},
+        })
+    else:
+        hub.default_whatsapp_group = None
+        hub.save(update_fields=['default_whatsapp_group', 'updated_at'])
+        return Response({
+            'success': True,
+            'rental_hub_id': str(hub.id),
+            'group': None,
+        })
+
+
+# Message types and placeholders for reservation flow (used by GET reservation-messages)
+WHATSAPP_RESERVATION_MESSAGE_TYPES = [
+    ('reservation_request', 'Solicitud de reserva al operador'),
+    ('customer_waiting', 'Esperando confirmación del operador (al cliente)'),
+    ('customer_confirmation', 'Confirmación al cliente'),
+    ('customer_rejection', 'Rechazo al cliente'),
+    ('payment_link', 'Link de pago al cliente'),
+    ('payment_confirmed', 'Pago confirmado al cliente'),
+    ('customer_availability_confirmed', 'Disponibilidad confirmada al cliente'),
+    ('customer_confirm_free', 'Confirmar reserva gratuita (al cliente)'),
+    ('ticket_info', 'Información del ticket'),
+    ('reminder', 'Recordatorio al operador'),
+]
+WHATSAPP_RESERVATION_PLACEHOLDERS = [
+    {'key': 'contacto', 'description': 'Nombre del contacto del operador'},
+    {'key': 'experiencia', 'description': 'Nombre de la experiencia/tour/alojamiento'},
+    {'key': 'fecha', 'description': 'Fecha de la reserva (ej: 15 de marzo de 2026)'},
+    {'key': 'hora', 'description': 'Hora de la reserva (ej: 10:00)'},
+    {'key': 'pasajeros', 'description': 'Número total de pasajeros'},
+    {'key': 'adultos', 'description': 'Número de adultos'},
+    {'key': 'ninos', 'description': 'Número de niños'},
+    {'key': 'infantes', 'description': 'Número de infantes'},
+    {'key': 'precio', 'description': 'Precio total formateado (ej: $45.000)'},
+    {'key': 'nombre_cliente', 'description': 'Nombre del cliente'},
+    {'key': 'telefono_cliente', 'description': 'Teléfono del cliente'},
+    {'key': 'codigo', 'description': 'Código de reserva'},
+    {'key': 'link_pago', 'description': 'Link de pago (si aplica)'},
+    {'key': 'link_pago_mensaje', 'description': 'Frase con link de pago para confirmación'},
+    {'key': 'punto_encuentro', 'description': 'Punto de encuentro'},
+    {'key': 'instrucciones', 'description': 'Instrucciones adicionales'},
+    {'key': 'pasos_siguientes', 'description': 'Pasos siguientes (pago o confirmar)'},
+    {'key': 'check_in', 'description': 'Fecha check-in (alojamientos)'},
+    {'key': 'check_out', 'description': 'Fecha check-out (alojamientos)'},
+    {'key': 'guests', 'description': 'Número de huéspedes (alojamientos)'},
+    {'key': 'pickup_date', 'description': 'Fecha recogida (rent a car)'},
+    {'key': 'return_date', 'description': 'Fecha devolución (rent a car)'},
+    {'key': 'pickup_time', 'description': 'Hora recogida (rent a car)'},
+    {'key': 'return_time', 'description': 'Hora devolución (rent a car)'},
+]
+
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsSuperUser])
+def whatsapp_reservation_messages(request):
+    """
+    GET: Return global platform templates (stored + defaults) and placeholders.
+    PATCH: Update global templates. Body: { "templates": { "message_type": "text", ... } }
+    """
+    if request.method == 'GET':
+        config = WhatsAppReservationMessageConfig.objects.filter(
+            config_key=WhatsAppReservationMessageConfig.CONFIG_KEY
+        ).first()
+        stored = (config.templates if config else None) or {}
+        # Merge: for each type return stored if non-empty, else default
+        templates = {}
+        for key, _label in WHATSAPP_RESERVATION_MESSAGE_TYPES:
+            custom = (stored.get(key) or '').strip()
+            if custom:
+                templates[key] = custom
+            else:
+                templates[key] = DEFAULT_TEMPLATES.get(key, '')
+        return Response({
+            'message_types': [{'key': k, 'label': v} for k, v in WHATSAPP_RESERVATION_MESSAGE_TYPES],
+            'templates': templates,
+            'placeholders': WHATSAPP_RESERVATION_PLACEHOLDERS,
+        })
+
+    # PATCH
+    data = request.data or {}
+    templates_input = data.get('templates')
+    if not isinstance(templates_input, dict):
+        return Response(
+            {'detail': "Se requiere 'templates' (objeto message_type -> texto)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    config, _ = WhatsAppReservationMessageConfig.objects.get_or_create(
+        config_key=WhatsAppReservationMessageConfig.CONFIG_KEY,
+        defaults={'templates': {}},
+    )
+    current = dict(config.templates or {})
+    for key, _ in WHATSAPP_RESERVATION_MESSAGE_TYPES:
+        if key in templates_input:
+            val = templates_input[key]
+            if isinstance(val, str):
+                if val.strip():
+                    current[key] = val.strip()
+                else:
+                    current.pop(key, None)
+    config.templates = current
+    config.save(update_fields=['templates', 'updated_at'])
+    # Return same shape as GET
+    stored = config.templates or {}
+    templates = {}
+    for key, _ in WHATSAPP_RESERVATION_MESSAGE_TYPES:
+        custom = (stored.get(key) or '').strip()
+        if custom:
+            templates[key] = custom
+        else:
+            templates[key] = DEFAULT_TEMPLATES.get(key, '')
+    return Response({
+        'message_types': [{'key': k, 'label': v} for k, v in WHATSAPP_RESERVATION_MESSAGE_TYPES],
+        'templates': templates,
+        'placeholders': WHATSAPP_RESERVATION_PLACEHOLDERS,
+    })
+
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsSuperUser])
+def whatsapp_experience_reservation_messages(request, experience_id):
+    """
+    GET: Return reservation message overrides for this experience (empty = use global).
+    PATCH: Update overrides. Body: { "templates": { "message_type": "text", ... } }
+    """
+    try:
+        experience = Experience.objects.get(id=experience_id)
+    except Experience.DoesNotExist:
+        return Response({'detail': 'Experiencia no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        overrides = getattr(experience, 'whatsapp_message_templates', None) or {}
+        if not isinstance(overrides, dict):
+            overrides = {}
+        # Return overrides only; frontend can merge with global for display
+        return Response({
+            'experience_id': str(experience.id),
+            'templates': overrides,
+            'message_types': [{'key': k, 'label': v} for k, v in WHATSAPP_RESERVATION_MESSAGE_TYPES],
+            'placeholders': WHATSAPP_RESERVATION_PLACEHOLDERS,
+        })
+
+    # PATCH
+    data = request.data or {}
+    templates_input = data.get('templates')
+    if not isinstance(templates_input, dict):
+        return Response(
+            {'detail': "Se requiere 'templates' (objeto message_type -> texto)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    current = dict(experience.whatsapp_message_templates or {})
+    for key, _ in WHATSAPP_RESERVATION_MESSAGE_TYPES:
+        if key in templates_input:
+            val = templates_input[key]
+            if isinstance(val, str):
+                if val.strip():
+                    current[key] = val.strip()
+                else:
+                    current.pop(key, None)
+    experience.whatsapp_message_templates = current
+    experience.save(update_fields=['whatsapp_message_templates'])
+    return Response({
+        'experience_id': str(experience.id),
+        'templates': experience.whatsapp_message_templates or {},
+        'message_types': [{'key': k, 'label': v} for k, v in WHATSAPP_RESERVATION_MESSAGE_TYPES],
+        'placeholders': WHATSAPP_RESERVATION_PLACEHOLDERS,
+    })
+
+
+def _reservation_messages_entity_view(request, entity, entity_id_field: str):
+    """Shared GET/PATCH logic for reservation messages on an entity (Accommodation, Hotel, RentalHub)."""
+    if request.method == 'GET':
+        overrides = getattr(entity, 'whatsapp_message_templates', None) or {}
+        if not isinstance(overrides, dict):
+            overrides = {}
+        return Response({
+            entity_id_field: str(entity.id),
+            'templates': overrides,
+            'message_types': [{'key': k, 'label': v} for k, v in WHATSAPP_RESERVATION_MESSAGE_TYPES],
+            'placeholders': WHATSAPP_RESERVATION_PLACEHOLDERS,
+        })
+    data = request.data or {}
+    templates_input = data.get('templates')
+    if not isinstance(templates_input, dict):
+        return Response(
+            {'detail': "Se requiere 'templates' (objeto message_type -> texto)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    current = dict(getattr(entity, 'whatsapp_message_templates', None) or {})
+    for key, _ in WHATSAPP_RESERVATION_MESSAGE_TYPES:
+        if key in templates_input:
+            val = templates_input[key]
+            if isinstance(val, str):
+                if val.strip():
+                    current[key] = val.strip()
+                else:
+                    current.pop(key, None)
+    entity.whatsapp_message_templates = current
+    entity.save()
+    return Response({
+        entity_id_field: str(entity.id),
+        'templates': entity.whatsapp_message_templates or {},
+        'message_types': [{'key': k, 'label': v} for k, v in WHATSAPP_RESERVATION_MESSAGE_TYPES],
+        'placeholders': WHATSAPP_RESERVATION_PLACEHOLDERS,
+    })
+
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsSuperUser])
+def whatsapp_accommodation_reservation_messages(request, accommodation_id):
+    """GET/PATCH reservation message overrides for an accommodation (room/unit)."""
+    try:
+        accommodation = Accommodation.objects.get(id=accommodation_id)
+    except Accommodation.DoesNotExist:
+        return Response({'detail': 'Alojamiento no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+    return _reservation_messages_entity_view(request, accommodation, 'accommodation_id')
+
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsSuperUser])
+def whatsapp_hotel_reservation_messages(request, hotel_id):
+    """GET/PATCH reservation message overrides for a hotel."""
+    try:
+        hotel = Hotel.objects.get(id=hotel_id)
+    except Hotel.DoesNotExist:
+        return Response({'detail': 'Hotel no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+    return _reservation_messages_entity_view(request, hotel, 'hotel_id')
+
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsSuperUser])
+def whatsapp_rental_hub_reservation_messages(request, rental_hub_id):
+    """GET/PATCH reservation message overrides for a rental hub (central)."""
+    try:
+        rental_hub = RentalHub.objects.get(id=rental_hub_id)
+    except RentalHub.DoesNotExist:
+        return Response({'detail': 'Central de arrendamiento no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+    return _reservation_messages_entity_view(request, rental_hub, 'rental_hub_id')
 
 
 @api_view(['GET'])

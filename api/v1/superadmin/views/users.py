@@ -26,10 +26,19 @@ from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, Bl
 from apps.sync_woocommerce.models import SyncConfiguration, SyncExecution
 from apps.events.models import EventView, ConversionFunnel
 
+from core.revenue_system import order_revenue_eligible_q
 from ..permissions import IsSuperUser
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
+
+# Q for revenue-eligible orders (for annotations on User.orders)
+_ORDER_REVENUE_Q = Q(
+    orders__status='paid',
+    orders__is_sandbox=False,
+    orders__deleted_at__isnull=True,
+    orders__exclude_from_revenue=False,
+)
 
 
 class SuperAdminUserViewSet(viewsets.ViewSet):
@@ -62,16 +71,15 @@ class SuperAdminUserViewSet(viewsets.ViewSet):
                 - Número de órdenes
         """
         try:
-            # Obtener todos los usuarios con estadísticas
+            # Estadísticas solo con órdenes revenue-eligible (no sandbox, no excluidas)
             users = User.objects.annotate(
-                orders_count=Count('orders', distinct=True),
-                total_spent=Sum('orders__total', filter=Q(orders__status='paid'))
+                orders_count=Count('orders', distinct=True, filter=_ORDER_REVENUE_Q),
+                total_spent=Sum('orders__total', filter=_ORDER_REVENUE_Q),
             ).select_related('profile').order_by('-date_joined')
             
             users_data = []
             for user in users:
-                # Calcular estadísticas adicionales
-                paid_orders = Order.objects.filter(user=user, status='paid')
+                paid_orders = Order.objects.filter(user=user).filter(order_revenue_eligible_q())
                 total_tickets = sum(order.items.aggregate(
                     total=Sum('quantity'))['total'] or 0 for order in paid_orders
                 )
@@ -146,8 +154,8 @@ class SuperAdminUserViewSet(viewsets.ViewSet):
         """
         try:
             user = User.objects.annotate(
-                orders_count=Count('orders', distinct=True),
-                total_spent=Sum('orders__total', filter=Q(orders__status='paid'))
+                orders_count=Count('orders', distinct=True, filter=_ORDER_REVENUE_Q),
+                total_spent=Sum('orders__total', filter=_ORDER_REVENUE_Q),
             ).select_related('profile').get(pk=pk)
             
             # Obtener órdenes recientes

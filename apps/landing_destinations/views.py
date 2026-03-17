@@ -148,10 +148,36 @@ class LandingDestinationViewSet(viewsets.ModelViewSet):
         return LandingDestinationSerializer
 
 
-def _experience_to_card(exp):
+def _first_experience_image_url(images_value, request=None):
+    """
+    Extract first image URL from Experience.images (JSONField: list of URLs or dicts).
+    Returns a single URL string, absolute when request is provided for relative paths.
+    """
+    if not images_value:
+        return ""
+    first = images_value[0] if images_value else None
+    if not first:
+        return ""
+    if isinstance(first, str):
+        url = first.strip()
+    elif isinstance(first, dict):
+        url = (first.get("url") or first.get("image") or first.get("src")) or ""
+        url = str(url).strip() if url else ""
+    else:
+        return ""
+    if not url:
+        return ""
+    if request and url.startswith("/"):
+        url = request.build_absolute_uri(url)
+    else:
+        url = _normalize_media_url(url)
+    return url
+
+
+def _experience_to_card(exp, request=None):
     """Map Experience to frontend card shape (id, title, image, price, rating, reviews, location, duration)."""
     images = getattr(exp, "images", None) or []
-    image = images[0] if images else ""
+    image = _first_experience_image_url(images, request=request)
     return {
         "id": str(exp.id),
         "title": exp.title,
@@ -226,7 +252,7 @@ def _build_featured(dest, request=None):
                 id=uid, status="published", is_active=True, deleted_at__isnull=True
             ).first()
             if exp:
-                card = _experience_to_card(exp)
+                card = _experience_to_card(exp, request=request)
                 return {"type": "experience", "id": str(uid), **card}
         elif dest.featured_type == "event":
             from apps.events.models import Event
@@ -298,7 +324,7 @@ class PublicDestinationBySlugView(APIView):
             exp_map = {str(e.id): e for e in qs}
             for eid in exp_ids:
                 if eid in exp_map:
-                    experiences.append(_experience_to_card(exp_map[eid]))
+                    experiences.append(_experience_to_card(exp_map[eid], request=request))
 
         event_ids = [str(e.event_id) for e in dest.destination_events.order_by("order")]
         events = []

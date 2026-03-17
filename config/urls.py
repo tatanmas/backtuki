@@ -9,13 +9,13 @@ from drf_spectacular.views import (
     SpectacularRedocView,
     SpectacularSwaggerView,
 )
-from django.http import HttpResponse
-
+from core.views import health_view
 from core.og_preview import OGPreviewView
+from core.permissions import ApiDocsPermission
 
 urlpatterns = [
-    # Health endpoint for Cloud Run (no DB/Redis access) - MUST BE FIRST
-    path('healthz/', lambda request: HttpResponse('ok', content_type='text/plain')),
+    # Health endpoint for Cloud Run. Responde 200 siempre; registra heartbeat de uptime (throttled) si la BD está disponible.
+    path('healthz/', health_view),
     
     # Django Admin
     path('admin/', admin.site.urls),
@@ -24,10 +24,10 @@ urlpatterns = [
     path('api/v1/', include('api.v1.public_urls')),
     path('api/v1/', include('api.v1.urls')),
     
-    # API Documentation
-    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
-    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
-    path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
+    # API Documentation (production: superuser JWT required; DEBUG: open)
+    path('api/schema/', SpectacularAPIView.as_view(permission_classes=[ApiDocsPermission]), name='schema'),
+    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema', permission_classes=[ApiDocsPermission]), name='swagger-ui'),
+    path('api/redoc/', SpectacularRedocView.as_view(url_name='schema', permission_classes=[ApiDocsPermission]), name='redoc'),
     
     # Open Graph preview: SPA index with injected meta for shareable routes (WhatsApp, etc.).
     # Nginx should proxy these paths to Django so crawlers receive server-rendered meta.
@@ -35,7 +35,8 @@ urlpatterns = [
     path('alojamientos/<path:slug_or_id>', OGPreviewView.as_view(), name='og-preview-accommodation'),
     path('events/<str:event_id>/', OGPreviewView.as_view(), name='og-preview-event'),
     path('experiences/<path:slug_or_id>', OGPreviewView.as_view(), name='og-preview-experience'),
-    
+    path('guias/<path:slug>', OGPreviewView.as_view(), name='og-preview-travel-guide'),
+
     # 🚀 ENTERPRISE Payment System - LAST to avoid conflicts
     path('', include('payment_processor.urls')),
 ]

@@ -54,6 +54,7 @@ class MediaAssetSerializer(serializers.ModelSerializer):
     """Serializer for MediaAsset."""
     
     url = serializers.SerializerMethodField()
+    thumbnail_url = serializers.SerializerMethodField()
     size_mb = serializers.SerializerMethodField()
     usage_count = serializers.SerializerMethodField()
     uploaded_by_name = serializers.SerializerMethodField()
@@ -70,6 +71,7 @@ class MediaAssetSerializer(serializers.ModelSerializer):
             'uploaded_by_name',
             'file',
             'url',
+            'thumbnail_url',
             'original_filename',
             'content_type',
             'size_bytes',
@@ -77,6 +79,7 @@ class MediaAssetSerializer(serializers.ModelSerializer):
             'width',
             'height',
             'sha256',
+            'tags',
             'usage_count',
             'created_at',
             'deleted_at'
@@ -91,6 +94,22 @@ class MediaAssetSerializer(serializers.ModelSerializer):
             'created_at',
             'deleted_at'
         ]
+
+    def _normalize_tags(self, value):
+        """Normalize tags: strip, remove empty, deduplicate (preserve order)."""
+        if not isinstance(value, (list, tuple)):
+            return []
+        seen = set()
+        out = []
+        for t in value:
+            s = (t if isinstance(t, str) else str(t)).strip()
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
+
+    def validate_tags(self, value):
+        return self._normalize_tags(value)
     
     def get_url(self, obj):
         """
@@ -106,7 +125,18 @@ class MediaAssetSerializer(serializers.ModelSerializer):
         if request:
             return _build_media_url_for_request(raw, request)
         return obj.url
-    
+
+    def get_thumbnail_url(self, obj):
+        """Return thumbnail URL for grid display; fallback to full url if no thumbnail."""
+        if obj.thumbnail:
+            raw = obj.thumbnail.url
+            if raw:
+                request = self.context.get("request")
+                if request:
+                    return _build_media_url_for_request(raw, request)
+                return raw
+        return self.get_url(obj)
+
     def get_size_mb(self, obj):
         """Return size in MB."""
         return obj.size_mb
@@ -142,6 +172,14 @@ class MediaAssetCreateSerializer(serializers.ModelSerializer):
         queryset=Organizer.objects.all()
     )
     
+    # Accept tags as list (JSON) or JSON string (from FormData)
+    tags = serializers.ListField(
+        child=serializers.CharField(allow_blank=False),
+        required=False,
+        default=list,
+        allow_empty=True,
+    )
+
     class Meta:
         model = MediaAsset
         fields = [
@@ -149,9 +187,35 @@ class MediaAssetCreateSerializer(serializers.ModelSerializer):
             'scope',
             'organizer',
             'original_filename',
-            'content_type'
+            'content_type',
+            'tags',
         ]
-    
+
+    def to_internal_value(self, data):
+        """Parse tags from FormData (JSON string) or list."""
+        if isinstance(data, dict) and 'tags' in data:
+            raw = data['tags']
+            if isinstance(raw, str):
+                try:
+                    import json
+                    data = {**data, 'tags': json.loads(raw) if raw.strip() else []}
+                except (ValueError, TypeError):
+                    data = {**data, 'tags': []}
+        return super().to_internal_value(data)
+
+    def validate_tags(self, value):
+        """Normalize tags for create."""
+        if not isinstance(value, (list, tuple)):
+            return []
+        seen = set()
+        out = []
+        for t in value:
+            s = (t if isinstance(t, str) else str(t)).strip()
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
+
     def validate_file(self, value):
         """Validate file size and type. Accept by extension or by image/* Content-Type."""
         max_size = MediaAsset.MAX_FILE_SIZE_MB * 1024 * 1024

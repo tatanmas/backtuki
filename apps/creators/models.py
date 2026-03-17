@@ -180,3 +180,39 @@ class PlatformLandingSlot(BaseModel):
 
     def __str__(self):
         return f"{self.slot_key} -> {self.asset_id or 'unassigned'}"
+
+
+class HeroVitrinaItem(BaseModel):
+    """
+    Ordered items for the landing hero vitrina (experiences, accommodations, events, rent-a-cars).
+    SuperAdmin selects and orders; public API returns list for the hero slider.
+    """
+    CONTENT_TYPE_CHOICES = [
+        ('experience', _('Experiencia')),
+        ('accommodation', _('Alojamiento')),
+        ('event', _('Evento')),
+        ('rent_a_car', _('Rent a car')),
+    ]
+    content_type = models.CharField(
+        _("content type"),
+        max_length=32,
+        choices=CONTENT_TYPE_CHOICES,
+        db_index=True,
+    )
+    object_id = models.UUIDField(
+        _("object id"),
+        help_text=_("UUID of the experience, accommodation, event or car (Car model)."),
+        db_index=True,
+    )
+    order = models.PositiveIntegerField(_("order"), default=0, db_index=True)
+
+    class Meta:
+        verbose_name = _("hero vitrina item")
+        verbose_name_plural = _("hero vitrina items")
+        ordering = ['order', 'created_at']
+        indexes = [
+            models.Index(fields=['order']),
+        ]
+
+    def __str__(self):
+        return f"{self.content_type}:{self.object_id} (order={self.order})"

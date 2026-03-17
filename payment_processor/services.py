@@ -414,11 +414,24 @@ class TransbankWebPayPlusService(BasePaymentService):
                 
             # Update order status if payment successful
             if payment.status == 'completed':
+                # Idempotency: if order already marked paid (e.g. duplicate return), return success without re-running finalization
+                payment.order.refresh_from_db()
+                if payment.order.status == 'paid':
+                    logger.info(
+                        "✅ [PAYMENT] Order %s already paid (idempotent confirm); skipping finalization",
+                        payment.order.order_number,
+                    )
+                    return {
+                        'success': True,
+                        'payment': payment,
+                        'transaction_data': data
+                    }
+
                 # 🚀 ENTERPRISE: Get flow from order for tracking
                 from core.flow_logger import FlowLogger
                 flow = FlowLogger.from_flow_id(payment.order.flow_id) if payment.order.flow_id else None
-                
-                # Log payment authorized
+
+                # Log payment authorized (audit; outside atomic)
                 if flow:
                     flow.log_event(
                         'PAYMENT_AUTHORIZED',
@@ -434,11 +447,110 @@ class TransbankWebPayPlusService(BasePaymentService):
                             'payment_type_code': data.get('payment_type_code')
                         }
                     )
-                
-                payment.order.status = 'paid'
-                payment.order.save()
-                
-                # Log order marked as paid
+
+                # Atomic: order status + domain finalization (no partial state if something fails)
+                with transaction.atomic():
+                    payment.order.status = 'paid'
+                    provider = getattr(payment.payment_method, 'provider', None)
+                    payment.order.is_sandbox = getattr(provider, 'is_sandbox', False)
+                    payment.order.save(update_fields=['status', 'is_sandbox', 'updated_at'])
+
+                    # ✅ Domain-specific post-payment handling
+                    order_kind = getattr(payment.order, 'order_kind', 'event')
+                    if order_kind == 'experience':
+                        # Mark experience reservation paid and keep holds until the instance ends
+                        try:
+                            reservation = payment.order.experience_reservation
+                            if reservation:
+                                reservation.status = 'paid'
+                                reservation.paid_at = timezone.now()
+                                reservation.save(update_fields=['status', 'paid_at'])
+
+                                # Extend holds so capacity/resources remain reserved until the experience ends
+                                end_dt = getattr(reservation.instance, 'end_datetime', None)
+                                if end_dt:
+                                    reservation.capacity_holds.filter(released=False).update(expires_at=end_dt)
+                                    reservation.resource_holds.filter(released=False).update(expires_at=end_dt)
+
+                                logger.info(f"✅ [PAYMENT] Experience reservation {reservation.reservation_id} marked as paid")
+                                # Notify creator by email when sale was with their link
+                                if reservation.creator_id:
+                                    try:
+                                        from apps.experiences.tasks import notify_creator_on_sale
+                                        notify_creator_on_sale.apply_async(
+                                            args=[str(reservation.id)],
+                                            queue='emails',
+                                        )
+                                    except Exception:
+                                        logger.exception("Failed to enqueue creator sale notification")
+                                # Notify operator and customer via WhatsApp
+                                try:
+                                    from apps.whatsapp.services.payment_success_notifier import (
+                                        notify_operator_payment_received,
+                                        notify_customer_payment_success,
+                                    )
+                                    from apps.experiences.receipt_generator import ExperienceReceiptGenerator
+                                    notify_operator_payment_received(payment)
+                                    receipt_b64 = ExperienceReceiptGenerator.generate_receipt_base64(
+                                        payment.order, reservation
+                                    )
+                                    notify_customer_payment_success(payment, receipt_base64=receipt_b64)
+                                except Exception:
+                                    logger.exception("WhatsApp payment notifications failed")
+                        except Exception:
+                            logger.exception("Failed to finalize experience reservation after payment")
+                    elif order_kind == 'accommodation':
+                        try:
+                            finalize_accommodation_payment(payment)
+                        except Exception:
+                            logger.exception("Failed to finalize accommodation reservation after payment")
+                    elif order_kind == 'car_rental':
+                        try:
+                            finalize_car_rental_payment(payment)
+                        except Exception:
+                            logger.exception("Failed to finalize car_rental reservation after payment")
+                    elif order_kind == 'erasmus_activity':
+                        try:
+                            link = payment.order.erasmus_activity_payment_link
+                            if link:
+                                from apps.erasmus.models import ErasmusActivityInscriptionPayment
+                                # Record the amount actually charged (order.total), not the link snapshot
+                                amount_paid = payment.order.total
+                                ErasmusActivityInscriptionPayment.objects.update_or_create(
+                                    lead=link.lead,
+                                    instance=link.instance,
+                                    defaults={
+                                        "amount": amount_paid,
+                                        "payment_method": "platform",
+                                        "paid_at": timezone.now(),
+                                    },
+                                )
+                                logger.info(
+                                    "Erasmus inscription marked as paid (platform): lead=%s instance=%s amount=%s",
+                                    link.lead_id, link.instance_id, amount_paid,
+                                )
+                        except Exception:
+                            logger.exception("Failed to finalize erasmus_activity payment")
+                    else:
+                        # Event: create tickets from reservations
+                        self._create_tickets_from_reservations(payment.order)
+
+                    # Log tickets created + cleanup only for event orders (not experience, accommodation, car_rental)
+                    if order_kind not in ('experience', 'accommodation', 'car_rental', 'erasmus_activity'):
+                        if flow:
+                            tickets_count = payment.order.items.aggregate(total=models.Sum('quantity'))['total'] or 0
+                            flow.log_event(
+                                'TICKETS_CREATED',
+                                order=payment.order,
+                                status='success',
+                                message=f"{tickets_count} tickets created for order {payment.order.order_number}",
+                                metadata={'tickets_count': tickets_count}
+                            )
+
+                        # ✅ CLEANUP: Limpiar holds y reservations (tickets)
+                        self._cleanup_order_reservations(payment.order)
+
+                # Log order marked as paid (audit; after atomic)
                 if flow:
                     flow.log_event(
                         'ORDER_MARKED_PAID',
@@ -448,100 +560,7 @@ class TransbankWebPayPlusService(BasePaymentService):
                         message=f"Order {payment.order.order_number} marked as paid",
                         metadata={'total': float(payment.order.total)}
                     )
-                
-                # ✅ Domain-specific post-payment handling
-                order_kind = getattr(payment.order, 'order_kind', 'event')
-                if order_kind == 'experience':
-                    # Mark experience reservation paid and keep holds until the instance ends
-                    try:
-                        reservation = payment.order.experience_reservation
-                        if reservation:
-                            reservation.status = 'paid'
-                            reservation.paid_at = timezone.now()
-                            reservation.save(update_fields=['status', 'paid_at'])
 
-                            # Extend holds so capacity/resources remain reserved until the experience ends
-                            end_dt = getattr(reservation.instance, 'end_datetime', None)
-                            if end_dt:
-                                reservation.capacity_holds.filter(released=False).update(expires_at=end_dt)
-                                reservation.resource_holds.filter(released=False).update(expires_at=end_dt)
-                            
-                            logger.info(f"✅ [PAYMENT] Experience reservation {reservation.reservation_id} marked as paid")
-                            # Notify creator by email when sale was with their link
-                            if reservation.creator_id:
-                                try:
-                                    from apps.experiences.tasks import notify_creator_on_sale
-                                    notify_creator_on_sale.apply_async(
-                                        args=[str(reservation.id)],
-                                        queue='emails',
-                                    )
-                                except Exception:
-                                    logger.exception("Failed to enqueue creator sale notification")
-                            # Notify operator and customer via WhatsApp
-                            try:
-                                from apps.whatsapp.services.payment_success_notifier import (
-                                    notify_operator_payment_received,
-                                    notify_customer_payment_success,
-                                )
-                                from apps.experiences.receipt_generator import ExperienceReceiptGenerator
-                                notify_operator_payment_received(payment)
-                                receipt_b64 = ExperienceReceiptGenerator.generate_receipt_base64(
-                                    payment.order, reservation
-                                )
-                                notify_customer_payment_success(payment, receipt_base64=receipt_b64)
-                            except Exception:
-                                logger.exception("WhatsApp payment notifications failed")
-                    except Exception:
-                        logger.exception("Failed to finalize experience reservation after payment")
-                elif order_kind == 'accommodation':
-                    try:
-                        finalize_accommodation_payment(payment)
-                    except Exception:
-                        logger.exception("Failed to finalize accommodation reservation after payment")
-                elif order_kind == 'car_rental':
-                    try:
-                        finalize_car_rental_payment(payment)
-                    except Exception:
-                        logger.exception("Failed to finalize car_rental reservation after payment")
-                elif order_kind == 'erasmus_activity':
-                    try:
-                        link = payment.order.erasmus_activity_payment_link
-                        if link:
-                            from apps.erasmus.models import ErasmusActivityInscriptionPayment
-                            ErasmusActivityInscriptionPayment.objects.update_or_create(
-                                lead=link.lead,
-                                instance=link.instance,
-                                defaults={
-                                    "amount": link.amount,
-                                    "payment_method": "platform",
-                                    "paid_at": timezone.now(),
-                                },
-                            )
-                            logger.info(
-                                "Erasmus inscription marked as paid (platform): lead=%s instance=%s",
-                                link.lead_id, link.instance_id,
-                            )
-                    except Exception:
-                        logger.exception("Failed to finalize erasmus_activity payment")
-                else:
-                    # Event: create tickets from reservations
-                    self._create_tickets_from_reservations(payment.order)
-                
-                # Log tickets created + cleanup only for event orders (not experience, accommodation, car_rental)
-                if order_kind not in ('experience', 'accommodation', 'car_rental', 'erasmus_activity'):
-                    if flow:
-                        tickets_count = payment.order.items.aggregate(total=models.Sum('quantity'))['total'] or 0
-                        flow.log_event(
-                            'TICKETS_CREATED',
-                            order=payment.order,
-                            status='success',
-                            message=f"{tickets_count} tickets created for order {payment.order.order_number}",
-                            metadata={'tickets_count': tickets_count}
-                        )
-
-                    # ✅ CLEANUP: Limpiar holds y reservations (tickets)
-                    self._cleanup_order_reservations(payment.order)
-                
                 # 🚀 ENTERPRISE: Email will be sent synchronously from frontend confirmation page
                 # This reduces latency from 5+ minutes to <10 seconds
                 # If frontend sync send fails, it will automatically fallback to Celery

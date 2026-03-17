@@ -3,7 +3,7 @@
 from django.urls import path, include
 from django.conf import settings
 from rest_framework.routers import DefaultRouter
-from core.views import VersionView
+from core.views import VersionView, DeployCheckView, health_view
 
 # Import viewsets
 from api.v1.users.views import UserViewSet
@@ -22,6 +22,7 @@ from api.v1.events.views import (
 )
 from api.v1.forms.views import FormViewSet, FormResponseViewSet
 
+from api.v1.superadmin.views.auth_background import auth_background_public_list
 from .auth.views import (
     EmailTokenObtainPairView,
     RegistrationView,
@@ -50,8 +51,14 @@ router.register(r'form-responses', FormResponseViewSet, basename='form-response'
 
 # Wire up our API using automatic URL routing
 urlpatterns = [
+    # Health check (docker-compose / load balancers). También registra heartbeat de uptime (throttled).
+    path('health/', health_view),
     # Version (public, for checking what is deployed)
     path('version/', VersionView.as_view(), name='api-version'),
+    # Deploy verification (script calls with ?key=DEPLOY_CHECK_SECRET to see if deploy registered in BD)
+    path('deploy-check/', DeployCheckView.as_view(), name='api-deploy-check'),
+    path('hero-vitrina/', include('api.v1.hero_vitrina_urls')),  # Public: ordered items for landing hero slider
+    path('site/auth-background/', auth_background_public_list, name='site-auth-background'),
     # ⚠️ IMPORTANTE: Incluir organizers.urls ANTES del router para que tenga prioridad
     path('', include('api.v1.organizers.urls')),  # 🚀 Organizer profile management (incluyendo PATCH a /organizers/current/)
     
@@ -82,6 +89,7 @@ urlpatterns = [
     path('student-centers/', include('api.v1.student_centers.urls')),  # 🚀 ENTERPRISE: Student Centers endpoints
     path('creators/', include('api.v1.creators.urls')),  # 🚀 ENTERPRISE: TUKI Creators (influencers)
     path('erasmus/', include('api.v1.erasmus.urls')),  # 🚀 ENTERPRISE: Erasmus registration (public)
+    path('contests/', include('api.v1.contests.urls')),  # 🚀 Concursos / sorteos (landing + inscripción + código WhatsApp)
     path('terminal/', include('apps.terminal.urls')),  # 🚀 ENTERPRISE: Terminal bus schedule management
     # Onboarding URLs
     path('organizers/onboarding/start/', CurrentOnboardingView.as_view(), name='onboarding-start'),

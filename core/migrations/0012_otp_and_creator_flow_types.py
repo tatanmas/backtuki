@@ -1,0 +1,97 @@
+# OTP and creator flow types + Erasmus WhatsApp steps (observability for non-order emails)
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('core', '0011_alter_platformflowevent_step'),
+    ]
+
+    operations = [
+        migrations.AlterField(
+            model_name='platformflow',
+            name='flow_type',
+            field=models.CharField(
+                choices=[
+                    ('ticket_checkout', 'Ticket Checkout (Events)'),
+                    ('experience_booking', 'Experience Booking'),
+                    ('accommodation_booking', 'Accommodation Booking'),
+                    ('tour_booking', 'Tour Booking'),
+                    ('erasmus_registration', 'Erasmus Registration'),
+                    ('erasmus_activity_inscription', 'Erasmus Activity Inscription (paid)'),
+                    ('otp_login', 'OTP Login'),
+                    ('otp_organizer_login', 'OTP Login Organizador'),
+                    ('otp_password_reset', 'OTP Recuperación de contraseña'),
+                    ('otp_ticket_access', 'OTP Acceso a tickets'),
+                    ('otp_event_creation', 'OTP Creación de evento'),
+                    ('otp_email_verification', 'OTP Verificación de email'),
+                    ('otp_account_creation', 'OTP Creación de cuenta'),
+                    ('creator_application', 'Solicitud cuenta Creator/Influencer'),
+                ],
+                db_index=True,
+                help_text='Type of business flow being tracked',
+                max_length=50,
+            ),
+        ),
+        migrations.AlterField(
+            model_name='platformflowevent',
+            name='step',
+            field=models.CharField(
+                choices=[
+                    ('RESERVATION_REQUESTED', 'Reservation Requested'),
+                    ('RESERVATION_CREATED', 'Reservation Created'),
+                    ('RESERVATION_EXPIRED', 'Reservation Expired'),
+                    ('ORDER_CREATED', 'Order Created'),
+                    ('ORDER_MARKED_PAID', 'Order Marked as Paid'),
+                    ('ORDER_CANCELLED', 'Order Cancelled'),
+                    ('ORDER_REFUNDED', 'Order Refunded'),
+                    ('PAYMENT_REQUIRED', 'Payment Required'),
+                    ('PAYMENT_INITIATED', 'Payment Initiated'),
+                    ('PAYMENT_AUTHORIZED', 'Payment Authorized'),
+                    ('PAYMENT_FAILED', 'Payment Failed'),
+                    ('PAYMENT_CANCELLED', 'Payment Cancelled'),
+                    ('HOLDER_DATA_STORED', 'Ticket Holder Data Stored'),
+                    ('TICKETS_CREATED', 'Tickets Created'),
+                    ('BOOKING_CONFIRMED', 'Booking Confirmed'),
+                    ('EMAIL_PENDING', 'Email Pending - Will Send from Frontend'),
+                    ('EMAIL_SYNC_ATTEMPT', 'Email Sync Send Attempt'),
+                    ('EMAIL_TASK_ENQUEUED', 'Email Task Enqueued'),
+                    ('EMAIL_TASK_STARTED', 'Email Task Started'),
+                    ('EMAIL_SENT', 'Email Sent Successfully'),
+                    ('EMAIL_FAILED', 'Email Failed'),
+                    ('EMAIL_MANUAL_RESEND', 'Email Manual Resend'),
+                    ('COUPON_APPLIED', 'Coupon Applied'),
+                    ('COUPON_VALIDATION_FAILED', 'Coupon Validation Failed'),
+                    ('FLOW_COMPLETED', 'Flow Completed Successfully'),
+                    ('FLOW_FAILED', 'Flow Failed'),
+                    ('FLOW_ABANDONED', 'Flow Abandoned'),
+                    ('ERASMUS_LINK_VISIT', 'Erasmus Link Visit'),
+                    ('ERASMUS_FORM_STARTED', 'Erasmus Form Started'),
+                    ('ERASMUS_STEP_COMPLETED', 'Erasmus Step Completed'),
+                    ('ERASMUS_FORM_SUBMITTED', 'Erasmus Form Submitted'),
+                    ('ERASMUS_FLOW_ABANDONED', 'Erasmus Flow Abandoned'),
+                    ('WHATSAPP_REQUEST_RECEIVED', 'WhatsApp Request Received'),
+                    ('OPERATOR_NOTIFIED', 'Operator Notified'),
+                    ('AVAILABILITY_CONFIRMED', 'Availability Confirmed'),
+                    ('PAYMENT_LINK_SENT', 'Payment Link Sent'),
+                    ('WHATSAPP_RESERVATION_REJECTED', 'WhatsApp Reservation Rejected'),
+                    ('CUSTOMER_MESSAGE_WAITING_SENT', 'Customer Message: Waiting (verificando disponibilidad)'),
+                    ('CUSTOMER_MESSAGE_AVAILABILITY_SENT', 'Customer Message: Availability confirmed'),
+                    ('CUSTOMER_MESSAGE_PAYMENT_LINK_SENT', 'Customer Message: Payment link'),
+                    ('CUSTOMER_MESSAGE_CONFIRM_FREE_SENT', 'Customer Message: Confirm free (responde SI)'),
+                    ('CUSTOMER_MESSAGE_CONFIRMATION_SENT', 'Customer Message: Reservation confirmed'),
+                    ('CUSTOMER_MESSAGE_REJECTION_SENT', 'Customer Message: Rejection'),
+                    ('CUSTOMER_MESSAGE_PAYMENT_SUCCESS_SENT', 'Customer Message: Payment success / comprobante'),
+                    ('WHATSAPP_MESSAGE_FAILED', 'WhatsApp Message Send Failed'),
+                    ('OTP_REQUESTED', 'OTP Requested'),
+                    ('ERASMUS_WHATSAPP_GUIDES_SENT', 'Erasmus WhatsApp Guides Sent'),
+                    ('ERASMUS_WHATSAPP_GUIDES_FAILED', 'Erasmus WhatsApp Guides Failed'),
+                ],
+                db_index=True,
+                help_text='Specific step in the flow',
+                max_length=50,
+            ),
+        ),
+    ]

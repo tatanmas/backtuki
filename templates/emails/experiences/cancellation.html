@@ -1,0 +1,31 @@
+{% extends "emails/base.html" %}
+{% load static %}
+
+{% block title %}Tour cancelado - {{ experience_title }} - Tuki{% endblock %}
+
+{% block content %}
+<div style="max-width: 600px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333333;">
+    <div style="text-align: center; padding: 40px 0 60px 0; border-bottom: 1px solid #e5e7eb;">
+        <h1 style="font-size: 24px; font-weight: 400; color: #1f2937; margin: 0 0 8px 0;">
+            Tour cancelado
+        </h1>
+        <p style="font-size: 16px; color: #6b7280; margin: 0;">
+            Hola {{ customer_name }}, lamentamos informarte que el siguiente tour ha sido cancelado.
+        </p>
+    </div>
+    <div style="padding: 40px 0;">
+        <h2 style="font-size: 20px; font-weight: 600; color: #1f2937; margin: 0 0 16px 0;">
+            {{ experience_title }}
+        </h2>
+        <p style="font-size: 14px; color: #6b7280; margin: 0 0 8px 0;">
+            <strong>Fecha y hora:</strong> {{ start_datetime }}
+        </p>
+        <p style="font-size: 14px; color: #6b7280; margin: 0 0 8px 0;">
+            <strong>Idioma:</strong> {{ language_name }}
+        </p>
+        <p style="font-size: 14px; color: #6b7280; margin: 24px 0 0 0;">
+            Si tienes dudas, puedes contactar directamente al organizador.
+        </p>
+    </div>
+</div>
+{% endblock %}

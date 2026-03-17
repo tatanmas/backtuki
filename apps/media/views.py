@@ -5,10 +5,13 @@ REST API for media asset management.
 
 import hashlib
 import logging
+import operator
+from functools import reduce
+
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.exceptions import ValidationError
 
 from api.v1.pagination import LargePageSizePagination
@@ -109,7 +112,7 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
     queryset = MediaAsset.objects.all()
     serializer_class = MediaAssetSerializer
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     pagination_class = LargePageSizePagination
     
     def get_organizer(self):
@@ -127,93 +130,57 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
             logger.error(f"Error getting organizer: {e}")
             return None
     
+    def _get_base_queryset(self):
+        """
+        Apply permission and scope filters only (no q, tags, dates, used).
+        Used by get_queryset and by list_tags action.
+        """
+        queryset = self.queryset.all()
+        user = self.request.user
+        show_deleted = self.request.query_params.get('show_deleted', 'false').lower() == 'true'
+        if not show_deleted:
+            queryset = queryset.filter(deleted_at__isnull=True)
+        is_superuser = user.is_superuser
+        organizer = self.get_organizer()
+        if organizer:
+            if is_superuser:
+                scope = self.request.query_params.get('scope')
+                organizer_id = self.request.query_params.get('organizer_id')
+                if scope == 'global':
+                    queryset = queryset.filter(scope='global')
+                elif organizer_id and organizer_id != str(organizer.id):
+                    queryset = queryset.filter(organizer_id=organizer_id)
+                else:
+                    queryset = queryset.filter(scope='organizer', organizer=organizer)
+            else:
+                queryset = queryset.filter(scope='organizer', organizer=organizer)
+        elif is_superuser:
+            scope = self.request.query_params.get('scope')
+            if scope:
+                queryset = queryset.filter(scope=scope)
+            organizer_id = self.request.query_params.get('organizer_id')
+            if organizer_id:
+                queryset = queryset.filter(organizer_id=organizer_id)
+        else:
+            queryset = queryset.none()
+        return queryset
+
     def get_queryset(self):
         """
         Filter assets based on permissions and query params.
         
         🚀 ENTERPRISE: Organizers see only their own assets; superadmin sees all.
-        
-        SECURITY: Always filter by organizer for non-superadmin users, even if they have staff permissions.
         """
-        queryset = self.queryset.all()
-        user = self.request.user
-        
-        # Filter by deleted status first
-        show_deleted = self.request.query_params.get('show_deleted', 'false').lower() == 'true'
-        if not show_deleted:
-            queryset = queryset.filter(deleted_at__isnull=True)
-        
-        # Check if user is superadmin (must be explicitly superuser, not just staff)
-        # Staff users who are organizers should still be filtered by organizer
-        is_superuser = user.is_superuser
-        
-        # Get organizer for the user
-        organizer = self.get_organizer()
-        
-        # Log for debugging security
-        logger.debug(
-            f"🔒 [MEDIA] Access check - User: {user.id}, "
-            f"is_superuser: {is_superuser}, is_staff: {user.is_staff}, "
-            f"organizer: {organizer.id if organizer else None}"
-        )
-        
-        # CRITICAL SECURITY: If user has an organizer, they MUST only see their organizer's assets
-        # Even if they have staff permissions, if they're linked to an organizer, filter by it
-        if organizer:
-            # User is linked to an organizer - they can ONLY see their organizer's assets
-            # unless they are explicitly superuser AND requesting with specific params
-            if is_superuser:
-                # Superuser with organizer: check if they're requesting specific scope/organizer
-                # If no specific params, default to their organizer for security
-                scope = self.request.query_params.get('scope')
-                organizer_id = self.request.query_params.get('organizer_id')
-                
-                # If requesting global scope or different organizer, allow it (superuser privilege)
-                if scope == 'global':
-                    queryset = queryset.filter(scope='global')
-                elif organizer_id and organizer_id != str(organizer.id):
-                    # Requesting different organizer - superuser can do this
-                    queryset = queryset.filter(organizer_id=organizer_id)
-                else:
-                    # No specific params or requesting own organizer - default to their organizer
-                    queryset = queryset.filter(
-                        scope='organizer',
-                        organizer=organizer
-                    )
-            else:
-                # Regular organizer user: STRICTLY filter by their organizer
-                queryset = queryset.filter(
-                    scope='organizer',
-                    organizer=organizer
-                )
-        elif is_superuser:
-            # Superuser without organizer link: can see all (filter by params if provided)
-            scope = self.request.query_params.get('scope')
-            if scope:
-                queryset = queryset.filter(scope=scope)
-            
-            organizer_id = self.request.query_params.get('organizer_id')
-            if organizer_id:
-                queryset = queryset.filter(organizer_id=organizer_id)
-        else:
-            # User has no organizer and is not superadmin: return empty
-            queryset = queryset.none()
-        
-        # Search by filename
+        queryset = self._get_base_queryset()
         q = self.request.query_params.get('q')
         if q:
             queryset = queryset.filter(original_filename__icontains=q)
-        
-        # Filter by date range
         created_from = self.request.query_params.get('created_from')
         if created_from:
             queryset = queryset.filter(created_at__gte=created_from)
-        
         created_to = self.request.query_params.get('created_to')
         if created_to:
             queryset = queryset.filter(created_at__lte=created_to)
-        
-        # Filter by usage
         used = self.request.query_params.get('used')
         if used == 'true':
             queryset = queryset.annotate(
@@ -223,7 +190,12 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
             queryset = queryset.annotate(
                 usage_count=Count('usages', filter=Q(usages__deleted_at__isnull=True))
             ).filter(usage_count=0)
-        
+        tags_param = self.request.query_params.get('tags')
+        if tags_param:
+            tag_list = [t.strip() for t in tags_param.split(',') if t.strip()]
+            if tag_list:
+                tag_conditions = [Q(tags__contains=[t]) for t in tag_list]
+                queryset = queryset.filter(reduce(operator.or_, tag_conditions))
         return queryset
     
     def get_serializer_class(self):
@@ -343,16 +315,19 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
         if scope == 'organizer' and organizer:
             serializer.validated_data['organizer'] = organizer
         
-        # Save asset
+        # Save asset (tags from validated_data if present)
+        tags = serializer.validated_data.get('tags') or []
         asset = serializer.save(
             uploaded_by=user,
             organizer=organizer if scope == 'organizer' else None,
             original_filename=original_filename,
             content_type=content_type,
             size_bytes=size_bytes,
-            sha256=sha256_hash
+            sha256=sha256_hash,
+            tags=tags,
         )
-        
+        # Generate thumbnail for fast grid loading (~10-30KB vs full image)
+        asset.generate_thumbnail()
         logger.info(
             f"📸 [MEDIA] Asset created: {asset.id} by user {user.id} "
             f"(scope={scope}, organizer={organizer.id if organizer else None})"
@@ -397,11 +372,14 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
             # Unlink from accommodations and destinations so no stale references remain
             _unlink_asset_from_accommodations_and_destinations(asset.id)
 
-            # Delete file from storage
+            # Delete file and thumbnail from storage
             try:
                 if asset.file:
                     default_storage.delete(asset.file.name)
                     logger.info(f"🗑️ [MEDIA] Deleted file: {asset.file.name}")
+                if asset.thumbnail:
+                    default_storage.delete(asset.thumbnail.name)
+                    logger.info(f"🗑️ [MEDIA] Deleted thumbnail: {asset.thumbnail.name}")
             except Exception as e:
                 logger.warning(f"⚠️ [MEDIA] Could not delete file {asset.file.name}: {e}")
             
@@ -495,4 +473,92 @@ class MediaAssetViewSet(viewsets.ModelViewSet):
             'usage_count': usages.count(),
             'usages': serializer.data
         })
+
+    @action(detail=False, methods=['get'], url_path='tags')
+    def list_tags(self, request):
+        """
+        Return unique tag strings from assets the user can see (same scope/organizer as list).
+        For autocomplete / suggestions in TagMultiSelect.
+        """
+        queryset = self._get_base_queryset()
+        limit = 200
+        tags_rows = queryset.values_list('tags', flat=True)[:5000]
+        seen = set()
+        result = []
+        for row in tags_rows:
+            if not isinstance(row, list):
+                continue
+            for t in row:
+                s = (t if isinstance(t, str) else str(t)).strip()
+                if s and s not in seen:
+                    seen.add(s)
+                    result.append(s)
+                    if len(result) >= limit:
+                        break
+            if len(result) >= limit:
+                break
+        result.sort(key=str.lower)
+        return Response({'tags': result})
+
+    @action(detail=False, methods=['post'], url_path='bulk-update-tags')
+    def bulk_update_tags(self, request):
+        """
+        Add and/or remove tags from multiple assets.
+        Body: { "asset_ids": ["uuid", ...], "add_tags": ["tag1"], "remove_tags": ["tag2"] }
+        Same permission as PATCH: user must have access to each asset.
+        """
+        asset_ids = request.data.get('asset_ids') or []
+        add_tags = request.data.get('add_tags') or []
+        remove_tags = request.data.get('remove_tags') or []
+        if not isinstance(asset_ids, list):
+            return Response(
+                {'error': 'asset_ids must be a list'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not asset_ids:
+            return Response(
+                {'updated': 0, 'message': 'No assets specified'},
+                status=status.HTTP_200_OK
+            )
+        add_set = {str(t).strip() for t in add_tags if str(t).strip()}
+        remove_set = {str(t).strip() for t in remove_tags if str(t).strip()}
+        if not add_set and not remove_set:
+            return Response(
+                {'updated': 0, 'message': 'No add_tags or remove_tags provided'},
+                status=status.HTTP_200_OK
+            )
+        base_qs = self._get_base_queryset()
+        assets = list(base_qs.filter(id__in=asset_ids))
+        if len(assets) != len(asset_ids):
+            allowed_ids = {str(a.id) for a in assets}
+            requested_ids = set(str(i) for i in asset_ids)
+            if requested_ids - allowed_ids:
+                return Response(
+                    {'error': 'Permission denied for one or more assets'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        updated = 0
+        for asset in assets:
+            tags = list(asset.tags) if isinstance(asset.tags, list) else []
+            changed = False
+            for r in remove_set:
+                if r in tags:
+                    tags.remove(r)
+                    changed = True
+            for a in add_set:
+                if a not in tags:
+                    tags.append(a)
+                    changed = True
+            if changed:
+                asset.tags = tags
+                asset.save(update_fields=['tags'])
+                updated += 1
+        logger.info(
+            "MEDIA bulk_update_tags: %s assets updated (add=%s remove=%s)",
+            updated, len(add_set), len(remove_set)
+        )
+        return Response({
+            'updated': updated,
+            'message': f'{updated} imagen(es) actualizada(s)',
+        }, status=status.HTTP_200_OK)
 

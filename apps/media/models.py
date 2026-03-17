@@ -50,6 +50,13 @@ def get_media_upload_path(instance, filename):
         return os.path.join('global', date_path, unique_filename)
 
 
+def get_thumbnail_upload_path(instance, filename):
+    """Thumbnail path: same base as file but in _thumbs subfolder."""
+    base = get_media_upload_path(instance, filename)
+    dirname, fname = os.path.split(base)
+    return os.path.join(dirname, '_thumbs', fname)
+
+
 class MediaAsset(BaseModel):
     """
     Media asset model for storing images/files.
@@ -113,6 +120,16 @@ class MediaAsset(BaseModel):
             )
         ]
     )
+
+    # Thumbnail for fast grid loading (300x300 max, ~10-30KB vs full image)
+    thumbnail = models.ImageField(
+        _("thumbnail"),
+        upload_to=get_thumbnail_upload_path,
+        blank=True,
+        null=True,
+        editable=False,
+        help_text=_("Auto-generated 300x300 thumbnail for grid display")
+    )
     
     original_filename = models.CharField(
         _("original filename"),
@@ -153,6 +170,14 @@ class MediaAsset(BaseModel):
         _("deleted at"),
         null=True,
         blank=True
+    )
+
+    # Tags for filtering and organization (Notion-style multi-select)
+    tags = models.JSONField(
+        _("tags"),
+        default=list,
+        blank=True,
+        help_text=_("List of tag strings for filtering (e.g. ['playa', 'alojamiento'])"),
     )
     
     class Meta:
@@ -248,6 +273,39 @@ class MediaAsset(BaseModel):
     def usage_count(self):
         """Return number of places where this asset is used."""
         return self.usages.filter(deleted_at__isnull=True).count()
+
+    def generate_thumbnail(self, max_size=300):
+        """
+        Generate and save a thumbnail for grid display.
+        Uses Pillow to resize; stores as JPEG for small size (~10-30KB).
+        """
+        if not self.file:
+            return
+        import logging
+        log = logging.getLogger(__name__)
+        try:
+            img = Image.open(self.file)
+            if img.mode in ('RGBA', 'LA', 'P'):
+                bg = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'P' and 'transparency' in img.info:
+                    img = img.convert('RGBA')
+                if img.mode in ('RGBA', 'LA'):
+                    bg.paste(img, mask=img.split()[-1])
+                else:
+                    bg.paste(img)
+                img = bg
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+            img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+            buf = BytesIO()
+            img.save(buf, format='JPEG', quality=85, optimize=True)
+            buf.seek(0)
+            from django.core.files.base import ContentFile
+            thumb_name = f"{uuid.uuid4().hex}.jpg"
+            self.thumbnail.save(thumb_name, ContentFile(buf.getvalue()), save=True)
+            log.info(f"MEDIA thumbnail generated: {self.id}")
+        except Exception as e:
+            log.warning(f"MEDIA thumbnail failed for {self.id}: {e}")
 
 
 class MediaUsage(BaseModel):

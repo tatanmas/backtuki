@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from django.db.models import Exists, OuterRef
 
 from apps.accommodations.models import Accommodation, AccommodationBlockedDate, AccommodationReservation, Hotel
-from apps.accommodations.serializers import resolve_room_public_payload
+from apps.accommodations.serializers import resolve_room_public_payload, _build_images_from_gallery_items
 
 
 def _parse_date(s):
@@ -50,9 +50,47 @@ def _resolve_hotel_media_urls(hotel, request):
     return hero_url, gallery_urls
 
 
-def _hotel_to_public_dict(hotel, request=None):
-    """Serialize Hotel for public API."""
+def _build_hotel_gallery_sections(hotel, request=None):
+    """
+    Build gallery sections: first "Hotel" (hotel's own gallery), then one section per room
+    with that room's photos, so the public gallery shows both without mixing them.
+    """
     hero_url, gallery_urls = _resolve_hotel_media_urls(hotel, request)
+    sections = []
+    if gallery_urls:
+        sections.append({
+            "source": "hotel",
+            "label": "Hotel",
+            "room_id": None,
+            "room_title": None,
+            "images": gallery_urls,
+        })
+    rooms = Accommodation.objects.filter(
+        hotel=hotel,
+        status="published",
+        deleted_at__isnull=True,
+    ).order_by("-rating_avg", "-created_at")
+    for acc in rooms:
+        urls = _build_images_from_gallery_items(acc, request)
+        if not urls:
+            continue
+        sections.append({
+            "source": "room",
+            "label": acc.title or "Habitación",
+            "room_id": str(acc.id),
+            "room_title": acc.title or "",
+            "images": urls,
+        })
+    return sections
+
+
+def _hotel_to_public_dict(hotel, request=None):
+    """Serialize Hotel for public API. Includes flat gallery (backward compat) and gallery_sections (hotel + rooms)."""
+    hero_url, gallery_urls = _resolve_hotel_media_urls(hotel, request)
+    sections = _build_hotel_gallery_sections(hotel, request)
+    flat_gallery = []
+    for sec in sections:
+        flat_gallery.extend(sec["images"])
     lat = float(hotel.latitude) if hotel.latitude is not None else 0
     lng = float(hotel.longitude) if hotel.longitude is not None else 0
     return {
@@ -63,6 +101,8 @@ def _hotel_to_public_dict(hotel, request=None):
         "description": hotel.description or "",
         "hero_image": hero_url,
         "gallery": gallery_urls,
+        "gallery_sections": sections,
+        "gallery_all": flat_gallery,
         "meta_title": hotel.meta_title or "",
         "meta_description": hotel.meta_description or "",
         "location": {

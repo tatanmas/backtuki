@@ -22,6 +22,7 @@ from apps.erasmus.models import (
     ErasmusActivityInscriptionPayment,
     ErasmusActivityPaymentLink,
 )
+from apps.events.models import Order
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from api.v1.superadmin.serializers import (
     JsonErasmusActivityInstanceSerializer,
@@ -49,15 +50,54 @@ def _parse_time(s):
     return None
 
 
-def _inscription_payment_dict(payment):
-    """Return a small dict for an ErasmusActivityInscriptionPayment or None."""
+def _inscription_payment_dict(payment, order=None):
+    """
+    Return a small dict for an ErasmusActivityInscriptionPayment or None.
+    When order is provided (for platform payments), include order_number and order_access_token
+    so the frontend can link to the reservation/order detail.
+    """
     if not payment:
         return None
-    return {
+    data = {
         "amount": str(payment.amount),
         "payment_method": payment.payment_method,
         "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
     }
+    if order and payment.payment_method == "platform":
+        data["order_id"] = str(order.id)
+        data["order_number"] = getattr(order, "order_number", None) or ""
+        data["order_access_token"] = getattr(order, "access_token", None) or ""
+    return data
+
+
+def _inscription_with_link_sent(lead_dict, instance_id, payment, order, payment_link):
+    """Build inscription dict including link_sent_at, link_sent_via, link_send_error from payment_link; order_number/order_access_token when order exists (paid or free)."""
+    out = {
+        "id": str(lead_dict["id"]),
+        "first_name": lead_dict.get("first_name") or "",
+        "last_name": lead_dict.get("last_name") or "",
+        "email": lead_dict.get("email") or "",
+        "phone_country_code": lead_dict.get("phone_country_code") or "",
+        "phone_number": lead_dict.get("phone_number") or "",
+        "instagram": lead_dict.get("instagram") or "",
+        "updated_at": lead_dict["updated_at"].isoformat() if lead_dict.get("updated_at") else None,
+        "payment": _inscription_payment_dict(payment, order=order),
+    }
+    if order and getattr(order, "order_number", None) and getattr(order, "access_token", None):
+        out["order_number"] = order.order_number or ""
+        out["order_access_token"] = (order.access_token or "").strip() or ""
+    else:
+        out["order_number"] = None
+        out["order_access_token"] = None
+    if payment_link:
+        out["link_sent_at"] = payment_link.link_sent_at.isoformat() if payment_link.link_sent_at else None
+        out["link_sent_via"] = payment_link.link_sent_via or None
+        out["link_send_error"] = payment_link.link_send_error or None
+    else:
+        out["link_sent_at"] = None
+        out["link_sent_via"] = None
+        out["link_send_error"] = None
+    return out
 
 
 def _activity_to_dict(act, include_instances=False):
@@ -213,23 +253,32 @@ class ErasmusPublicViewInscritosView(APIView):
                     instance=inst,
                 ).select_related("lead", "instance")
             }
+            # Payment links: order for "Ver pedido" + link_sent status (paid and free)
+            payment_links_by_key = {}
+            for pl in ErasmusActivityPaymentLink.objects.filter(
+                lead_id__in=lead_ids, instance=inst
+            ).select_related("order"):
+                key = (str(pl.lead_id), str(pl.instance_id))
+                payment_links_by_key[key] = pl
+            # Include order for every inscription that has a link (paid or free) so "Ver pedido" works
+            payment_links_orders = {
+                (str(pl.lead_id), str(pl.instance_id)): pl.order
+                for pl in payment_links_by_key.values()
+                if getattr(pl, "order", None)
+            }
             label = inst.scheduled_label_es or (inst.scheduled_date.isoformat() if inst.scheduled_date else str(inst.id))
             instances.append({
                 "id": str(inst.id),
                 "label": label,
                 "scheduled_date": inst.scheduled_date.isoformat() if inst.scheduled_date else None,
                 "inscriptions": [
-                    {
-                        "id": str(l["id"]),
-                        "first_name": l["first_name"] or "",
-                        "last_name": l["last_name"] or "",
-                        "email": l["email"] or "",
-                        "phone_country_code": l["phone_country_code"] or "",
-                        "phone_number": l["phone_number"] or "",
-                        "instagram": l["instagram"] or "",
-                        "updated_at": l["updated_at"].isoformat() if l.get("updated_at") else None,
-                        "payment": _inscription_payment_dict(payments.get((str(l["id"]), str(inst.id)))),
-                    }
+                    _inscription_with_link_sent(
+                        l,
+                        inst.id,
+                        payments.get((str(l["id"]), str(inst.id))),
+                        payment_links_orders.get((str(l["id"]), str(inst.id))),
+                        payment_links_by_key.get((str(l["id"]), str(inst.id))),
+                    )
                     for l in leads
                 ],
                 "count": len(leads),
@@ -296,11 +345,9 @@ class ErasmusPublicViewMarkPaidView(APIView):
                 {"detail": "Esta persona no está inscrita en esta fecha/instancia."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if amount is None or amount == "":
-            amount = act.price
-        if amount is None:
+        if amount is None or (isinstance(amount, str) and amount.strip() == ""):
             return Response(
-                {"detail": "Indica el monto o configura un precio en la actividad."},
+                {"detail": "Indica el monto que te pagaron (obligatorio para registrar el pago)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
@@ -327,6 +374,11 @@ class ErasmusPublicViewMarkPaidView(APIView):
                 "paid_at": timezone.now(),
             },
         )
+        try:
+            from apps.erasmus.post_purchase_notifier import notify_manual_payment_success
+            notify_manual_payment_success(lead, inst)
+        except Exception:
+            pass
         return Response(
             {
                 "id": payment.id,
@@ -341,21 +393,219 @@ class ErasmusPublicViewMarkPaidView(APIView):
         )
 
 
+class ErasmusPublicViewUnmarkPaidView(APIView):
+    """
+    POST /api/v1/erasmus/public/view/<view_token>/unmark-paid/
+    Body: { "lead_id": "uuid", "instance_id": "uuid" }
+    Removes the manual payment record so the inscription is "not paid" again.
+    Only allowed when the payment was manual (efectivo, transferencia, etc.).
+    Pago con tarjeta (platform) no se puede desmarcar.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, view_token):
+        act, err = _get_activity_by_view_token(view_token)
+        if err == "disabled":
+            return Response({"detail": "Link desactivado."}, status=status.HTTP_404_NOT_FOUND)
+        if act is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not getattr(act, "is_paid", False):
+            return Response(
+                {"detail": "Esta actividad no está configurada como actividad de pago."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        data = request.data or {}
+        lead_id = data.get("lead_id")
+        instance_id = data.get("instance_id")
+        if not lead_id or not instance_id:
+            return Response(
+                {"detail": "lead_id e instance_id son obligatorios."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            inst = ErasmusActivityInstance.objects.get(id=instance_id, activity_id=act.id)
+        except (ErasmusActivityInstance.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {"detail": "Instancia no válida o no pertenece a esta actividad."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            lead = ErasmusLead.objects.get(id=lead_id)
+        except (ErasmusLead.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {"detail": "Lead no encontrado."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        payment = ErasmusActivityInscriptionPayment.objects.filter(
+            lead=lead, instance=inst
+        ).first()
+        if not payment:
+            return Response(
+                {"detail": "Esta inscripción no está marcada como pagada."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if payment.payment_method == "platform":
+            return Response(
+                {"detail": "No se puede desmarcar un pago realizado con tarjeta (plataforma)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        payment.delete()
+        return Response(
+            {"detail": "Pago desmarcado. La inscripción vuelve a estado no pagado."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class ErasmusPublicViewMarkLinkSentView(APIView):
+    """
+    POST /api/v1/erasmus/public/view/<view_token>/mark-link-sent/
+    Body: { "lead_id": "uuid", "instance_id": "uuid" }
+    Marks the payment link (or free inscription order) as sent manually (e.g. you copied the message and sent it by WhatsApp).
+    Allowed for both paid and free activities when the inscription has a link/order.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, view_token):
+        act, err = _get_activity_by_view_token(view_token)
+        if err == "disabled":
+            return Response({"detail": "Link desactivado."}, status=status.HTTP_404_NOT_FOUND)
+        if act is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        # Allow for both paid and free (free inscriptions now have a link/order too)
+        data = request.data or {}
+        lead_id = data.get("lead_id")
+        instance_id = data.get("instance_id")
+        if not lead_id or not instance_id:
+            return Response(
+                {"detail": "lead_id e instance_id son obligatorios."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            inst = ErasmusActivityInstance.objects.get(id=instance_id, activity_id=act.id)
+        except (ErasmusActivityInstance.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {"detail": "Instancia no válida o no pertenece a esta actividad."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            lead = ErasmusLead.objects.get(id=lead_id)
+        except (ErasmusLead.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {"detail": "Lead no encontrado."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if str(inst.id) not in (lead.interested_experiences or []):
+            return Response(
+                {"detail": "Esta persona no está inscrita en esta fecha/instancia."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        link = ErasmusActivityPaymentLink.objects.filter(lead=lead, instance=inst).first()
+        if not link:
+            return Response(
+                {"detail": "No existe link de pago para esta inscripción. Genera el link primero (copiar mensaje o generar link)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        link.link_sent_at = timezone.now()
+        link.link_sent_via = "manual"
+        link.link_send_error = None
+        link.save(update_fields=["link_sent_at", "link_sent_via", "link_send_error"])
+        return Response(
+            {
+                "detail": "Marcado como enviado manualmente.",
+                "link_sent_at": link.link_sent_at.isoformat(),
+                "link_sent_via": link.link_sent_via,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 def _get_activity_by_payment_token(token):
     """Resolve ErasmusActivityPaymentLink by token; return (link, error) or (None, None) if not found."""
     if not token or not isinstance(token, str) or not token.strip():
         return None, "missing"
     try:
         link = ErasmusActivityPaymentLink.objects.select_related(
-            "lead", "instance", "instance__activity"
+            "lead", "instance", "instance__activity", "order"
         ).get(token=token.strip())
     except ErasmusActivityPaymentLink.DoesNotExist:
         return None, "not_found"
     if link.expires_at and timezone.now() > link.expires_at:
         return None, "expired"
     if ErasmusActivityInscriptionPayment.objects.filter(lead=link.lead, instance=link.instance).exists():
-        return None, "already_paid"
+        return link, "already_paid"
+    # Free inscription: order is already "paid" (total=0), treat as already_paid so frontend can redirect to reservation
+    order = getattr(link, "order", None)
+    if order and getattr(link, "amount", None) is not None and link.amount == 0 and order.status == "paid":
+        return link, "already_paid"
     return link, None
+
+
+class ErasmusPublicViewInscriptionMessageView(APIView):
+    """
+    POST /api/v1/erasmus/public/view/<view_token>/inscription-message/
+    Body: { "lead_id": "uuid", "instance_id": "uuid" }
+    Returns the personalized message (with {{first_name}}, {{payment_link}} replaced) and
+    optionally the payment_link_url. For paid activities, creates the payment link if needed.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, view_token):
+        from apps.erasmus.payment_link_service import build_inscription_message
+
+        act, err = _get_activity_by_view_token(view_token)
+        if err == "disabled":
+            return Response({"detail": "Link desactivado."}, status=status.HTTP_404_NOT_FOUND)
+        if act is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        data = request.data or {}
+        lead_id = data.get("lead_id")
+        instance_id = data.get("instance_id")
+        if not lead_id or not instance_id:
+            return Response(
+                {"detail": "lead_id e instance_id son obligatorios."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            inst = ErasmusActivityInstance.objects.get(id=instance_id, activity_id=act.id)
+        except (ErasmusActivityInstance.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {"detail": "Instancia no válida o no pertenece a esta actividad."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            lead = ErasmusLead.objects.get(id=lead_id)
+        except (ErasmusLead.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {"detail": "Lead no encontrado."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if str(inst.id) not in (lead.interested_experiences or []):
+            return Response(
+                {"detail": "Esta persona no está inscrita en esta fecha/instancia."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if ErasmusActivityInscriptionPayment.objects.filter(lead=lead, instance=inst).exists():
+            first_name = (lead.first_name or "").strip() or "Participante"
+            return Response({
+                "message": f"Hola {first_name}, tu pago para esta actividad ya fue registrado.",
+                "payment_link_url": None,
+            }, status=status.HTTP_200_OK)
+        from apps.erasmus.models import ErasmusActivityInstanceRegistration
+        extra_data = None
+        reg = ErasmusActivityInstanceRegistration.objects.filter(lead=lead, instance=inst).first()
+        if reg and reg.extra_data:
+            extra_data = reg.extra_data
+        order_number = None
+        plink = ErasmusActivityPaymentLink.objects.filter(lead=lead, instance=inst).first()
+        if plink and getattr(plink, "order", None):
+            order_number = getattr(plink.order, "order_number", None) or ""
+        message, payment_link_url = build_inscription_message(
+            lead, inst, extra_data=extra_data, order_number=order_number
+        )
+        return Response({
+            "message": message or "",
+            "payment_link_url": payment_link_url,
+        }, status=status.HTTP_200_OK)
 
 
 class ErasmusPublicViewGeneratePaymentLinkView(APIView):
@@ -363,9 +613,7 @@ class ErasmusPublicViewGeneratePaymentLinkView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request, view_token):
-        import secrets
-        from apps.events.models import Order
-        from django.conf import settings
+        from apps.erasmus.payment_link_service import get_or_create_payment_link, get_frontend_url
 
         act, err = _get_activity_by_view_token(view_token)
         if err == "disabled":
@@ -409,79 +657,69 @@ class ErasmusPublicViewGeneratePaymentLinkView(APIView):
                 {"detail": "Esta inscripción ya está marcada como pagada."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        amount = act.price
-        if amount is None or amount <= 0:
+        if act.price is None or act.price <= 0:
             return Response(
                 {"detail": "Configura un precio en la actividad para generar el link de pago."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        email = (lead.email or "").strip()
-        if not email:
+        if not (lead.email or "").strip():
             return Response(
                 {"detail": "Este inscrito no tiene email; añade uno para poder enviarle el link de pago."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        existing = ErasmusActivityPaymentLink.objects.filter(lead=lead, instance=inst).first()
-        if existing:
-            if existing.expires_at and timezone.now() > existing.expires_at:
-                existing.delete()
-                existing = None
-            elif getattr(existing, "order", None) and existing.order.status == "paid":
-                return Response(
-                    {"detail": "Ya existe un pago para esta inscripción."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            elif getattr(existing, "order", None) and existing.order.status == "pending":
-                order = existing.order
-                frontend_url = (getattr(settings, "FRONTEND_URL", "http://localhost:8080") or "http://localhost:8080").rstrip("/")
-                return Response({
-                    "payment_link_url": f"{frontend_url}/checkout/erasmus-activity?token={existing.token}",
-                    "order_id": str(order.id),
-                    "amount": str(existing.amount),
-                    "currency": existing.currency,
-                    "expires_at": existing.expires_at.isoformat() if existing.expires_at else None,
-                }, status=status.HTTP_200_OK)
-        token_str = secrets.token_urlsafe(32)[:48]
-        link = ErasmusActivityPaymentLink(
-            lead=lead, instance=inst, amount=amount, currency="CLP", token=token_str,
-            expires_at=timezone.now() + timezone.timedelta(days=7),
+        link, payment_url, created = get_or_create_payment_link(lead, inst)
+        if link is None or payment_url is None:
+            return Response(
+                {"detail": "No se pudo generar el link de pago (p. ej. ya existe un pago)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        order = getattr(link, "order", None)
+        if not order:
+            return Response(
+                {"detail": "Error interno: orden no asociada al link."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return Response(
+            {
+                "payment_link_url": payment_url,
+                "order_id": str(order.id),
+                "amount": str(link.amount),
+                "currency": link.currency,
+                "expires_at": link.expires_at.isoformat() if link.expires_at else None,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
-        link.save()
-        phone = (lead.phone_country_code or "") + (lead.phone_number or "")
-        order = Order.objects.create(
-            user=None,
-            email=email,
-            first_name=(lead.first_name or "")[:100],
-            last_name=(lead.last_name or "")[:100],
-            phone=phone[:20] if phone else "",
-            total=amount,
-            subtotal=amount,
-            service_fee=Decimal("0"),
-            discount=Decimal("0"),
-            taxes=Decimal("0"),
-            order_kind="erasmus_activity",
-            erasmus_activity_payment_link=link,
-            status="pending",
-        )
-        frontend_url = (getattr(settings, "FRONTEND_URL", "http://localhost:8080") or "http://localhost:8080").rstrip("/")
-        return Response({
-            "payment_link_url": f"{frontend_url}/checkout/erasmus-activity?token={token_str}",
-            "order_id": str(order.id),
-            "amount": str(amount),
-            "currency": link.currency,
-            "expires_at": link.expires_at.isoformat() if link.expires_at else None,
-        }, status=status.HTTP_201_CREATED)
 
 
 class ErasmusPublicPaymentLinkByTokenView(APIView):
-    """GET /api/v1/erasmus/public/payment-link/<token>/"""
+    """
+    GET /api/v1/erasmus/public/payment-link/<token>/
+    Returns current activity price so the link always charges the latest price.
+    Syncs the Order total to current price so create_payment charges the right amount.
+    """
     permission_classes = [AllowAny]
 
     def get(self, request, token):
         link, err = _get_activity_by_payment_token(token)
         if err:
             if err == "already_paid":
-                return Response({"detail": "Esta inscripción ya fue pagada."}, status=status.HTTP_400_BAD_REQUEST)
+                # Return 200 so frontend can redirect to post-payment receipt (reservation detail)
+                # Robust order lookup: reverse relation or explicit query so redirect always has token
+                order = getattr(link, "order", None) if link else None
+                if not order and link:
+                    order = Order.objects.filter(erasmus_activity_payment_link=link).first()
+                payload = {"already_paid": True}
+                if order and getattr(order, "order_number", None):
+                    try:
+                        if not getattr(order, "access_token", None) or not order.access_token.strip():
+                            order.save()  # Order.save() auto-generates access_token if missing
+                        if getattr(order, "access_token", None) and order.access_token.strip():
+                            payload["order_number"] = order.order_number
+                            payload["order_access_token"] = order.access_token
+                    except Exception:
+                        # Don't break 200: client still gets already_paid, may show "Ya pagado" without redirect
+                        pass
+                return Response(payload, status=status.HTTP_200_OK)
             if err == "expired":
                 return Response({"detail": "El link de pago ha expirado."}, status=status.HTTP_410_GONE)
             return Response({"detail": "Link no encontrado."}, status=status.HTTP_404_NOT_FOUND)
@@ -489,13 +727,30 @@ class ErasmusPublicPaymentLinkByTokenView(APIView):
         if not order or order.status != "pending":
             return Response({"detail": "Orden no disponible o ya pagada."}, status=status.HTTP_404_NOT_FOUND)
         act = link.instance.activity
+        # Use current activity price so updating the price is reflected for new payments
+        current_amount = getattr(act, "price", None)
+        if current_amount is None or current_amount <= 0:
+            current_amount = link.amount  # fallback for legacy or misconfigured activity
+        if current_amount is None or current_amount <= 0:
+            return Response(
+                {"detail": "La actividad no tiene precio configurado."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Sync Order (and link) to current price so create_payment charges the latest amount
+        if order.total != current_amount:
+            order.total = current_amount
+            order.subtotal = current_amount
+            order.save(update_fields=["total", "subtotal"])
+        if link.amount != current_amount:
+            link.amount = current_amount
+            link.save(update_fields=["amount"])
         instance_label = link.instance.scheduled_label_es or (
             link.instance.scheduled_date.isoformat() if link.instance.scheduled_date else str(link.instance.id)
         )
         return Response({
             "activity_title": act.title_es,
             "instance_label": instance_label,
-            "amount": str(link.amount),
+            "amount": str(current_amount),
             "currency": link.currency,
             "order_id": str(order.id),
             "lead_name": f"{(link.lead.first_name or '').strip()} {(link.lead.last_name or '').strip()}".strip() or "Participante",

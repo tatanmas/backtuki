@@ -20,6 +20,15 @@
 
 set -e
 
+# Optional -m "referencia" (como git commit): mensaje del deploy para listado en Super Admin
+DEPLOY_MSG=""
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -m) DEPLOY_MSG="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
 # Configuration
 PROJECT_ID="tukiprod"
 REGION="us-central1"
@@ -52,6 +61,7 @@ print_error() {
 
 echo "🚀 TUKI PLATFORM - COMPLETE DEPLOYMENT"
 echo "====================================="
+echo "Uso: ./deploy.sh [-m \"referencia\"]   (opcional -m como en git commit, para listado en Super Admin)"
 echo "Inspirado en AuroraDev - Orden correcto de operaciones"
 echo ""
 
@@ -69,7 +79,20 @@ fi
 # Step 2: Deploy to Cloud Run
 print_step "PASO 2: Deploying to Cloud Run..."
 
+# DEPLOYED_AT y APP_VERSION para que el backend registre el deploy en BD (flujo Super Admin)
+export DEPLOYED_AT=$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")
+if [[ -n "${DEPLOY_MSG}" ]]; then
+  export APP_VERSION="${DEPLOY_MSG}"
+else
+  export APP_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "deploy-$(date +%Y-%m-%d-%H%M)")
+fi
+# Limitar longitud para el campo version (80 chars)
+APP_VERSION="${APP_VERSION:0:80}"
+print_success "Deploy ref: DEPLOYED_AT=${DEPLOYED_AT} APP_VERSION=${APP_VERSION}"
+
 # 🚀 COST-OPTIMIZED: Backend min-instances=1 (required for WhatsApp webhooks)
+# --set-env-vars inyecta DEPLOYED_AT y APP_VERSION para que cada arranque registre el deploy
+# (APP_VERSION entre comillas por si tiene espacios, ej. -m "fix login")
 gcloud run deploy ${SERVICE_NAME} \
   --image ${IMAGE_NAME} \
   --region ${REGION} \
@@ -83,6 +106,7 @@ gcloud run deploy ${SERVICE_NAME} \
   --cpu 2 \
   --timeout 300 \
   --env-vars-file cloud-run-env.yaml \
+  --set-env-vars "DEPLOYED_AT=${DEPLOYED_AT},APP_VERSION=\"${APP_VERSION}\"" \
   --vpc-connector serverless-conn \
   --vpc-egress private-ranges-only \
   --service-account 187635794409-compute@developer.gserviceaccount.com
@@ -134,6 +158,27 @@ fi
 # Step 7: Service verification
 print_step "PASO 7: Service verification..."
 print_success "Backend service deployed and ready!"
+
+# Step 7b: Verificar que la versión se registró en BD (deploys, uptime) — guarda estos logs para debug
+print_step "PASO 7b: Verificación de registro de deploy..."
+sleep 20
+if [[ -n "${DEPLOY_CHECK_SECRET:-}" ]]; then
+  DEPLOY_CHECK_RESPONSE=$(curl -s -w "\n%{http_code}" "${SERVICE_URL}/api/v1/deploy-check/?key=${DEPLOY_CHECK_SECRET}")
+  DEPLOY_CHECK_HTTP_CODE=$(echo "$DEPLOY_CHECK_RESPONSE" | tail -n1)
+  DEPLOY_CHECK_BODY=$(echo "$DEPLOY_CHECK_RESPONSE" | sed '$d')
+  echo ""
+  echo "========== DEPLOY CHECK (copia estos logs si algo falla) =========="
+  echo "HTTP: $DEPLOY_CHECK_HTTP_CODE"
+  echo "$DEPLOY_CHECK_BODY"
+  echo "=================================================================="
+  if [[ "$DEPLOY_CHECK_HTTP_CODE" = "200" ]]; then
+    print_success "Backend respondió deploy-check. Revisa arriba: deploys_count, last_deploy_at, uptime_display, env_version."
+  else
+    print_warning "deploy-check devolvió HTTP $DEPLOY_CHECK_HTTP_CODE. ¿DEPLOY_CHECK_SECRET igual en cloud-run-env.yaml?"
+  fi
+else
+  echo "   (Para verificar: añade DEPLOY_CHECK_SECRET en cloud-run-env.yaml y ejecuta con DEPLOY_CHECK_SECRET=xxx ./deploy.sh -m \"ref\")"
+fi
 
 # Step 8: Deploy Celery Services
 print_step "PASO 8: Deploying Celery services for email processing..."
